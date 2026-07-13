@@ -320,15 +320,53 @@ function looksPromotional(subject, bodyText, headers) {
 }
 
 function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }) {
+  // Invisible Unicode formatting characters (zero-width spaces, RTL/LTR
+  // embedding marks, word joiners, BOM) show up in real marketing emails
+  // and silently break "\s*" gap-matching between a label and its value —
+  // a real Amazon order number sat right after one of these and was
+  // missed entirely until this was stripped.
+  const stripInvisible = s => (s || '').replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g, '');
+  subject = stripInvisible(subject);
+  bodyText = stripInvisible(bodyText);
+
   const hay = (subject + '\n' + bodyText).toLowerCase();
 
   let status = null;
   if (/(you sold|item sold|has sold|your listing sold|congratulations.*sold|payment received|you.ve been paid|payout (of|is|available)|funds available)/i.test(hay)) status = 'sold';
+  // Account-level suspension/hold notices cascade to cancel every pending
+  // (non-delivered) order under that account — a real example explicitly
+  // said "all pending orders and subscriptions have been cancelled." The
+  // sender-address check catches a Swedish example that used different
+  // body wording but the same distinctive "baa-customer-appeal" sender.
+  // Scoped to Amazon specifically — this exact phrasing is Amazon's own
+  // wording, and other services could plausibly use similar "account on
+  // hold" language for unrelated reasons, so the sender is checked too,
+  // not just the body text. "baa-customer-appeal" is Amazon's own sender
+  // pattern regardless of body language (covers a real Swedish example).
+  else if ((/sign in to resolve|account is (?:temporarily )?(?:on hold|closed|suspended|st[äa]ngt|avst[äa]ngt)/i.test(hay) && /amazon/i.test(fromEmail)) || /baa-customer-appeal/i.test(fromEmail)) status = 'account_suspended';
   else if (/action required|unable to (?:authorise|authorize|charge)|reauthorise|reauthorize|re-authorise|re-authorize|update your payment/i.test(hay)) status = 'action_required';
-  else if (/delivered|has arrived|package was delivered/.test(hay)) status = 'delivered';
-  else if (/out for delivery/.test(hay)) status = 'out_for_delivery';
+  // "Collected" covers click-and-collect pickup confirmations (Argos,
+  // Sainsbury's, etc.) — functionally the same end state as a home
+  // delivery, just worded completely differently.
+  // Requires an actual delivery *statement*, not just the bare word
+  // "delivered" — a real Amazon confirmation email has "Delivered" as a
+  // static label in its order-progress-tracker widget regardless of the
+  // order's real stage, and real Argos footer boilerplate about returns
+  // says "...or it was delivered by a supplier," neither of which are
+  // actual delivery notifications.
+  else if (/(?:has been delivered|package was delivered|package has arrived|item has arrived|you.ve collected|collected your (?:order|items))/i.test(hay)) status = 'delivered';
+  // Click-and-collect "ready to pick up" is its own distinct step — the
+  // item isn't moving toward the person, they need to go get it, which is
+  // a different action than waiting for a courier.
+  else if (/ready (?:to|for) collect|ready for pick ?up/i.test(hay)) status = 'ready_for_collection';
+  // Same tracker-widget issue as delivered above — Amazon's confirmation
+  // emails include a static "Out for delivery" stage label regardless of
+  // the order's real status, so this needs fuller phrasing to trigger.
+  else if (/(?:is out for delivery|out for delivery today|now out for delivery)/i.test(hay)) status = 'out_for_delivery';
   else if (/shipped|on its way|tracking number|has shipped/.test(hay)) status = 'shipped';
-  else if (/order confirmation|thank you for (?:your|placing)|order received|we.ve received your order|your order has been placed|order summary|order details/.test(hay)) status = 'confirmed';
+  // Real order confirmations often say "Thanks for your order" rather than
+  // the "Thank you for your order" this used to require exactly.
+  else if (/order confirmation|thanks?\s*(?:you\s*)?for\s*(?:your|placing)|order received|we.ve received your order|your order has been placed|order summary|order details/i.test(hay)) status = 'confirmed';
   if (!status) return null;
 
   let retailer = fromName || (fromEmail.split('@')[1] || 'Unknown');
@@ -337,18 +375,43 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   retailer = retailer ? retailer.charAt(0).toUpperCase() + retailer.slice(1) : 'Unknown';
 
   if (status === 'sold') {
-    // For sold notifications we care about the NET amount (after platform
-    // fees), since that's what actually lands in the bank — not the gross
-    // sale price, which most "item sold" emails lead with instead.
+    // eBay's real "item sold" email just says "Sold: £64.70" — confirmed
+    // directly that this figure IS the net amount that lands in the
+    // seller's balance already; "Buyer Protection" and "Postage" shown
+    // alongside are charges paid BY THE BUYER, not deductions from this.
+    // None of the "you'll receive"/"net proceeds"/"payout" phrasing this
+    // used to look for appears anywhere in eBay's actual wording, so this
+    // would previously have missed it entirely. Newline-tolerant gap since
+    // real emails put blank lines between a label and its value.
     const netMatch =
-      bodyText.match(/(?:you.ll (?:get|receive)|net (?:amount|proceeds|payout)|payout(?: amount)?|total earnings|you (?:earned|made))[^\n$£€]{0,25}[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i);
+      bodyText.match(/(?:you.ll (?:get|receive)|net (?:amount|proceeds|payout)|payout(?: amount)?|total earnings|you (?:earned|made)|\bsold)\s*:?[\s\S]{0,20}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i);
     const grossMatch = bodyText.match(/[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/);
     const netAmount = netMatch ? parseFloat(netMatch[1].replace(',', '')) : null;
     const grossAmount = grossMatch ? parseFloat(grossMatch[1].replace(',', '')) : null;
 
     const platform = /ebay/i.test(fromEmail) || /ebay/i.test(fromName) ? 'eBay' : retailer;
 
-    return { status, platform, netAmount, grossAmount, subject, date, fromEmail };
+    const qtyMatch = bodyText.match(/quantity sold\s*:?[\s\S]{0,10}?(\d{1,3})/i);
+    const quantitySold = qtyMatch ? parseInt(qtyMatch[1], 10) : null;
+
+    const orderNumMatch = bodyText.match(/\border\s*:?[\s\S]{0,10}?([A-Z0-9-]{6,25})/i);
+    const saleOrderNumber = orderNumMatch ? orderNumMatch[1] : null;
+
+    // eBay's subject line is literally "You made the sale for <product>..."
+    // — the most reliable source of the product name for this platform,
+    // used to help pre-suggest the right item in the "Match to Item" step.
+    const productMatch = subject.match(/(?:sale for|sold)\s*:?\s*(.+)/i);
+    const productNameHint = productMatch ? productMatch[1].replace(/\.{2,}\s*$/, '').trim() : null;
+
+    return { status, platform, netAmount, grossAmount, quantitySold, saleOrderNumber, productNameHint, subject, date, fromEmail };
+  }
+
+  if (status === 'account_suspended') {
+    // All that's actually needed here is which account this happened to —
+    // matched on the renderer side against every tracked order's "sent to"
+    // address, the same reliable per-account signal used for payment-issue
+    // matching.
+    return { status, retailer, subject, date, fromEmail, toEmail: toEmail || null };
   }
 
   if (status === 'action_required') {
@@ -428,6 +491,11 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   const trackingNumber = trackingMatch ? trackingMatch[1] : null;
 
   const result = { status, retailer, price, orderNumber, expectedDelivery, expectedDeliveryTime, carrier, trackingNumber, subject, date, fromEmail };
+
+  if (status === 'ready_for_collection') {
+    const codeMatch = bodyText.match(/\bcode\s*:?[\s\S]{0,10}?(\d{3,8})/i);
+    result.pickupCode = codeMatch ? codeMatch[1] : null;
+  }
 
   // These used to be extracted only for Pokémon Center preorders, but the
   // person wants "what was bought / sent to which email / delivery

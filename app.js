@@ -360,7 +360,7 @@ function dashboardHTML(){
     return {name, profit:p, roi:r, units, category: group[0].category};
   }).sort((a,b)=>b.profit-a.profit).slice(0,6);
 
-  const pendingDeliveryCount = state.pendingOrders.filter(p=>p.status!=="delivered").length;
+  const pendingDeliveryCount = state.pendingOrders.filter(p=>p.status!=="delivered" && p.status!=="cancelled").length;
 
   const periods = ["Day","Week","Month","Year","All Time"];
 
@@ -986,9 +986,17 @@ function preordersHTML(){
       ${preorders.map(i=>{
         const style = CAT_STYLES[i.category]||CAT_STYLES.Other;
         const linkedOrder = state.pendingOrders.find(p=>p.addedToStockId===i.id);
+        const cancelled = i.isCancelled;
         return `
-        <div class="card" style="padding:18px 20px;${i.needsAttention ? "border-color:var(--red);box-shadow:0 0 0 1px var(--red);" : ""}">
-          ${i.needsAttention ? `
+        <div class="card" style="padding:18px 20px;${i.needsAttention && !cancelled ? "border-color:var(--red);box-shadow:0 0 0 1px var(--red);" : ""}${cancelled ? "opacity:0.6;" : ""}">
+          ${cancelled ? `
+          <div style="display:flex;align-items:center;gap:10px;background:var(--card-2);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:14px;">
+            ${ICONS.close}
+            <div style="flex:1;min-width:0;">
+              <div style="font-weight:700;font-size:13px;color:var(--text-dim);">Cancelled</div>
+              <div class="hint" style="margin:1px 0 0;">${linkedOrder && linkedOrder.cancelReason ? escapeHTML(linkedOrder.cancelReason) : "This preorder was cancelled."}</div>
+            </div>
+          </div>` : i.needsAttention ? `
           <div style="display:flex;align-items:center;gap:10px;background:var(--red-bg);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:14px;">
             ${ICONS.close}
             <div style="flex:1;min-width:0;">
@@ -1000,11 +1008,11 @@ function preordersHTML(){
             <div style="display:flex;align-items:center;gap:12px;cursor:pointer;flex:1;min-width:0;" data-open="${i.id}">
               ${itemThumb(i,38)}
               <div style="min-width:0;">
-                <div style="font-weight:700;font-size:14.5px;">${escapeHTML(i.name)} ${i.sourceEmailDetected ? `<span class="status-chip chip-confirmed" style="vertical-align:middle;">Auto-detected</span>` : ""} ${i.needsAttention ? `<span class="status-chip" style="vertical-align:middle;background:var(--red-bg);color:var(--red);">Requires Attention</span>` : ""}</div>
-                <div class="hint" style="margin:2px 0 0;">${escapeHTML(i.category)} · ${escapeHTML(i.retailer||"Unknown retailer")}${linkedOrder ? ` · ${statusChip(linkedOrder.status)}` : ""}</div>
+                <div style="font-weight:700;font-size:14.5px;">${escapeHTML(i.name)} ${i.sourceEmailDetected ? `<span class="status-chip chip-confirmed" style="vertical-align:middle;">Auto-detected</span>` : ""} ${cancelled ? `<span class="status-chip chip-cancelled" style="vertical-align:middle;">Cancelled</span>` : i.needsAttention ? `<span class="status-chip" style="vertical-align:middle;background:var(--red-bg);color:var(--red);">Requires Attention</span>` : ""}</div>
+                <div class="hint" style="margin:2px 0 0;">${escapeHTML(i.category)} · ${escapeHTML(i.retailer||"Unknown retailer")}${linkedOrder && !cancelled ? ` · ${statusChip(linkedOrder.status)}` : ""}</div>
               </div>
             </div>
-            <button class="btn-small" data-arrived="${i.id}" style="flex-shrink:0;">${ICONS.check} Mark Arrived</button>
+            ${cancelled ? "" : `<button class="btn-small" data-arrived="${i.id}" style="flex-shrink:0;">${ICONS.check} Mark Arrived</button>`}
           </div>
 
           <div class="kv-card" style="margin-top:14px;border:1px solid var(--border-soft);border-radius:var(--radius-md);">
@@ -1404,8 +1412,11 @@ function attachDetailEvents(){
 let sellFormState = null;
 
 function openSellSheet(itemId, prefill){
+  const item = state.items.find(i=>i.id===itemId);
+  const remaining = item ? qtyRemaining(item) : 1;
+  const prefillQty = prefill && prefill.quantity ? Math.min(Math.max(1, prefill.quantity), Math.max(remaining,1)) : 1;
   sellFormState = {
-    itemId, quantity: 1,
+    itemId, quantity: prefillQty,
     price: prefill && prefill.price!=null ? String(prefill.price) : "",
     fees: "",
     platform: (prefill && prefill.platform) || "eBay",
@@ -1735,12 +1746,14 @@ function emailConnectedHTML(){
     ` : `
       <div class="card table-wrap">
         <table class="data-table">
-          <thead><tr><th>Platform</th><th>Date</th><th>Amount</th><th></th></tr></thead>
+          <thead><tr><th>Platform</th><th>Likely Item</th><th>Date</th><th>Qty</th><th>Amount</th><th></th></tr></thead>
           <tbody>
             ${state.pendingSales.slice().sort((a,b)=>new Date(b.saleDate)-new Date(a.saleDate)).map(p=>`
               <tr>
                 <td style="font-weight:600;">${escapeHTML(p.platform||"Unknown")}</td>
+                <td class="dim" style="font-size:12.5px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.productNameHint ? escapeHTML(p.productNameHint) : "—"}</td>
                 <td class="mono dim">${formatDate(p.saleDate)}</td>
+                <td class="mono dim">${p.quantitySold || "—"}</td>
                 <td class="mono">${p.netAmount!=null ? fmtMoney(p.netAmount) : "—"}</td>
                 <td style="text-align:right;display:flex;gap:6px;justify-content:flex-end;">
                   <button class="btn-small" data-match-sale="${p.id}">Match to Item</button>
@@ -1753,7 +1766,8 @@ function emailConnectedHTML(){
       </div>
       <div class="hint" style="margin-top:10px;">
         Restock can tell a sale happened and roughly for how much, but can't tell which of your items
-        it was — click "Match to Item" to pick the right one and finish recording the sale.
+        it was — click "Match to Item" to pick the right one and finish recording the sale. When a
+        likely item name was found in the email, it's suggested first.
       </div>
     `}
     <div style="height:20px;"></div>
@@ -1765,8 +1779,10 @@ function statusChip(status){
     confirmed: ["chip-confirmed","Order Placed"],
     shipped: ["chip-shipped","Shipped"],
     out_for_delivery: ["chip-outfordelivery","Out for Delivery"],
+    ready_for_collection: ["chip-outfordelivery","Ready for Collection"],
     delivered: ["chip-delivered","Delivered"],
-    action_required: ["chip-action-required","Requires Attention"]
+    action_required: ["chip-action-required","Requires Attention"],
+    cancelled: ["chip-cancelled","Cancelled"]
   };
   const [cls, label] = map[status] || ["chip-confirmed", status];
   return `<span class="status-chip ${cls}">${label}</span>`;
@@ -1906,7 +1922,16 @@ function attachEmailEvents(){
 function openMatchSaleModal(pendingSaleId){
   const sale = state.pendingSales.find(p=>p.id===pendingSaleId);
   if(!sale) return;
-  const candidates = state.items.filter(i=>!i.isPreorder && qtyRemaining(i)>0);
+  let candidates = state.items.filter(i=>!i.isPreorder && qtyRemaining(i)>0);
+  // Sort the likely match (by product name hint from the email) to the
+  // top, so the person isn't hunting through a long list for it.
+  if(sale.productNameHint){
+    candidates = candidates.slice().sort((a,b)=>{
+      const aLikely = namesLikelyMatch(a.name, sale.productNameHint) ? 0 : 1;
+      const bLikely = namesLikelyMatch(b.name, sale.productNameHint) ? 0 : 1;
+      return aLikely - bLikely;
+    });
+  }
   const root = document.getElementById("modalRoot");
   root.innerHTML = `
     <div class="modal-backdrop open" id="matchBackdrop">
@@ -1916,7 +1941,7 @@ function openMatchSaleModal(pendingSaleId){
           <button class="icon-btn" id="closeMatch">${ICONS.close}</button>
         </div>
         <div class="modal-body">
-          <div class="hint" style="margin-bottom:14px;">${escapeHTML(sale.platform||"Unknown")} · ${formatDate(sale.saleDate)} · ${sale.netAmount!=null?fmtMoney(sale.netAmount):"amount unknown"}</div>
+          <div class="hint" style="margin-bottom:14px;">${escapeHTML(sale.platform||"Unknown")} · ${formatDate(sale.saleDate)} · ${sale.netAmount!=null?fmtMoney(sale.netAmount):"amount unknown"}${sale.productNameHint ? ` · likely "${escapeHTML(sale.productNameHint)}"` : ""}</div>
           ${candidates.length===0 ? `
             <div class="pending-empty">No in-stock items to match against. Add stock first, or dismiss this detected sale.</div>
           ` : `
@@ -1924,13 +1949,15 @@ function openMatchSaleModal(pendingSaleId){
               <table class="data-table">
                 <thead><tr><th>Item</th><th>Left</th><th></th></tr></thead>
                 <tbody>
-                  ${candidates.map(i=>`
-                    <tr>
-                      <td style="font-weight:600;">${escapeHTML(i.name)}</td>
+                  ${candidates.map(i=>{
+                    const likely = sale.productNameHint && namesLikelyMatch(i.name, sale.productNameHint);
+                    return `
+                    <tr ${likely ? `style="background:var(--violet-bg);"` : ""}>
+                      <td style="font-weight:600;">${escapeHTML(i.name)} ${likely ? `<span class="status-chip chip-confirmed" style="vertical-align:middle;">Likely match</span>` : ""}</td>
                       <td class="mono dim">${qtyRemaining(i)}</td>
                       <td style="text-align:right;"><button class="btn-small" data-pick="${i.id}">Select</button></td>
                     </tr>
-                  `).join("")}
+                  `;}).join("")}
                 </tbody>
               </table>
             </div>
@@ -1948,7 +1975,7 @@ function openMatchSaleModal(pendingSaleId){
       document.getElementById("modalRoot").innerHTML = "";
       ui.detailItemId = itemId;
       render();
-      openSellSheet(itemId, { platform: sale.platform, price: sale.netAmount, date: sale.saleDate });
+      openSellSheet(itemId, { platform: sale.platform, price: sale.netAmount, date: sale.saleDate, quantity: sale.quantitySold || null });
     });
   });
 }
@@ -2036,12 +2063,15 @@ async function syncNow(silent){
       if(!isTypingInField()) renderView();
       return;
     }
-    const addedCount = mergeSyncResults(res.results);
+    const { addedCount, cancelledCount } = mergeSyncResults(res.results);
     state.emailLastSync = new Date().toISOString();
     saveState();
     if(!isTypingInField()) renderView();
     if(!silent || res.results.length>0){
-      showToast(`Synced — ${res.results.length} order email(s) found${addedCount ? `, ${addedCount} added to stock` : ""}`);
+      const extras = [];
+      if(addedCount) extras.push(`${addedCount} added to stock`);
+      if(cancelledCount) extras.push(`${cancelledCount} order${cancelledCount===1?"":"s"} cancelled`);
+      showToast(`Synced — ${res.results.length} order email(s) found${extras.length ? `, ${extras.join(", ")}` : ""}`, cancelledCount ? "close" : "check");
     }
   }catch(e){
     emailUI.syncing = false;
@@ -2064,6 +2094,7 @@ function stopAutoSync(){
 
 function mergeSyncResults(results){
   let addedCount = 0;
+  let cancelledCount = 0;
   results.forEach(r=>{
     if(r.status==="sold"){
       const saleKey = "sale:"+(r.fromEmail||"")+"|"+r.date+"|"+(r.netAmount||r.grossAmount||0);
@@ -2072,10 +2103,40 @@ function mergeSyncResults(results){
           id: uid(), matchKey: saleKey, platform: r.platform,
           netAmount: r.netAmount!=null ? r.netAmount : r.grossAmount,
           grossAmount: r.grossAmount, fromEmail: r.fromEmail||null,
-          saleDate: (r.date||new Date().toISOString()).slice(0,10)
+          saleDate: (r.date||new Date().toISOString()).slice(0,10),
+          quantitySold: r.quantitySold || null,
+          saleOrderNumber: r.saleOrderNumber || null,
+          productNameHint: r.productNameHint || null
         });
       }
       return;
+    }
+
+    if(r.status==="account_suspended"){
+      // Real confirmation: "all pending orders and subscriptions have been
+      // cancelled" when this happens. This is specific to Amazon — it only
+      // cancels orders where the retailer is Amazon, matched by "sent to"
+      // address. Someone could have an Argos or Pokémon Center order
+      // landing at that same address, and those must NOT be touched, since
+      // this event has nothing to do with their account there.
+      if(r.toEmail){
+        const affected = state.pendingOrders.filter(p =>
+          p.toEmail && p.toEmail.toLowerCase()===r.toEmail.toLowerCase() &&
+          p.retailer && /amazon/i.test(p.retailer) &&
+          p.status!=="delivered" && p.status!=="cancelled"
+        );
+        affected.forEach(p=>{
+          p.status = "cancelled";
+          p.cancelReason = "Amazon account suspended/on hold — Amazon automatically cancels pending orders when this happens.";
+          if(p.addedToStockId){
+            const linkedItem = state.items.find(i=>i.id===p.addedToStockId);
+            if(linkedItem) linkedItem.isCancelled = true;
+          }
+        });
+        cancelledCount += affected.length;
+      }
+      return;
+
     }
 
     if(r.status==="action_required"){
@@ -2150,13 +2211,14 @@ function mergeSyncResults(results){
           orderNumber:r.orderNumber, status:"confirmed", addedToStockId:null, isPKCPreorder:false
         });
       }
-    } else if(r.status==="shipped" || r.status==="out_for_delivery"){
-      if(existing && existing.status!=="delivered" && statusRank(r.status) > statusRank(existing.status)){
+    } else if(r.status==="shipped" || r.status==="out_for_delivery" || r.status==="ready_for_collection"){
+      if(existing && existing.status!=="delivered" && existing.status!=="cancelled" && statusRank(r.status) > statusRank(existing.status)){
         existing.status = r.status;
         if(r.expectedDelivery) existing.expectedDelivery = r.expectedDelivery;
         if(r.expectedDeliveryTime) existing.expectedDeliveryTime = r.expectedDeliveryTime;
         if(r.carrier) existing.carrier = r.carrier;
         if(r.trackingNumber) existing.trackingNumber = r.trackingNumber;
+        if(r.pickupCode) existing.pickupCode = r.pickupCode;
         if(r.deliveryAddress && !existing.deliveryAddress) existing.deliveryAddress = r.deliveryAddress;
         if(r.recipientName && !existing.recipientName) existing.recipientName = r.recipientName;
         if(r.lineItems && r.lineItems.length && (!existing.lineItems || !existing.lineItems.length)) existing.lineItems = r.lineItems;
@@ -2165,13 +2227,13 @@ function mergeSyncResults(results){
           id: uid(), matchKey:key, retailer:r.retailer, price:r.price, fromEmail:r.fromEmail||null,
           orderDate:(r.date||new Date().toISOString()).slice(0,10),
           expectedDelivery:r.expectedDelivery, expectedDeliveryTime:r.expectedDeliveryTime||null,
-          carrier:r.carrier||null, trackingNumber:r.trackingNumber||null,
+          carrier:r.carrier||null, trackingNumber:r.trackingNumber||null, pickupCode:r.pickupCode||null,
           toEmail:r.toEmail||null, deliveryAddress:r.deliveryAddress||null, recipientName:r.recipientName||null, lineItems:r.lineItems||[],
           orderNumber:r.orderNumber, status:r.status, addedToStockId:null, isPKCPreorder:false
         });
       }
     } else if(r.status==="delivered"){
-      if(existing && existing.status!=="delivered"){
+      if(existing && existing.status!=="delivered" && existing.status!=="cancelled"){
         existing.status = "delivered";
         existing.actionDeadline = null;
         existing.actionDeadlineTime = null;
@@ -2203,11 +2265,11 @@ function mergeSyncResults(results){
       }
     }
   });
-  return addedCount;
+  return { addedCount, cancelledCount };
 }
 
 function statusRank(status){
-  return { confirmed:0, shipped:1, out_for_delivery:2, delivered:3 }[status] ?? -1;
+  return { confirmed:0, shipped:1, out_for_delivery:2, ready_for_collection:2, delivered:3, cancelled:4 }[status] ?? -1;
 }
 
 // Used to match a payment-issue email (which identifies the order by
@@ -2254,6 +2316,7 @@ function createPKCPreorderItem(order){
     needsAttention: false,
     attentionDeadline: null,
     attentionDeadlineTime: null,
+    isCancelled: false,
     image: null,
     sales: []
   };
@@ -2273,6 +2336,7 @@ function createStockItemFromOrder(order){
     notes: "Auto-added from email sync — please verify item name, quantity, and price.",
     isPreorder: false,
     expectedArrival: null,
+    isCancelled: false,
     image: null,
     sales: []
   };
