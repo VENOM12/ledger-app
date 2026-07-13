@@ -153,16 +153,20 @@ function showToast(msg, iconKey){
 
 /* ---------------- Root render ---------------- */
 
+let sidebarCollapsed = localStorage.getItem("restockSidebarCollapsed") === "true";
+
 function render(){
   const app = document.getElementById("app");
+  app.classList.toggle("collapsed", sidebarCollapsed);
   app.innerHTML = `
     <aside class="sidebar">
       <div class="brand">
-        <div class="mark">L</div>
-        <div>
+        <div class="mark">${ICONS.stock}</div>
+        <div class="info">
           <div class="name">Restock</div>
           <div class="ver" id="verLabel">v1.0 · desktop</div>
         </div>
+        <button class="collapse-toggle" id="collapseToggleBtn" title="${sidebarCollapsed ? 'Expand' : 'Collapse'} sidebar">${ICONS.chev}</button>
       </div>
       <div class="navlabel">Menu</div>
       <div class="nav">
@@ -175,9 +179,9 @@ function render(){
         ${navBtn("email","mail","Email Sync")}
       </div>
       <div class="sidebar-footer">
-        <div class="status-row"><span class="pulse"></span> Saved locally</div>
+        <div class="status-row"><span class="pulse"></span><span>Saved locally</span></div>
         <div id="updateBannerSlot"></div>
-        <button class="ghost-btn" id="settingsNavBtn">${ICONS.gear} Settings</button>
+        <button class="ghost-btn" id="settingsNavBtn">${ICONS.gear}<span>Settings</span></button>
       </div>
     </aside>
     <div class="main">
@@ -185,6 +189,12 @@ function render(){
       <div class="content" id="view"></div>
     </div>
   `;
+
+  document.getElementById("collapseToggleBtn").addEventListener("click", ()=>{
+    sidebarCollapsed = !sidebarCollapsed;
+    localStorage.setItem("restockSidebarCollapsed", sidebarCollapsed);
+    render();
+  });
 
   // Nav clicks are bound here — once, on the sidebar shell — so they keep
   // working no matter what's rendered in the content pane (including the
