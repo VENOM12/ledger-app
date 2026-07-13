@@ -41,6 +41,7 @@
       "provider": "github",
       "owner": "VENOM12",
       "repo": "ledger-app"
+      "draft": false
     },
     "nsis": {
       "oneClick": false,
