@@ -985,14 +985,23 @@ function preordersHTML(){
     <div style="display:flex;flex-direction:column;gap:12px;margin-top:14px;">
       ${preorders.map(i=>{
         const style = CAT_STYLES[i.category]||CAT_STYLES.Other;
+        const linkedOrder = state.pendingOrders.find(p=>p.addedToStockId===i.id);
         return `
-        <div class="card" style="padding:18px 20px;">
+        <div class="card" style="padding:18px 20px;${i.needsAttention ? "border-color:var(--red);box-shadow:0 0 0 1px var(--red);" : ""}">
+          ${i.needsAttention ? `
+          <div style="display:flex;align-items:center;gap:10px;background:var(--red-bg);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:14px;">
+            ${ICONS.close}
+            <div style="flex:1;min-width:0;">
+              <div style="font-weight:700;font-size:13px;color:var(--red);">Requires Attention — payment issue</div>
+              <div class="hint" style="margin:1px 0 0;">${i.attentionDeadline ? `Update payment before ${formatDate(i.attentionDeadline)}${i.attentionDeadlineTime ? " · "+escapeHTML(i.attentionDeadlineTime) : ""}, or the preorder may be cancelled.` : "Check your email for details, or the preorder may be cancelled."}</div>
+            </div>
+          </div>` : ""}
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;">
             <div style="display:flex;align-items:center;gap:12px;cursor:pointer;flex:1;min-width:0;" data-open="${i.id}">
               ${itemThumb(i,38)}
               <div style="min-width:0;">
-                <div style="font-weight:700;font-size:14.5px;">${escapeHTML(i.name)} ${i.sourceEmailDetected ? `<span class="status-chip chip-confirmed" style="vertical-align:middle;">Auto-detected</span>` : ""}</div>
-                <div class="hint" style="margin:2px 0 0;">${escapeHTML(i.category)} · ${escapeHTML(i.retailer||"Unknown retailer")}</div>
+                <div style="font-weight:700;font-size:14.5px;">${escapeHTML(i.name)} ${i.sourceEmailDetected ? `<span class="status-chip chip-confirmed" style="vertical-align:middle;">Auto-detected</span>` : ""} ${i.needsAttention ? `<span class="status-chip" style="vertical-align:middle;background:var(--red-bg);color:var(--red);">Requires Attention</span>` : ""}</div>
+                <div class="hint" style="margin:2px 0 0;">${escapeHTML(i.category)} · ${escapeHTML(i.retailer||"Unknown retailer")}${linkedOrder ? ` · ${statusChip(linkedOrder.status)}` : ""}</div>
               </div>
             </div>
             <button class="btn-small" data-arrived="${i.id}" style="flex-shrink:0;">${ICONS.check} Mark Arrived</button>
@@ -1002,6 +1011,7 @@ function preordersHTML(){
             ${kvRow("Order #", i.orderNumber ? escapeHTML(i.orderNumber) : "—")}
             ${kvRow("Ordered", formatDate(i.purchaseDate))}
             ${kvRow("Expected arrival", i.expectedArrival ? formatDate(i.expectedArrival) : "—")}
+            ${linkedOrder && linkedOrder.trackingNumber ? kvRow("Tracking", `${linkedOrder.carrier ? escapeHTML(linkedOrder.carrier)+" · " : ""}${escapeHTML(linkedOrder.trackingNumber)}`) : ""}
             ${kvRow("Cost", fmtMoney(totalCost(i)))}
             ${kvRow("Sent to", i.sentToEmail ? escapeHTML(i.sentToEmail) : "—")}
             ${kvRow("Recipient name", i.recipientName ? escapeHTML(i.recipientName) : "—")}
@@ -1755,7 +1765,8 @@ function statusChip(status){
     confirmed: ["chip-confirmed","Order Placed"],
     shipped: ["chip-shipped","Shipped"],
     out_for_delivery: ["chip-outfordelivery","Out for Delivery"],
-    delivered: ["chip-delivered","Delivered"]
+    delivered: ["chip-delivered","Delivered"],
+    action_required: ["chip-action-required","Requires Attention"]
   };
   const [cls, label] = map[status] || ["chip-confirmed", status];
   return `<span class="status-chip ${cls}">${label}</span>`;
@@ -2067,6 +2078,46 @@ function mergeSyncResults(results){
       return;
     }
 
+    if(r.status==="action_required"){
+      // "Please update your payment" emails identify the order by product
+      // name, not an order number — a real example had no order number
+      // anywhere in it. Matching by product name alone is unreliable
+      // though (the same product name can easily appear across two
+      // separate orders) — so the "sent to" address is the primary
+      // signal instead, which is reliable specifically when each order
+      // used its own alias/catch-all address. If that address matches
+      // more than one tracked preorder, product name narrows down just
+      // that subset. Name-only matching is a last resort, used only when
+      // there's no usable email match at all.
+      const candidates = state.items.filter(i=>i.isPreorder && i.sourceEmailDetected);
+      let matchedItem = null;
+
+      if(r.toEmail){
+        const emailMatches = candidates.filter(i => i.sentToEmail && i.sentToEmail.toLowerCase()===r.toEmail.toLowerCase());
+        if(emailMatches.length === 1){
+          matchedItem = emailMatches[0];
+        } else if(emailMatches.length > 1 && r.productNameHint){
+          matchedItem = emailMatches.find(i => namesLikelyMatch(i.name, r.productNameHint)) || null;
+        }
+      }
+      if(!matchedItem && r.productNameHint){
+        matchedItem = candidates.find(i => namesLikelyMatch(i.name, r.productNameHint)) || null;
+      }
+
+      if(matchedItem){
+        matchedItem.needsAttention = true;
+        matchedItem.attentionDeadline = r.deadlineDate || null;
+        matchedItem.attentionDeadlineTime = r.deadlineTime || null;
+        const linkedOrder = state.pendingOrders.find(p=>p.addedToStockId===matchedItem.id);
+        if(linkedOrder){
+          linkedOrder.status = "action_required";
+          linkedOrder.actionDeadline = r.deadlineDate || null;
+          linkedOrder.actionDeadlineTime = r.deadlineTime || null;
+        }
+      }
+      return;
+    }
+
     const key = r.orderNumber ? ("num:"+r.orderNumber) : ("guess:"+r.retailer.toLowerCase()+"|"+(r.price||0));
     let existing = state.pendingOrders.find(p=>p.matchKey===key);
 
@@ -2122,10 +2173,22 @@ function mergeSyncResults(results){
     } else if(r.status==="delivered"){
       if(existing && existing.status!=="delivered"){
         existing.status = "delivered";
+        existing.actionDeadline = null;
+        existing.actionDeadlineTime = null;
         if(!existing.addedToStockId){
           const item = createStockItemFromOrder(existing);
           existing.addedToStockId = item.id;
           addedCount++;
+        } else {
+          // Already-tracked item (e.g. a PKC preorder that was confirmed
+          // earlier) — a delivered email for it means it's arrived, so
+          // do automatically what the "Mark Arrived" button does.
+          const linkedItem = state.items.find(i=>i.id===existing.addedToStockId);
+          if(linkedItem && linkedItem.isPreorder){
+            linkedItem.isPreorder = false;
+            linkedItem.needsAttention = false;
+            addedCount++;
+          }
         }
       } else if(!existing){
         const orderDate = (r.date||new Date().toISOString()).slice(0,10);
@@ -2145,6 +2208,24 @@ function mergeSyncResults(results){
 
 function statusRank(status){
   return { confirmed:0, shipped:1, out_for_delivery:2, delivered:3 }[status] ?? -1;
+}
+
+// Used to match a payment-issue email (which identifies the order by
+// product name, not order number) against an existing tracked preorder.
+function normalizeForMatch(s){
+  return (s||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
+}
+function namesLikelyMatch(a, b){
+  const na = normalizeForMatch(a), nb = normalizeForMatch(b);
+  if(!na || !nb) return false;
+  if(na.includes(nb) || nb.includes(na)) return true;
+  const wordsA = na.split(" ").filter(w=>w.length>3);
+  const wordsB = nb.split(" ").filter(w=>w.length>3);
+  if(wordsA.length===0 || wordsB.length===0) return false;
+  const shorter = wordsA.length <= wordsB.length ? wordsA : wordsB;
+  const longerSet = new Set(wordsA.length <= wordsB.length ? wordsB : wordsA);
+  const overlap = shorter.filter(w=>longerSet.has(w)).length;
+  return overlap / shorter.length >= 0.6;
 }
 
 function createPKCPreorderItem(order){
@@ -2170,6 +2251,9 @@ function createPKCPreorderItem(order){
     sentToEmail: order.toEmail || null,
     lineItems: order.lineItems || [],
     sourceEmailDetected: true,
+    needsAttention: false,
+    attentionDeadline: null,
+    attentionDeadlineTime: null,
     image: null,
     sales: []
   };

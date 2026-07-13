@@ -1,6 +1,6 @@
 {
   "name": "restock-reseller-tracker",
-  "version": "1.0.9",
+  "version": "1.0.12",
   "description": "Purchase tracking, profit/ROI, and stock management for resellers",
   "main": "main.js",
   "private": true,
