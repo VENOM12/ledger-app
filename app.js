@@ -555,11 +555,9 @@ function addFormHTML(){
       <div class="field">
         <label>Quantity</label>
         <div class="stepper">
-          <span class="qty" id="qtyDisplay">${f.quantity}</span>
-          <div style="display:flex;gap:6px;">
-            <button id="qtyMinus">−</button>
-            <button id="qtyPlus">+</button>
-          </div>
+          <button id="qtyMinus">−</button>
+          <input type="number" class="qty-input" id="qtyInput" value="${f.quantity}" min="1" step="1">
+          <button id="qtyPlus">+</button>
         </div>
       </div>
       <div class="field">
@@ -621,6 +619,19 @@ function attachAddEvents(){
 
   byId("qtyMinus").addEventListener("click", ()=>{ f.quantity = Math.max(1, f.quantity-1); renderView(); });
   byId("qtyPlus").addEventListener("click", ()=>{ f.quantity += 1; renderView(); });
+  const qtyInput = byId("qtyInput");
+  qtyInput.addEventListener("input", e=>{
+    const n = parseInt(e.target.value, 10);
+    f.quantity = isNaN(n) ? 0 : n;
+    updateAddTotalDisplay();
+  });
+  qtyInput.addEventListener("blur", ()=>{
+    const corrected = Math.max(1, f.quantity||1);
+    if(corrected !== f.quantity){
+      f.quantity = corrected;
+      renderView();
+    }
+  });
 
   byId("f-price").addEventListener("input", e=>{ f.price = e.target.value; updateAddTotalDisplay(); });
   byId("f-retailer").addEventListener("input", e=>{ f.retailer = e.target.value; });
@@ -674,10 +685,6 @@ function savePurchase(){
    ============================================================ */
 
 function stockListHTML(){
-  const filtered = state.items.filter(i => !i.isPreorder)
-    .filter(i => ui.stockFilter==="In Stock" ? !isSoldOut(i) : isSoldOut(i))
-    .filter(i => !ui.search || i.name.toLowerCase().includes(ui.search.toLowerCase()));
-
   return `
     <div class="toolbar-row">
       <div class="segmented">
@@ -689,42 +696,62 @@ function stockListHTML(){
         <input type="text" id="searchInput" placeholder="Search stock" value="${escapeAttr(ui.search)}">
       </div>
     </div>
-    ${filtered.length===0 ? `
+    <div id="stockResultsContainer">${stockResultsHTML()}</div>
+    <div style="height:20px;"></div>
+  `;
+}
+
+function stockResultsHTML(){
+  const filtered = state.items.filter(i => !i.isPreorder)
+    .filter(i => ui.stockFilter==="In Stock" ? !isSoldOut(i) : isSoldOut(i))
+    .filter(i => !ui.search || i.name.toLowerCase().includes(ui.search.toLowerCase()));
+
+  if(filtered.length===0){
+    return `
       <div class="empty-state">
         ${ICONS.empty}
         <div class="t">${ui.stockFilter==="In Stock" ? "No stock yet" : "Nothing sold yet"}</div>
         <div class="d">${ui.stockFilter==="In Stock" ? "Items you add will show up here." : "Sold items will appear here."}</div>
       </div>
-    ` : `
-      <div class="card table-wrap" style="margin-top:14px;">
-        <table class="data-table">
-          <thead><tr><th>Item</th><th>Category</th><th>Left</th><th>Cost</th><th style="text-align:right;">Profit</th></tr></thead>
-          <tbody>
-            ${filtered.map(i=>{
-              const style = CAT_STYLES[i.category]||CAT_STYLES.Other;
-              const p = profit(i);
-              return `<tr data-id="${i.id}">
-                <td><div style="display:flex;align-items:center;gap:10px;">${catIcon(i.category,32)}<span style="font-weight:600;">${escapeHTML(i.name)}</span>${i.notes && i.notes.includes("Auto-added from email sync") ? `<span class="hint" style="margin:0;color:var(--gold);">needs review</span>` : ""}</div></td>
-                <td><span style="color:${style.fg};font-size:12px;font-weight:600;">${escapeHTML(i.category)}</span></td>
-                <td class="mono dim">${qtyRemaining(i)}/${i.quantityPurchased}</td>
-                <td class="mono">${fmtMoney(totalCost(i))}</td>
-                <td class="mono ${qtySold(i)>0?(p>=0?'pos':'neg'):'dim'}" style="text-align:right;">${qtySold(i)>0 ? (p>=0?'+':'')+fmtMoney(p) : '—'}</td>
-              </tr>`;
-            }).join("")}
-          </tbody>
-        </table>
-      </div>
-    `}
-    <div style="height:20px;"></div>
+    `;
+  }
+  return `
+    <div class="card table-wrap" style="margin-top:14px;">
+      <table class="data-table">
+        <thead><tr><th>Item</th><th>Category</th><th>Left</th><th>Cost</th><th style="text-align:right;">Profit</th></tr></thead>
+        <tbody>
+          ${filtered.map(i=>{
+            const style = CAT_STYLES[i.category]||CAT_STYLES.Other;
+            const p = profit(i);
+            return `<tr data-id="${i.id}">
+              <td><div style="display:flex;align-items:center;gap:10px;">${catIcon(i.category,32)}<span style="font-weight:600;">${escapeHTML(i.name)}</span>${i.notes && i.notes.includes("Auto-added from email sync") ? `<span class="hint" style="margin:0;color:var(--gold);">needs review</span>` : ""}</div></td>
+              <td><span style="color:${style.fg};font-size:12px;font-weight:600;">${escapeHTML(i.category)}</span></td>
+              <td class="mono dim">${qtyRemaining(i)}/${i.quantityPurchased}</td>
+              <td class="mono">${fmtMoney(totalCost(i))}</td>
+              <td class="mono ${qtySold(i)>0?(p>=0?'pos':'neg'):'dim'}" style="text-align:right;">${qtySold(i)>0 ? (p>=0?'+':'')+fmtMoney(p) : '—'}</td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
   `;
+}
+
+function renderStockResults(){
+  const container = document.getElementById("stockResultsContainer");
+  if(!container) return;
+  container.innerHTML = stockResultsHTML();
+  document.querySelectorAll("tr[data-id]").forEach(row=>{
+    row.addEventListener("click", ()=>{ ui.detailItemId = row.dataset.id; render(); });
+  });
 }
 
 function attachStockEvents(){
   document.querySelectorAll("[data-filter]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{ ui.stockFilter = btn.dataset.filter; renderView(); });
+    btn.addEventListener("click", ()=>{ ui.stockFilter = btn.dataset.filter; renderStockResults(); });
   });
   const search = document.getElementById("searchInput");
-  search.addEventListener("input", e=>{ ui.search = e.target.value; renderView(); document.getElementById("searchInput").focus(); });
+  search.addEventListener("input", e=>{ ui.search = e.target.value; renderStockResults(); });
   document.querySelectorAll("tr[data-id]").forEach(row=>{
     row.addEventListener("click", ()=>{ ui.detailItemId = row.dataset.id; render(); });
   });
@@ -753,7 +780,7 @@ function ordersHTML(){
         <thead><tr><th>Status</th><th>Retailer</th><th>Order #</th><th>Order Date</th><th>Carrier / Tracking</th><th>Est. Delivery</th><th>Price</th><th></th></tr></thead>
         <tbody>
           ${orders.map(p=>`
-            <tr>
+            <tr data-open-order="${p.id}">
               <td>${statusChip(p.status)}</td>
               <td>
                 <div style="font-weight:600;">${escapeHTML(p.retailer)}</div>
@@ -772,23 +799,86 @@ function ordersHTML(){
         </tbody>
       </table>
     </div>
+    <div class="hint" style="margin-top:10px;">Click any order for full details — what was bought, delivery address, and which email it was sent to.</div>
     <div style="height:20px;"></div>
   `;
 }
 
+function orderDetailModal(orderId){
+  const p = state.pendingOrders.find(o=>o.id===orderId);
+  if(!p) return;
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open" id="orderDetailBackdrop">
+      <div class="modal" style="width:520px;">
+        <div class="modal-header">
+          <h2>${escapeHTML(p.retailer)}</h2>
+          <button class="icon-btn" id="closeOrderDetail">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          <div style="margin-bottom:14px;">${statusChip(p.status)}</div>
+          <div class="card kv-card">
+            ${kvRow("Order #", p.orderNumber ? escapeHTML(p.orderNumber) : "—")}
+            ${kvRow("Order date", p.orderDate ? formatDate(p.orderDate) : "—")}
+            ${kvRow("Price", p.price!=null ? fmtMoney(p.price) : "—")}
+            ${kvRow("Carrier", p.carrier ? escapeHTML(p.carrier) : "—")}
+            ${kvRow("Tracking number", p.trackingNumber ? escapeHTML(p.trackingNumber) : "—")}
+            ${kvRow("Estimated delivery", p.expectedDelivery ? formatDate(p.expectedDelivery) + (p.expectedDeliveryTime ? " · "+escapeHTML(p.expectedDeliveryTime) : "") : "—")}
+            ${kvRow("Sent to", p.toEmail ? escapeHTML(p.toEmail) : "—")}
+            ${kvRow("Recipient name", p.recipientName ? escapeHTML(p.recipientName) : "—")}
+            ${kvRow("Delivery address", p.deliveryAddress ? escapeHTML(p.deliveryAddress) : "—")}
+          </div>
+
+          ${p.lineItems && p.lineItems.length>0 ? `
+            <div class="hint" style="margin:14px 0 6px;">What was bought:</div>
+            <div class="card table-wrap" style="box-shadow:none;">
+              <table class="data-table">
+                <thead><tr><th>Item</th><th>Qty</th><th style="text-align:right;">Price</th></tr></thead>
+                <tbody>
+                  ${p.lineItems.map(li=>`<tr><td>${escapeHTML(li.name)}</td><td class="mono dim">${li.quantity}</td><td class="mono" style="text-align:right;">${fmtMoney(li.price)}</td></tr>`).join("")}
+                </tbody>
+              </table>
+            </div>
+          ` : `<div class="hint" style="margin-top:14px;">No itemized product list could be found in this order's emails.</div>`}
+
+          ${p.addedToStockId && state.items.find(i=>i.id===p.addedToStockId) ? `
+            <div style="height:16px;"></div>
+            <button class="btn-primary block" id="orderDetailViewStock">View in Stock ${ICONS.chev}</button>
+          ` : ""}
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("closeOrderDetail").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
+  const viewStockBtn = document.getElementById("orderDetailViewStock");
+  if(viewStockBtn) viewStockBtn.addEventListener("click", ()=>{
+    document.getElementById("modalRoot").innerHTML = "";
+    ui.detailItemId = p.addedToStockId;
+    render();
+  });
+}
+
 function attachOrdersEvents(){
+  document.querySelectorAll("[data-open-order]").forEach(row=>{
+    row.addEventListener("click", (e)=>{
+      if(e.target.closest("button")) return; // let the row's own buttons handle their own clicks
+      orderDetailModal(row.dataset.openOrder);
+    });
+  });
   document.querySelectorAll("[data-block]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{
+    btn.addEventListener("click", (e)=>{
+      e.stopPropagation();
       const email = btn.dataset.block;
       const domain = email.split("@")[1] || email;
       addExclusion(domain, true);
     });
   });
   document.querySelectorAll("[data-view]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{ ui.detailItemId = btn.dataset.view; render(); });
+    btn.addEventListener("click", (e)=>{ e.stopPropagation(); ui.detailItemId = btn.dataset.view; render(); });
   });
   document.querySelectorAll("[data-remove]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{
+    btn.addEventListener("click", (e)=>{
+      e.stopPropagation();
       state.pendingOrders = state.pendingOrders.filter(p=>p.id!==btn.dataset.remove);
       saveState();
       renderView();
@@ -885,16 +975,6 @@ const PLATFORMS = ["eBay", "Facebook Marketplace", "Mercari", "Local / Cash", "O
 let soldUI = { platformFilter: "All", search: "" };
 
 function soldHTML(){
-  const allSales = [];
-  state.items.forEach(item => item.sales.forEach(sale => allSales.push({item, sale})));
-  allSales.sort((a,b)=> new Date(b.sale.saleDate) - new Date(a.sale.saleDate));
-
-  const filtered = allSales
-    .filter(p => soldUI.platformFilter==="All" || (p.sale.platform||"Other")===soldUI.platformFilter)
-    .filter(p => !soldUI.search || p.item.name.toLowerCase().includes(soldUI.search.toLowerCase()));
-
-  const totalNetAll = filtered.reduce((s,p)=>s+saleNet(p.sale),0);
-
   return `
     <div class="toolbar-row">
       <select id="platformFilterSelect" style="width:auto;padding:9px 30px 9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
@@ -906,49 +986,74 @@ function soldHTML(){
         <input type="text" id="soldSearchInput" placeholder="Search sold items" value="${escapeAttr(soldUI.search)}">
       </div>
     </div>
+    <div id="soldResultsContainer">${soldResultsHTML()}</div>
+    <div style="height:20px;"></div>
+  `;
+}
 
-    ${filtered.length===0 ? `
+function soldResultsHTML(){
+  const allSales = [];
+  state.items.forEach(item => item.sales.forEach(sale => allSales.push({item, sale})));
+  allSales.sort((a,b)=> new Date(b.sale.saleDate) - new Date(a.sale.saleDate));
+
+  const filtered = allSales
+    .filter(p => soldUI.platformFilter==="All" || (p.sale.platform||"Other")===soldUI.platformFilter)
+    .filter(p => !soldUI.search || p.item.name.toLowerCase().includes(soldUI.search.toLowerCase()));
+
+  const totalNetAll = filtered.reduce((s,p)=>s+saleNet(p.sale),0);
+
+  if(filtered.length===0){
+    return `
       <div class="empty-state">
         ${ICONS.empty}
         <div class="t">Nothing sold yet</div>
         <div class="d">Sales you record — manually or via email sync — show up here.</div>
       </div>
-    ` : `
-      <div class="mini-grid" style="grid-template-columns:1fr;margin-top:14px;margin-bottom:0;">
-        ${miniCard("cash", `Net Proceeds (${filtered.length} sale${filtered.length===1?"":"s"})`, fmtMoney(totalNetAll), "var(--green)","var(--green-bg)")}
-      </div>
-      <div class="card table-wrap" style="margin-top:14px;">
-        <table class="data-table">
-          <thead><tr><th>Date</th><th>Item</th><th>Platform</th><th>Qty</th><th>Gross</th><th>Fees</th><th>Net</th><th style="text-align:right;">Profit</th></tr></thead>
-          <tbody>
-            ${filtered.map(({item,sale})=>{
-              const net = saleNet(sale);
-              const itemProfit = net - sale.quantitySold*item.purchasePricePerUnit;
-              return `<tr data-open="${item.id}">
-                <td class="mono dim">${formatDate(sale.saleDate)}</td>
-                <td style="font-weight:600;">${escapeHTML(item.name)}</td>
-                <td class="dim">${escapeHTML(sale.platform||"—")}</td>
-                <td class="mono dim">${sale.quantitySold}</td>
-                <td class="mono">${fmtMoney(saleRevenue(sale))}</td>
-                <td class="mono dim">${sale.fees ? "-"+fmtMoney(sale.fees) : "—"}</td>
-                <td class="mono" style="font-weight:600;">${fmtMoney(net)}</td>
-                <td class="mono ${itemProfit>=0?'pos':'neg'}" style="text-align:right;">${itemProfit>=0?'+':''}${fmtMoney(itemProfit)}</td>
-              </tr>`;
-            }).join("")}
-          </tbody>
-        </table>
-      </div>
-    `}
-    <div style="height:20px;"></div>
+    `;
+  }
+  return `
+    <div class="mini-grid" style="grid-template-columns:1fr;margin-top:14px;margin-bottom:0;">
+      ${miniCard("cash", `Net Proceeds (${filtered.length} sale${filtered.length===1?"":"s"})`, fmtMoney(totalNetAll), "var(--green)","var(--green-bg)")}
+    </div>
+    <div class="card table-wrap" style="margin-top:14px;">
+      <table class="data-table">
+        <thead><tr><th>Date</th><th>Item</th><th>Platform</th><th>Qty</th><th>Gross</th><th>Fees</th><th>Net</th><th style="text-align:right;">Profit</th></tr></thead>
+        <tbody>
+          ${filtered.map(({item,sale})=>{
+            const net = saleNet(sale);
+            const itemProfit = net - sale.quantitySold*item.purchasePricePerUnit;
+            return `<tr data-open="${item.id}">
+              <td class="mono dim">${formatDate(sale.saleDate)}</td>
+              <td style="font-weight:600;">${escapeHTML(item.name)}</td>
+              <td class="dim">${escapeHTML(sale.platform||"—")}</td>
+              <td class="mono dim">${sale.quantitySold}</td>
+              <td class="mono">${fmtMoney(saleRevenue(sale))}</td>
+              <td class="mono dim">${sale.fees ? "-"+fmtMoney(sale.fees) : "—"}</td>
+              <td class="mono" style="font-weight:600;">${fmtMoney(net)}</td>
+              <td class="mono ${itemProfit>=0?'pos':'neg'}" style="text-align:right;">${itemProfit>=0?'+':''}${fmtMoney(itemProfit)}</td>
+            </tr>`;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
   `;
+}
+
+function renderSoldResults(){
+  const container = document.getElementById("soldResultsContainer");
+  if(!container) return;
+  container.innerHTML = soldResultsHTML();
+  document.querySelectorAll("tr[data-open]").forEach(row=>{
+    row.addEventListener("click", ()=>{ ui.detailItemId = row.dataset.open; render(); });
+  });
 }
 
 function attachSoldEvents(){
   document.getElementById("platformFilterSelect").addEventListener("change", e=>{
-    soldUI.platformFilter = e.target.value; renderView();
+    soldUI.platformFilter = e.target.value; renderSoldResults();
   });
   const search = document.getElementById("soldSearchInput");
-  search.addEventListener("input", e=>{ soldUI.search = e.target.value; renderView(); document.getElementById("soldSearchInput").focus(); });
+  search.addEventListener("input", e=>{ soldUI.search = e.target.value; renderSoldResults(); });
   document.querySelectorAll("tr[data-open]").forEach(row=>{
     row.addEventListener("click", ()=>{ ui.detailItemId = row.dataset.open; render(); });
   });
@@ -1207,11 +1312,10 @@ function renderSellSheet(){
           <div class="field">
             <label>Quantity sold (${remaining} available)</label>
             <div class="stepper">
-              <span class="qty" id="sellQtyDisplay">${f.quantity}</span>
-              <div style="display:flex;gap:6px;">
-                <button id="sellQtyMinus">−</button>
-                <button id="sellQtyPlus">+</button>
-              </div>
+              <button id="sellQtyMinus">−</button>
+              <input type="number" class="qty-input" id="sellQtyInput" value="${f.quantity}" min="1" max="${remaining}" step="1">
+              <button id="sellQtyPlus">+</button>
+              <button class="max-btn" id="sellQtyMax">Max</button>
             </div>
           </div>
           <div class="field">
@@ -1258,6 +1362,26 @@ function renderSellSheet(){
   document.getElementById("closeSell").addEventListener("click", closeSellSheet);
   document.getElementById("sellQtyMinus").addEventListener("click", ()=>{ f.quantity = Math.max(1,f.quantity-1); renderSellSheet(); });
   document.getElementById("sellQtyPlus").addEventListener("click", ()=>{ f.quantity = Math.min(remaining, f.quantity+1); renderSellSheet(); });
+  document.getElementById("sellQtyMax").addEventListener("click", ()=>{ f.quantity = remaining; renderSellSheet(); });
+  const sellQtyInput = document.getElementById("sellQtyInput");
+  sellQtyInput.addEventListener("input", e=>{
+    // Don't rewrite the input's own value while the person is mid-keystroke —
+    // that resets the cursor and causes the exact "backwards typing" bug
+    // fixed earlier. Just track the raw number and update totals live;
+    // out-of-range values get corrected on blur instead, once they're done typing.
+    const n = parseInt(e.target.value, 10);
+    f.quantity = isNaN(n) ? 0 : n;
+    updateSellTotals();
+    const confirmBtn = document.getElementById("confirmSellBtn");
+    if(confirmBtn) confirmBtn.disabled = !(f.quantity>=1 && f.quantity<=remaining);
+  });
+  sellQtyInput.addEventListener("blur", ()=>{
+    const corrected = Math.min(remaining, Math.max(1, f.quantity||1));
+    if(corrected !== f.quantity){
+      f.quantity = corrected;
+      renderSellSheet();
+    }
+  });
   document.getElementById("s-platform").addEventListener("change", e=>{ f.platform = e.target.value; });
   document.getElementById("s-price").addEventListener("input", e=>{ f.price = e.target.value; updateSellTotals(); });
   document.getElementById("s-fees").addEventListener("input", e=>{ f.fees = e.target.value; updateSellTotals(); });
@@ -1318,11 +1442,14 @@ let emailUI = {
   formHost: PROVIDER_PRESETS.gmail.host,
   formPort: PROVIDER_PRESETS.gmail.port,
   formSecure: true,
-  formCatchAll: "",
+  formCatchAllList: [],
+  formCatchAllInput: "",
   connecting: false,
   error: null,
   syncing: false,
-  editingCatchAll: false
+  editingCatchAll: false,
+  editCatchAllList: [],
+  editCatchAllInput: ""
 };
 
 async function refreshAccountInfo(){
@@ -1384,9 +1511,17 @@ function emailConnectFormHTML(){
       </div>` : ""}
 
       <div class="field">
-        <label>Catch-all domain (optional)</label>
-        <input type="text" id="e-catchall" value="${escapeAttr(f.formCatchAll)}" placeholder="@yourdomain.com">
-        <div class="hint">If you use a custom domain where every address routes to one inbox (e.g. anything@yourdomain.com), enter the domain here — any order email addressed to that domain gets picked up, regardless of which specific address was used at checkout.</div>
+        <label>Catch-all domains (optional, you can add more than one)</label>
+        <div class="chip-list" id="formCatchAllChips">
+          ${f.formCatchAllList.length===0 ? `<span class="hint" style="margin:0;">None added yet.</span>` : f.formCatchAllList.map(d=>`
+            <span class="excl-chip">${escapeHTML(d)}<button data-remove-form-catchall="${escapeAttr(d)}">${ICONS.close}</button></span>
+          `).join("")}
+        </div>
+        <div class="add-exclusion-row">
+          <input type="text" id="e-catchall" value="${escapeAttr(f.formCatchAllInput)}" placeholder="@yourdomain.com">
+          <button class="btn-small" id="addFormCatchAllBtn">${ICONS.plus} Add</button>
+        </div>
+        <div class="hint">If you use a custom domain where every address routes to one inbox (e.g. anything@yourdomain.com), add it here — any order email addressed to that domain gets picked up, regardless of which specific address was used at checkout. Add as many domains as you use.</div>
       </div>
 
       ${f.error ? `<div class="hint" style="color:var(--red);">${escapeHTML(f.error)}</div>` : ""}
@@ -1416,19 +1551,25 @@ function emailConnectedHTML(){
     </div>
 
     <div class="card panel" style="margin-bottom:20px;">
-      <div class="panel-title" style="margin-bottom:10px;">Catch-All Domain</div>
+      <div class="panel-title" style="margin-bottom:10px;">Catch-All Domains</div>
       ${emailUI.editingCatchAll ? `
-        <div class="field" style="margin-bottom:8px;">
-          <input type="text" id="catchAllInput" value="${escapeAttr(acc.catchAllEmail || '')}" placeholder="@yourdomain.com">
+        <div class="chip-list" id="editCatchAllChips" style="margin-bottom:10px;">
+          ${emailUI.editCatchAllList.length===0 ? `<span class="hint" style="margin:0;">None added yet.</span>` : emailUI.editCatchAllList.map(d=>`
+            <span class="excl-chip">${escapeHTML(d)}<button data-remove-edit-catchall="${escapeAttr(d)}">${ICONS.close}</button></span>
+          `).join("")}
+        </div>
+        <div class="add-exclusion-row" style="margin-bottom:10px;">
+          <input type="text" id="catchAllInput" value="${escapeAttr(emailUI.editCatchAllInput)}" placeholder="@yourdomain.com">
+          <button class="btn-small" id="addEditCatchAllBtn">${ICONS.plus} Add</button>
         </div>
         <div style="display:flex;gap:8px;">
           <button class="btn-small" id="saveCatchAllBtn">Save</button>
           <button class="btn-small" id="cancelCatchAllBtn">Cancel</button>
         </div>
       ` : `
-        <div style="display:flex;align-items:center;justify-content:space-between;">
-          <div class="hint" style="margin:0;">${acc.catchAllEmail ? `Routing: <strong style="color:var(--text);">any address @${escapeHTML(acc.catchAllEmail.replace(/^@/,''))}</strong>` : "No catch-all domain set — using keyword detection on your inbox only."}</div>
-          <button class="btn-small" id="editCatchAllBtn">${acc.catchAllEmail ? "Edit" : "Add"}</button>
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
+          <div class="hint" style="margin:0;">${(acc.catchAllDomains && acc.catchAllDomains.length) ? `Routing: ${acc.catchAllDomains.map(d=>`<strong style="color:var(--text);">${escapeHTML(d)}</strong>`).join(", ")}` : "No catch-all domains set — using keyword detection on your inbox only."}</div>
+          <button class="btn-small" id="editCatchAllBtn" style="flex-shrink:0;">${(acc.catchAllDomains && acc.catchAllDomains.length) ? "Edit" : "Add"}</button>
         </div>
       `}
     </div>
@@ -1529,7 +1670,20 @@ function attachEmailEvents(){
     const portInput = document.getElementById("e-port");
     if(portInput) portInput.addEventListener("input", e=>{ emailUI.formPort = parseInt(e.target.value,10)||993; });
     const catchAllInput = document.getElementById("e-catchall");
-    if(catchAllInput) catchAllInput.addEventListener("input", e=>{ emailUI.formCatchAll = e.target.value; });
+    if(catchAllInput) catchAllInput.addEventListener("input", e=>{ emailUI.formCatchAllInput = e.target.value; });
+    const addFormCatchAllBtn = document.getElementById("addFormCatchAllBtn");
+    if(addFormCatchAllBtn) addFormCatchAllBtn.addEventListener("click", ()=>{
+      const val = normalizeCatchAllDomain(emailUI.formCatchAllInput);
+      if(val && !emailUI.formCatchAllList.includes(val)) emailUI.formCatchAllList.push(val);
+      emailUI.formCatchAllInput = "";
+      renderView();
+    });
+    document.querySelectorAll("[data-remove-form-catchall]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        emailUI.formCatchAllList = emailUI.formCatchAllList.filter(d=>d!==btn.dataset.removeFormCatchall);
+        renderView();
+      });
+    });
 
     const connectBtn = document.getElementById("connectBtn");
     if(connectBtn) connectBtn.addEventListener("click", connectEmailAccount);
@@ -1549,15 +1703,35 @@ function attachEmailEvents(){
       });
     });
     const editCatchAllBtn = document.getElementById("editCatchAllBtn");
-    if(editCatchAllBtn) editCatchAllBtn.addEventListener("click", ()=>{ emailUI.editingCatchAll = true; renderView(); });
+    if(editCatchAllBtn) editCatchAllBtn.addEventListener("click", ()=>{
+      emailUI.editingCatchAll = true;
+      emailUI.editCatchAllList = (emailUI.accountInfo.catchAllDomains || []).slice();
+      emailUI.editCatchAllInput = "";
+      renderView();
+    });
     const cancelCatchAllBtn = document.getElementById("cancelCatchAllBtn");
     if(cancelCatchAllBtn) cancelCatchAllBtn.addEventListener("click", ()=>{ emailUI.editingCatchAll = false; renderView(); });
+    const catchAllEditInput = document.getElementById("catchAllInput");
+    if(catchAllEditInput) catchAllEditInput.addEventListener("input", e=>{ emailUI.editCatchAllInput = e.target.value; });
+    const addEditCatchAllBtn = document.getElementById("addEditCatchAllBtn");
+    if(addEditCatchAllBtn) addEditCatchAllBtn.addEventListener("click", ()=>{
+      const val = normalizeCatchAllDomain(emailUI.editCatchAllInput);
+      if(val && !emailUI.editCatchAllList.includes(val)) emailUI.editCatchAllList.push(val);
+      emailUI.editCatchAllInput = "";
+      renderView();
+    });
+    document.querySelectorAll("[data-remove-edit-catchall]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        emailUI.editCatchAllList = emailUI.editCatchAllList.filter(d=>d!==btn.dataset.removeEditCatchall);
+        renderView();
+      });
+    });
     const saveCatchAllBtn = document.getElementById("saveCatchAllBtn");
     if(saveCatchAllBtn) saveCatchAllBtn.addEventListener("click", async ()=>{
-      const val = normalizeCatchAllDomain(document.getElementById("catchAllInput").value);
-      await window.emailAPI.updateCatchAll({ catchAllEmail: val });
+      const list = emailUI.editCatchAllList;
+      await window.emailAPI.updateCatchAll({ catchAllDomains: list });
       emailUI.editingCatchAll = false;
-      showToast(val ? "Catch-all domain saved" : "Catch-all domain removed");
+      showToast(list.length ? `${list.length} catch-all domain${list.length===1?"":"s"} saved` : "Catch-all domains cleared");
       await refreshAccountInfo();
     });
 
@@ -1692,7 +1866,7 @@ async function connectEmailAccount(){
       host: f.formHost,
       port: f.formPort,
       secure: f.formSecure,
-      catchAllEmail: normalizeCatchAllDomain(f.formCatchAll)
+      catchAllDomains: f.formCatchAllList
     });
     f.connecting = false;
     if(res.ok){
@@ -1714,7 +1888,7 @@ async function connectEmailAccount(){
 async function disconnectEmail(){
   if(!confirm("Disconnect this email account? Your existing stock and detected orders stay put — you just won't sync anymore until you reconnect.")) return;
   await window.emailAPI.disconnect();
-  emailUI = { ...emailUI, accountInfo: null, formEmail:"", formPassword:"", formCatchAll:"" };
+  emailUI = { ...emailUI, accountInfo: null, formEmail:"", formPassword:"", formCatchAllList:[], formCatchAllInput:"" };
   stopAutoSync();
   renderView();
 }
@@ -1805,6 +1979,7 @@ function mergeSyncResults(results){
           orderDate:(r.date||new Date().toISOString()).slice(0,10),
           expectedDelivery:r.expectedDelivery, expectedDeliveryTime:r.expectedDeliveryTime||null,
           carrier:r.carrier||null, trackingNumber:r.trackingNumber||null,
+          toEmail:r.toEmail||null, deliveryAddress:r.deliveryAddress||null, recipientName:r.recipientName||null, lineItems:r.lineItems||[],
           orderNumber:r.orderNumber, status:"confirmed", addedToStockId:null, isPKCPreorder:false
         });
       }
@@ -1815,12 +1990,16 @@ function mergeSyncResults(results){
         if(r.expectedDeliveryTime) existing.expectedDeliveryTime = r.expectedDeliveryTime;
         if(r.carrier) existing.carrier = r.carrier;
         if(r.trackingNumber) existing.trackingNumber = r.trackingNumber;
+        if(r.deliveryAddress && !existing.deliveryAddress) existing.deliveryAddress = r.deliveryAddress;
+        if(r.recipientName && !existing.recipientName) existing.recipientName = r.recipientName;
+        if(r.lineItems && r.lineItems.length && (!existing.lineItems || !existing.lineItems.length)) existing.lineItems = r.lineItems;
       } else if(!existing){
         state.pendingOrders.unshift({
           id: uid(), matchKey:key, retailer:r.retailer, price:r.price, fromEmail:r.fromEmail||null,
           orderDate:(r.date||new Date().toISOString()).slice(0,10),
           expectedDelivery:r.expectedDelivery, expectedDeliveryTime:r.expectedDeliveryTime||null,
           carrier:r.carrier||null, trackingNumber:r.trackingNumber||null,
+          toEmail:r.toEmail||null, deliveryAddress:r.deliveryAddress||null, recipientName:r.recipientName||null, lineItems:r.lineItems||[],
           orderNumber:r.orderNumber, status:r.status, addedToStockId:null, isPKCPreorder:false
         });
       }
@@ -2001,7 +2180,7 @@ function updateStatusMessage(){
     case "downloading": return v + `Downloading update… ${updateState.data?.percent||0}%`;
     case "downloaded": return v + `Update v${updateState.data?.version||""} ready to install.`;
     case "none": return v + "You're up to date.";
-    case "error": return v + `Couldn't check for updates (${updateState.data?.message||"unknown error"}). This is expected until update hosting is configured — see README.`;
+    case "error": return v + `Couldn't check for updates (${updateState.data?.message||"unknown error"}). If you haven't set up GitHub Releases yet, this is expected — see README. If you have, try "Check for Updates" again, or confirm a release exists at your repo's Releases page.`;
     default: return v + "No update check has run yet.";
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "ledger-reseller-tracker",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Purchase tracking, profit/ROI, and stock management for resellers",
   "main": "main.js",
   "private": true,
@@ -39,8 +39,8 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "YOUR-GITHUB-USERNAME",
-      "repo": "YOUR-REPO-NAME"
+      "owner": "VENOM12",
+      "repo": "ledger-app"
     },
     "nsis": {
       "oneClick": false,

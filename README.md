@@ -25,6 +25,40 @@ Look in the `release` folder for `Ledger Setup 1.0.0.exe`.
 
 ## What's new in this version
 
+- **Quantity fields are now actually typeable.** The quantity stepper in
+  Mark as Sold and Add Purchase used to be a plain +/− with no way to type
+  a number directly — had to click 40 times to sell 40 units. Now you can
+  type the number straight in.
+- **"Max" button in Mark as Sold** — sets the quantity to however much of
+  that item you have in stock, in one click.
+- **Found and fixed a subtler race condition while building this**: clicking
+  "Max" right after typing a number could silently do nothing, because
+  clicking the button first blurs the quantity field, which was
+  unconditionally re-rendering the modal — destroying and recreating the
+  Max button in the middle of the click, so the click landed on nothing.
+  Fixed by only re-rendering on blur when a correction is actually needed.
+
+- **Fixed backwards typing in search boxes** (Stock and Sold tabs). Same
+  root cause as the earlier price-field focus bug: every keystroke was
+  rebuilding the whole search box from scratch, and refocusing a
+  freshly-rebuilt input resets the cursor to the very start rather than
+  the end — so each new character got inserted at position 0, building
+  the word backwards ("booster" → "retsoob"). Fixed by having the search
+  boxes update just the results underneath them, never touching the input
+  itself while you're typing in it.
+
+- **Orders are now clickable.** Click any row in the Orders tab to see full
+  details: what was bought (itemized, when the email lists it), the email
+  address it was sent to, delivery address, recipient name, price, carrier,
+  and tracking number. This detail extraction used to only run for Pokémon
+  Center preorders — it now runs on every order.
+- **Multiple catch-all domains.** You're no longer limited to one — add as
+  many domains as you use (e.g. different aliases for different retailers)
+  under Email Sync, both when first connecting and afterward via Edit.
+- **Existing installs migrate automatically** if you were using the old
+  single catch-all field — it becomes the first entry in your new list, no
+  action needed on your end.
+
 - **New "Orders" tab** — every detected purchase order, tracked through a
   proper status lifecycle: **Order Placed** (confirmation seen, nothing
   further yet) → **Shipped** → **Out for Delivery** (now its own distinct
