@@ -1,6 +1,6 @@
 {
   "name": "ledger-reseller-tracker",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Purchase tracking, profit/ROI, and stock management for resellers",
   "main": "main.js",
   "private": true,
