@@ -33,20 +33,14 @@
     ],
     "win": {
       "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
+        { "target": "nsis", "arch": ["x64"] }
       ],
       "icon": "icon.ico"
     },
     "publish": {
       "provider": "github",
       "owner": "VENOM12",
-      "repo": "ledger-app",
-      "draft": false
+      "repo": "ledger-app"
     },
     "nsis": {
       "oneClick": false,
