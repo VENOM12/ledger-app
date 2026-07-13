@@ -1,0 +1,52 @@
+{
+  "name": "ledger-reseller-tracker",
+  "version": "1.0.0",
+  "description": "Purchase tracking, profit/ROI, and stock management for resellers",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "imapflow": "^1.0.171",
+    "mailparser": "^3.7.1",
+    "electron-updater": "^6.3.0"
+  },
+  "build": {
+    "appId": "com.ledger.resellertracker",
+    "productName": "Ledger",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "app.js",
+      "icon.ico",
+      "node_modules/**/*"
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "icon": "icon.ico"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "YOUR-GITHUB-USERNAME",
+      "repo": "YOUR-REPO-NAME"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
