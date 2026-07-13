@@ -25,6 +25,44 @@ Look in the `release` folder for `Ledger Setup 1.0.0.exe`.
 
 ## What's new in this version
 
+- **Fixed repeat "X emails synced" notifications for the same emails.**
+  Root cause: IMAP's date search only works at day-granularity (no
+  time-of-day), so every 60-second sync was re-scanning the entire
+  current day's matching emails — nothing was actually being duplicated in
+  your data, but the notification was reporting the raw count found each
+  time, which stayed constant all day. Fixed by tracking each email's
+  unique Message-ID once it's been looked at, so already-seen emails are
+  now skipped entirely on repeat syncs — both for the notification and to
+  avoid needlessly re-fetching the same email bodies over and over.
+  Verified with a two-email test: first sync found both, second sync
+  (simulating the same day) found zero, exactly as intended.
+
+- **Fixed: clicking outside a stuck modal (or pressing Escape) now closes
+  it.** This is very likely what caused "can't click Settings" — modals in
+  this app intentionally cover the entire window while open (so background
+  clicks can't accidentally do something mid-dialog), but there was no way
+  to dismiss one except its own explicit buttons. If the new update-popup
+  system opened one at a moment that wasn't obvious, it would silently
+  block every click behind it, including the sidebar. Confirmed this
+  exact scenario and the fix in testing: reproduced the block, then
+  confirmed both outside-click and Escape restore access.
+- **Fixed `package.json` for real this time.** The corrected file I'd been
+  sending you separately was never actually synced into these project
+  zips — they were still carrying the original placeholder template
+  (`YOUR-GITHUB-USERNAME`, version `1.0.0`) the whole time. If you'd ever
+  copied the whole folder over, it would've silently reverted your
+  settings again, which is exactly what happened last time. It's fixed in
+  this zip now (`VENOM12` / `ledger-app` / `1.0.3`) — worth double
+  checking it still shows your correct values before your next build.
+
+- **Update popups**, replacing the silent background download. When a new
+  version is found, you get an actual popup — Update Now or Later. If you
+  choose Now, a progress bar shows the download happening in real time
+  (you can hide it and keep working; it keeps going in the background,
+  with the sidebar showing a live percentage). Once downloaded, another
+  popup asks Restart Now or Later. Nothing downloads or installs without
+  you saying yes to each step.
+
 - **Custom dark title bar**, matching the app's theme instead of the plain
   default Windows one. The real minimize/maximize/close buttons are still
   there (snap layouts, etc. all still work) — just recolored to match. I

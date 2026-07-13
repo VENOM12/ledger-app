@@ -2304,6 +2304,23 @@ function escapeAttr(str){ return escapeHTML(str); }
 
 /* ---------------- Boot ---------------- */
 
+// Safety net: any open modal can now be dismissed by clicking the dark
+// area outside it, or pressing Escape — not just its own buttons. Without
+// this, a modal that opens unexpectedly (e.g. from a background update
+// check) silently blocks every click behind it, including the sidebar,
+// with no obvious way out.
+document.getElementById("modalRoot").addEventListener("click", (e)=>{
+  if(e.target.classList.contains("modal-backdrop")){
+    document.getElementById("modalRoot").innerHTML = "";
+  }
+});
+document.addEventListener("keydown", (e)=>{
+  if(e.key==="Escape"){
+    const root = document.getElementById("modalRoot");
+    if(root.innerHTML.trim()!=="") root.innerHTML = "";
+  }
+});
+
 render();
 initUpdater();
 refreshAccountInfo(); // loads email account status regardless of active tab, so auto-sync can start
