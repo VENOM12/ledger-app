@@ -67,7 +67,9 @@ function sendUpdateStatus(status, data) {
 function setupAutoUpdater() {
   if (!app.isPackaged) return; // updater APIs error out on unpackaged dev builds
 
-  autoUpdater.autoDownload = true;
+  // Don't download automatically — wait for the person to say "Update Now"
+  // in the popup, so it's their choice whether to spend the bandwidth/time.
+  autoUpdater.autoDownload = false;
   autoUpdater.on('checking-for-update', () => sendUpdateStatus('checking'));
   autoUpdater.on('update-available', (info) => sendUpdateStatus('available', { version: info.version }));
   autoUpdater.on('update-not-available', () => sendUpdateStatus('none'));
@@ -83,6 +85,15 @@ ipcMain.handle('updater:check', async () => {
   if (!app.isPackaged) return { ok: false, error: 'Updates only run in a packaged build, not "npm start".' };
   try {
     await autoUpdater.checkForUpdates();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('updater:download', async () => {
+  try {
+    await autoUpdater.downloadUpdate();
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };

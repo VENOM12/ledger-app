@@ -2082,15 +2082,31 @@ function createStockItemFromOrder(order){
    AUTO-UPDATER
    ============================================================ */
 
-let updateState = { status: "idle", data: null, appVersion: null };
+let updateState = { status: "idle", data: null, appVersion: null, dismissedVersion: null };
 
 async function initUpdater(){
   if(!window.updaterAPI) return; // not running under Electron preload (e.g. dev preview)
   try{ updateState.appVersion = await window.updaterAPI.getVersion(); }catch(e){}
   window.updaterAPI.onStatus(({status, data})=>{
+    const prevStatus = updateState.status;
     updateState.status = status;
     updateState.data = data;
     renderUpdateBanner();
+
+    if(status==="available" && data?.version !== updateState.dismissedVersion){
+      showUpdateAvailableModal(data?.version);
+    } else if(status==="downloading"){
+      const bar = document.getElementById("updateProgressBar");
+      const text = document.getElementById("updateProgressText");
+      if(bar && text){
+        // Modal's already open — just update the numbers, no full rebuild
+        // (this fires many times per second during a download).
+        bar.style.width = (data?.percent||0) + "%";
+        text.textContent = (data?.percent||0) + "%";
+      }
+    } else if(status==="downloaded" && prevStatus!=="downloaded"){
+      showUpdateReadyModal(data?.version);
+    }
   });
   const verLabel = document.getElementById("verLabel");
   if(verLabel && updateState.appVersion) verLabel.textContent = `v${updateState.appVersion} · desktop`;
@@ -2101,10 +2117,92 @@ function renderUpdateBanner(){
   if(!slot) return;
   if(updateState.status==="downloaded"){
     slot.innerHTML = `<div class="update-banner" id="installUpdateBtn">${ICONS.sparkle} Update ready — Restart</div>`;
-    document.getElementById("installUpdateBtn").addEventListener("click", ()=>{ window.updaterAPI && window.updaterAPI.install(); });
+    document.getElementById("installUpdateBtn").addEventListener("click", ()=>{ showUpdateReadyModal(updateState.data?.version); });
+  } else if(updateState.status==="downloading"){
+    slot.innerHTML = `<div class="update-banner" id="downloadingBanner">${ICONS.refresh} Downloading update… ${updateState.data?.percent||0}%</div>`;
+    document.getElementById("downloadingBanner").addEventListener("click", ()=>{ showUpdateProgressModal(updateState.data?.percent||0); });
   } else {
     slot.innerHTML = "";
   }
+}
+
+function showUpdateAvailableModal(version){
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open" id="updateAvailBackdrop">
+      <div class="modal" style="width:420px;">
+        <div class="modal-header">
+          <h2>${ICONS.sparkle} Update Available</h2>
+          <button class="icon-btn" id="closeUpdateAvail">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          <div style="font-size:14px;margin-bottom:6px;">Ledger ${version ? `v${escapeHTML(version)}` : ""} is ready to download.</div>
+          <div class="hint" style="margin-bottom:18px;">You're currently on v${escapeHTML(updateState.appVersion||"")}. Downloading takes a minute or two in the background — you can keep using the app while it happens.</div>
+          <div style="display:flex;gap:10px;">
+            <button class="btn-primary" id="updateNowBtn" style="flex:1;">Update Now</button>
+            <button class="btn-secondary" id="updateLaterBtn" style="flex:1;">Later</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  const close = ()=>{ document.getElementById("modalRoot").innerHTML = ""; };
+  document.getElementById("closeUpdateAvail").addEventListener("click", ()=>{ updateState.dismissedVersion = version; close(); });
+  document.getElementById("updateLaterBtn").addEventListener("click", ()=>{ updateState.dismissedVersion = version; close(); });
+  document.getElementById("updateNowBtn").addEventListener("click", async ()=>{
+    close();
+    showUpdateProgressModal(0);
+    if(window.updaterAPI) await window.updaterAPI.download();
+  });
+}
+
+function showUpdateProgressModal(percent){
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open" id="updateProgressBackdrop">
+      <div class="modal" style="width:420px;">
+        <div class="modal-header">
+          <h2>${ICONS.refresh} Downloading Update</h2>
+        </div>
+        <div class="modal-body">
+          <div class="hint" style="margin-bottom:12px;">Downloading v${escapeHTML(updateState.data?.version||"")}… you can close this and keep working, it'll keep going in the background.</div>
+          <div style="background:var(--card-2);border-radius:8px;height:10px;overflow:hidden;margin-bottom:8px;">
+            <div id="updateProgressBar" style="background:linear-gradient(135deg,var(--violet),var(--magenta));height:100%;width:${percent}%;transition:width .25s;"></div>
+          </div>
+          <div class="mono dim" id="updateProgressText" style="font-size:12.5px;text-align:right;">${percent}%</div>
+          <div style="height:14px;"></div>
+          <button class="btn-secondary block" id="hideProgressBtn">Hide (keeps downloading)</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("hideProgressBtn").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML = ""; });
+}
+
+function showUpdateReadyModal(version){
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open" id="updateReadyBackdrop">
+      <div class="modal" style="width:420px;">
+        <div class="modal-header">
+          <h2>${ICONS.sparkle} Update Ready</h2>
+          <button class="icon-btn" id="closeUpdateReady">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          <div style="font-size:14px;margin-bottom:6px;">v${escapeHTML(version||"")} is downloaded and ready to install.</div>
+          <div class="hint" style="margin-bottom:18px;">Restarting closes the app for a few seconds while it installs, then reopens automatically. Your data isn't affected either way.</div>
+          <div style="display:flex;gap:10px;">
+            <button class="btn-primary" id="restartNowBtn" style="flex:1;">Restart Now</button>
+            <button class="btn-secondary" id="restartLaterBtn" style="flex:1;">Later</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  const close = ()=>{ document.getElementById("modalRoot").innerHTML = ""; };
+  document.getElementById("closeUpdateReady").addEventListener("click", close);
+  document.getElementById("restartLaterBtn").addEventListener("click", close);
+  document.getElementById("restartNowBtn").addEventListener("click", ()=>{ window.updaterAPI && window.updaterAPI.install(); });
 }
 
 /* ============================================================

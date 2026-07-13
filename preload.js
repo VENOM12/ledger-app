@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('emailAPI', {
 
 contextBridge.exposeInMainWorld('updaterAPI', {
   check: () => ipcRenderer.invoke('updater:check'),
+  download: () => ipcRenderer.invoke('updater:download'),
   install: () => ipcRenderer.invoke('updater:install'),
   getVersion: () => ipcRenderer.invoke('app:getVersion'),
   onStatus: (callback) => ipcRenderer.on('updater:status', (evt, payload) => callback(payload))
