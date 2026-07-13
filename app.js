@@ -78,6 +78,19 @@ function periodStart(period){
   }
 }
 
+// Forward-looking window used for "deliveries due" — includes anything already overdue.
+function periodDueEnd(period){
+  const now = new Date();
+  const d = new Date(now); d.setHours(23,59,59,999);
+  switch(period){
+    case "Day": return d;
+    case "Week": d.setDate(d.getDate()+6); return d;
+    case "Month": { const m=new Date(d); m.setMonth(m.getMonth()+1); return m; }
+    case "Year": { const y=new Date(d); y.setFullYear(y.getFullYear()+1); return y; }
+    default: return null;
+  }
+}
+
 /* ---------------- Computed item stats (single currency, no conversion) ---------------- */
 
 function qtySold(item){ return item.sales.reduce((s,r)=>s+r.quantitySold,0); }
@@ -337,12 +350,12 @@ function dashboardHTML(){
   const cogs = salesInPeriod.reduce((s,p)=> s + p.sale.quantitySold*p.item.purchasePricePerUnit, 0);
   const roiVal = cogs>0 ? (totalProfit/cogs)*100 : 0;
 
-  let avgDays = null;
-  if(salesInPeriod.length){
-    const totalW = salesInPeriod.reduce((s,p)=> s + daysBetween(p.item.purchaseDate,p.sale.saleDate)*p.sale.quantitySold, 0);
-    const totalQ = salesInPeriod.reduce((s,p)=>s+p.sale.quantitySold,0);
-    avgDays = totalQ>0 ? totalW/totalQ : null;
-  }
+  const dueEnd = periodDueEnd(ui.period);
+  const deliveriesDue = state.pendingOrders.filter(p=>
+    p.status!=="delivered" && p.status!=="cancelled" && p.expectedDelivery &&
+    (!dueEnd || new Date(p.expectedDelivery) <= dueEnd)
+  ).length;
+  const dueLabel = { Day:"Due Today", Week:"Due This Week", Month:"Due This Month", Year:"Due This Year", "All Time":"Deliveries Due" }[ui.period] || "Deliveries Due";
 
   const liveItems = state.items.filter(i=>!i.isPreorder);
   const totalBought = liveItems.reduce((s,i)=>s+i.quantityPurchased,0);
@@ -388,7 +401,7 @@ function dashboardHTML(){
     </div>
 
     <div class="mini-grid">
-      ${miniCard("trend","Avg Days Held", avgDays===null?"—":avgDays.toFixed(1), "var(--violet)","var(--violet-bg)")}
+      ${miniCard("box",dueLabel, ""+deliveriesDue, "var(--violet)","var(--violet-bg)")}
       ${miniCard("percent","Sell-Through", sellThrough.toFixed(0)+"%", "var(--green)","var(--green-bg)")}
       ${miniCard("layers","Active Stock", ""+activeStock, "var(--gold)","var(--gold-bg)")}
       ${miniCard("mail","Open Orders", ""+pendingDeliveryCount, "var(--magenta)","var(--magenta-bg)")}
