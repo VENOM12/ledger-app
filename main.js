@@ -199,6 +199,12 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
   const acc = loadAccount();
   if (!acc || !acc.password) return { ok: false, error: 'No email account connected.' };
   const excludeList = (excludedSenders || []).map(s => s.toLowerCase()).filter(Boolean);
+  // IMAP's SINCE search only has day-level resolution (no time-of-day), so
+  // every sync re-scans the whole current day's mail, not just what's new
+  // since the last check. Message-ID tracking is what actually stops the
+  // same emails from being re-processed (and re-notified about) every
+  // 60 seconds — the date search is just how we find candidates cheaply.
+  const seenMessageIds = new Set(acc.processedMessageIds || []);
 
   const client = new ImapFlow({
     host: acc.host, port: acc.port, secure: acc.secure,
@@ -207,6 +213,7 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
   });
 
   const results = [];
+  const newlySeenIds = [];
   const KEYWORDS = /(order|shipped|shipment|delivered|delivery|tracking|confirmation|receipt|out for delivery|sold|payout|paid|payment received)/i;
 
   try {
@@ -236,6 +243,13 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
         let envMsg;
         try { envMsg = await client.fetchOne(uid, { envelope: true }); } catch (e) { continue; }
         if (!envMsg || !envMsg.envelope) continue;
+
+        // Cheapest possible skip: the envelope fetch alone tells us the
+        // message's stable, globally-unique Message-ID — no need to fetch
+        // and parse the full body again for something we've already seen.
+        const messageId = envMsg.envelope.messageId || null;
+        if (messageId && seenMessageIds.has(messageId)) continue;
+
         const subject = envMsg.envelope.subject || '';
         const subjectMatches = KEYWORDS.test(subject);
         if (!subjectMatches && !forceProcess.has(uid)) continue;
@@ -246,6 +260,8 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
 
         let parsed;
         try { parsed = await simpleParser(full.source); } catch (e) { continue; }
+
+        if (messageId) newlySeenIds.push(messageId);
 
         const fromAddr = (parsed.from && parsed.from.value && parsed.from.value[0]) || {};
         const fromEmail = (fromAddr.address || '').toLowerCase();
@@ -272,6 +288,16 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
       lock.release();
     }
     await client.logout();
+
+    if (newlySeenIds.length) {
+      const combined = [...seenMessageIds, ...newlySeenIds];
+      // Cap the tracked list so this file doesn't grow forever — a
+      // reseller's inbox won't realistically need more than the most
+      // recent few hundred remembered at once.
+      const trimmed = combined.slice(-500);
+      patchAccount({ processedMessageIds: trimmed });
+    }
+
     return { ok: true, results };
   } catch (err) {
     try { await client.logout(); } catch (e) { /* ignore */ }
