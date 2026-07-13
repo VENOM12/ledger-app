@@ -1,5 +1,5 @@
 /* =========================================================
-   Ledger — Reseller Tracker (Desktop, dark dashboard theme)
+   Restock — Reseller Tracker (Desktop, dark dashboard theme)
    Vanilla JS. State lives in localStorage. Email credentials
    live encrypted in the main process (see main.js / preload.js).
    ========================================================= */
@@ -160,7 +160,7 @@ function render(){
       <div class="brand">
         <div class="mark">L</div>
         <div>
-          <div class="name">Ledger</div>
+          <div class="name">Restock</div>
           <div class="ver" id="verLabel">v1.0 · desktop</div>
         </div>
       </div>
@@ -1478,7 +1478,7 @@ function emailConnectFormHTML(){
     <div class="card panel" style="max-width:560px;">
       <div class="panel-title">Connect Your Email</div>
       <div class="hint" style="margin-bottom:16px;">
-        Ledger scans your inbox for order confirmation, shipping, and delivery emails to
+        Restock scans your inbox for order confirmation, shipping, and delivery emails to
         auto-track purchases. Your credentials are encrypted and stored only on this device —
         they're never sent anywhere except directly to your email provider.
       </div>
@@ -1626,7 +1626,7 @@ function emailConnectedHTML(){
         </table>
       </div>
       <div class="hint" style="margin-top:10px;">
-        Ledger can tell a sale happened and roughly for how much, but can't tell which of your items
+        Restock can tell a sale happened and roughly for how much, but can't tell which of your items
         it was — click "Match to Item" to pick the right one and finish recording the sale.
       </div>
     `}
@@ -2136,7 +2136,7 @@ function showUpdateAvailableModal(version){
           <button class="icon-btn" id="closeUpdateAvail">${ICONS.close}</button>
         </div>
         <div class="modal-body">
-          <div style="font-size:14px;margin-bottom:6px;">Ledger ${version ? `v${escapeHTML(version)}` : ""} is ready to download.</div>
+          <div style="font-size:14px;margin-bottom:6px;">Restock ${version ? `v${escapeHTML(version)}` : ""} is ready to download.</div>
           <div class="hint" style="margin-bottom:18px;">You're currently on v${escapeHTML(updateState.appVersion||"")}. Downloading takes a minute or two in the background — you can keep using the app while it happens.</div>
           <div style="display:flex;gap:10px;">
             <button class="btn-primary" id="updateNowBtn" style="flex:1;">Update Now</button>
@@ -2225,7 +2225,7 @@ function openSettings(){
               ${CURRENCIES.map(c=>`<option value="${c}" ${state.displayCurrency===c?"selected":""}>${c}</option>`).join("")}
             </select>
           </div>
-          <div class="hint">This only changes how numbers are formatted — enter all your prices in this same currency; Ledger doesn't convert between currencies.</div>
+          <div class="hint">This only changes how numbers are formatted — enter all your prices in this same currency; Restock doesn't convert between currencies.</div>
 
           <div style="height:20px;"></div>
           <div class="panel-title" style="margin-bottom:10px;">Updates</div>

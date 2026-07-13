@@ -1,6 +1,6 @@
 {
-  "name": "ledger-reseller-tracker",
-  "version": "1.0.6",
+  "name": "restock-reseller-tracker",
+  "version": "1.0.7",
   "description": "Purchase tracking, profit/ROI, and stock management for resellers",
   "main": "main.js",
   "private": true,
@@ -18,8 +18,8 @@
     "electron-updater": "^6.3.0"
   },
   "build": {
-    "appId": "com.ledger.resellertracker",
-    "productName": "Ledger",
+    "appId": "com.restock.resellertracker",
+    "productName": "Restock",
     "directories": {
       "output": "release"
     },
