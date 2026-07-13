@@ -140,6 +140,48 @@ function catIcon(cat, size){
   </div>`;
 }
 
+// Shows the product's photo if one was added, otherwise falls back to the
+// category icon — used everywhere an item is listed (Stock, Sold, Orders,
+// PKC Orders, the dashboard's Recent Sales panel).
+function itemThumb(item, size){
+  const s = size || 38;
+  if(item.image){
+    const radius = s > 60 ? 12 : 9;
+    return `<div style="width:${s}px;height:${s}px;border-radius:${radius}px;overflow:hidden;flex-shrink:0;background:var(--card-2);border:1px solid var(--border-soft);">
+      <img src="${item.image}" style="width:100%;height:100%;object-fit:cover;display:block;" alt="">
+    </div>`;
+  }
+  return catIcon(item.category, s);
+}
+
+function recentSalesPanelHTML(){
+  const allSales = [];
+  state.items.forEach(item => item.sales.forEach(sale => allSales.push({item, sale})));
+  allSales.sort((a,b)=> new Date(b.sale.saleDate) - new Date(a.sale.saleDate));
+  const recent = allSales.slice(0, 6);
+
+  if(recent.length===0){
+    return `<div class="hint">Sales you record will show up here.</div>`;
+  }
+
+  return `
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      ${recent.map(({item,sale})=>{
+        const net = saleNet(sale);
+        return `
+        <div style="display:flex;align-items:center;gap:12px;">
+          ${itemThumb(item, 38)}
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(item.name)}</div>
+            <div class="hint" style="margin:1px 0 0;">${escapeHTML(sale.platform||"—")} · ${formatDate(sale.saleDate)}</div>
+          </div>
+          <div class="mono" style="font-weight:700;color:var(--green);flex-shrink:0;">${fmtMoney(net)}</div>
+        </div>`;
+      }).join("")}
+    </div>
+  `;
+}
+
 /* ---------------- Toast ---------------- */
 
 let toastTimer = null;
@@ -318,20 +360,6 @@ function dashboardHTML(){
     return {name, profit:p, roi:r, units, category: group[0].category};
   }).sort((a,b)=>b.profit-a.profit).slice(0,6);
 
-  // Stock by category should reflect what's actually sitting in inventory
-  // right now — not total historical spend (which double-counts items
-  // already sold off, and was the "not accurate" bug).
-  const catMap = {};
-  liveItems.filter(i=>qtyRemaining(i)>0).forEach(i=>{
-    catMap[i.category] = catMap[i.category] || {value:0, count:0};
-    catMap[i.category].value += qtyRemaining(i) * i.purchasePricePerUnit;
-    catMap[i.category].count += 1;
-  });
-  const catEntries = Object.entries(catMap).map(([cat,v])=>({
-    category:cat, value:v.value, count:v.count, color:(CAT_STYLES[cat]||CAT_STYLES.Other).fg
-  })).sort((a,b)=>b.value-a.value);
-  const catTotal = catEntries.reduce((s,c)=>s+c.value,0) || 1;
-
   const pendingDeliveryCount = state.pendingOrders.filter(p=>p.status!=="delivered").length;
 
   const periods = ["Day","Week","Month","Year","All Time"];
@@ -354,20 +382,8 @@ function dashboardHTML(){
         ${sparklineSVG(dailyProfitSeries())}
       </div>
       <div class="card panel">
-        <div class="panel-title">Stock by Category</div>
-        ${catEntries.length===0 ? `<div class="hint">Add stock to see a breakdown here.</div>` : `
-        <div class="donut-wrap">
-          ${donutSVG(catEntries, catTotal)}
-          <div class="legend-table">
-            ${catEntries.map(c=>`
-              <div class="legend-row">
-                <span class="legend-dot" style="background:${c.color}"></span>
-                <span class="legend-name">${escapeHTML(c.category)}</span>
-                <span class="legend-val">${((c.value/catTotal)*100).toFixed(0)}% / ${c.count}</span>
-              </div>
-            `).join("")}
-          </div>
-        </div>`}
+        <div class="panel-title">Recent Sales</div>
+        ${recentSalesPanelHTML()}
       </div>
     </div>
 
@@ -532,7 +548,7 @@ function freshAddForm(){
   return {
     name:"", category: CATEGORIES[0], customCategory:"",
     quantity:1, price:"", retailer:"", date: todayISO(), notes:"",
-    isPreorder:false, expectedArrival:""
+    isPreorder:false, expectedArrival:"", image:null
   };
 }
 
@@ -542,6 +558,28 @@ function addFormHTML(){
   const cost = (parseFloat(f.price)||0) * f.quantity;
 
   return `
+    <div class="field">
+      <label>Product Photo (optional)</label>
+      <div style="display:flex;align-items:center;gap:14px;">
+        ${f.image ? `
+          <div style="width:64px;height:64px;border-radius:12px;overflow:hidden;flex-shrink:0;border:1px solid var(--border-soft);background:var(--card-2);">
+            <img src="${f.image}" style="width:100%;height:100%;object-fit:cover;display:block;" alt="">
+          </div>
+        ` : `
+          <div style="width:64px;height:64px;border-radius:12px;flex-shrink:0;border:1.5px dashed var(--border);display:flex;align-items:center;justify-content:center;color:var(--text-mute);">
+            ${ICONS.box}
+          </div>
+        `}
+        <div style="display:flex;gap:8px;">
+          <label class="btn-small" style="cursor:pointer;">
+            ${ICONS.plus} ${f.image ? "Change" : "Add"} Photo
+            <input type="file" id="f-image" accept="image/*" style="display:none;">
+          </label>
+          ${f.image ? `<button class="btn-small" id="f-image-remove" style="border-color:var(--red);color:var(--red);">${ICONS.close} Remove</button>` : ""}
+        </div>
+      </div>
+    </div>
+
     <div class="form-grid">
       <div class="field" style="grid-column:1/-1;">
         <label>What did you buy?</label>
@@ -650,7 +688,40 @@ function attachAddEvents(){
   byId("f-preorder").addEventListener("change", e=>{ f.isPreorder = e.target.checked; renderView(); });
   if(byId("f-expectedArrival")) byId("f-expectedArrival").addEventListener("change", e=>{ f.expectedArrival = e.target.value; });
 
+  byId("f-image").addEventListener("change", e=>{
+    const file = e.target.files && e.target.files[0];
+    if(!file) return;
+    processImageFile(file, dataUrl=>{ f.image = dataUrl; renderView(); });
+  });
+  const removeBtn = byId("f-image-remove");
+  if(removeBtn) removeBtn.addEventListener("click", ()=>{ f.image = null; renderView(); });
+
   byId("saveBtn").addEventListener("click", savePurchase);
+}
+
+// Resizes/compresses an uploaded photo client-side before storing it as a
+// base64 data URL — full-resolution phone photos would otherwise bloat
+// localStorage fast. Caps the longest side at 500px and re-encodes as JPEG.
+function processImageFile(file, callback){
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const maxDim = 500;
+      let w = img.width, h = img.height;
+      if(w > h){ if(w > maxDim){ h = Math.round(h*maxDim/w); w = maxDim; } }
+      else { if(h > maxDim){ w = Math.round(w*maxDim/h); h = maxDim; } }
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, w, h);
+      callback(canvas.toDataURL("image/jpeg", 0.82));
+    };
+    img.onerror = ()=>{ showToast("Couldn't read that image", "close"); };
+    img.src = e.target.result;
+  };
+  reader.onerror = ()=>{ showToast("Couldn't read that file", "close"); };
+  reader.readAsDataURL(file);
 }
 
 function refreshSaveBtn(){
@@ -680,6 +751,7 @@ function savePurchase(){
     notes: f.notes,
     isPreorder: f.isPreorder,
     expectedArrival: f.isPreorder ? (f.expectedArrival || null) : null,
+    image: f.image || null,
     orderNumber: null, deliveryAddress: null, recipientName: null, sentToEmail: null, lineItems: [], sourceEmailDetected: false,
     sales: []
   };
@@ -734,7 +806,7 @@ function stockResultsHTML(){
             const style = CAT_STYLES[i.category]||CAT_STYLES.Other;
             const p = profit(i);
             return `<tr data-id="${i.id}">
-              <td><div style="display:flex;align-items:center;gap:10px;">${catIcon(i.category,32)}<span style="font-weight:600;">${escapeHTML(i.name)}</span>${i.notes && i.notes.includes("Auto-added from email sync") ? `<span class="hint" style="margin:0;color:var(--gold);">needs review</span>` : ""}</div></td>
+              <td><div style="display:flex;align-items:center;gap:10px;">${itemThumb(i,32)}<span style="font-weight:600;">${escapeHTML(i.name)}</span>${i.notes && i.notes.includes("Auto-added from email sync") ? `<span class="hint" style="margin:0;color:var(--gold);">needs review</span>` : ""}</div></td>
               <td><span style="color:${style.fg};font-size:12px;font-weight:600;">${escapeHTML(i.category)}</span></td>
               <td class="mono dim">${qtyRemaining(i)}/${i.quantityPurchased}</td>
               <td class="mono">${fmtMoney(totalCost(i))}</td>
@@ -917,7 +989,7 @@ function preordersHTML(){
         <div class="card" style="padding:18px 20px;">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;">
             <div style="display:flex;align-items:center;gap:12px;cursor:pointer;flex:1;min-width:0;" data-open="${i.id}">
-              ${catIcon(i.category,38)}
+              ${itemThumb(i,38)}
               <div style="min-width:0;">
                 <div style="font-weight:700;font-size:14.5px;">${escapeHTML(i.name)} ${i.sourceEmailDetected ? `<span class="status-chip chip-confirmed" style="vertical-align:middle;">Auto-detected</span>` : ""}</div>
                 <div class="hint" style="margin:2px 0 0;">${escapeHTML(i.category)} · ${escapeHTML(i.retailer||"Unknown retailer")}</div>
@@ -1034,7 +1106,7 @@ function soldResultsHTML(){
             const itemProfit = net - sale.quantitySold*item.purchasePricePerUnit;
             return `<tr data-open="${item.id}">
               <td class="mono dim">${formatDate(sale.saleDate)}</td>
-              <td style="font-weight:600;">${escapeHTML(item.name)}</td>
+              <td style="font-weight:600;"><div style="display:flex;align-items:center;gap:9px;">${itemThumb(item,26)}<span>${escapeHTML(item.name)}</span></div></td>
               <td class="dim">${escapeHTML(sale.platform||"—")}</td>
               <td class="mono dim">${sale.quantitySold}</td>
               <td class="mono">${fmtMoney(saleRevenue(sale))}</td>
@@ -1085,7 +1157,8 @@ function ensureEditState(item){
       purchasePricePerUnit: item.purchasePricePerUnit,
       retailer: item.retailer,
       purchaseDate: item.purchaseDate,
-      notes: item.notes
+      notes: item.notes,
+      image: item.image || null
     };
   }
 }
@@ -1102,9 +1175,12 @@ function detailHTML(itemId){
   return `
     <button class="btn-ghost" id="backBtn">${ICONS.chev} Back</button>
     <div class="detail-hero">
-      <div>
-        <h2>${escapeHTML(item.name)} ${item.isPreorder ? `<span class="status-chip chip-shipped" style="vertical-align:middle;">Preorder</span>` : ""}</h2>
-        <div class="meta">${escapeHTML(item.category)} · ${escapeHTML(item.retailer||"Unknown retailer")}${item.isPreorder && item.expectedArrival ? ` · Expected ${formatDate(item.expectedArrival)}` : ""}</div>
+      <div style="display:flex;align-items:center;gap:14px;min-width:0;">
+        ${itemThumb(item, 52)}
+        <div style="min-width:0;">
+          <h2>${escapeHTML(item.name)} ${item.isPreorder ? `<span class="status-chip chip-shipped" style="vertical-align:middle;">Preorder</span>` : ""}</h2>
+          <div class="meta">${escapeHTML(item.category)} · ${escapeHTML(item.retailer||"Unknown retailer")}${item.isPreorder && item.expectedArrival ? ` · Expected ${formatDate(item.expectedArrival)}` : ""}</div>
+        </div>
       </div>
       ${item.isPreorder ? `<button class="btn-primary" id="markArrivedBtn">${ICONS.check} Mark Arrived</button>` : (remaining>0 ? `<button class="btn-primary" id="sellBtn">${ICONS.check} Mark as Sold</button>` : "")}
     </div>
@@ -1133,6 +1209,27 @@ function detailHTML(itemId){
 
     <div class="section-title">Edit Purchase</div>
     <div class="card" style="padding:18px;">
+      <div class="field">
+        <label>Product Photo</label>
+        <div style="display:flex;align-items:center;gap:14px;">
+          ${e.image ? `
+            <div style="width:64px;height:64px;border-radius:12px;overflow:hidden;flex-shrink:0;border:1px solid var(--border-soft);background:var(--card-2);">
+              <img src="${e.image}" style="width:100%;height:100%;object-fit:cover;display:block;" alt="">
+            </div>
+          ` : `
+            <div style="width:64px;height:64px;border-radius:12px;flex-shrink:0;border:1.5px dashed var(--border);display:flex;align-items:center;justify-content:center;color:var(--text-mute);">
+              ${ICONS.box}
+            </div>
+          `}
+          <div style="display:flex;gap:8px;">
+            <label class="btn-small" style="cursor:pointer;">
+              ${ICONS.plus} ${e.image ? "Change" : "Add"} Photo
+              <input type="file" id="e-image" accept="image/*" style="display:none;">
+            </label>
+            ${e.image ? `<button class="btn-small" id="e-image-remove" style="border-color:var(--red);color:var(--red);">${ICONS.close} Remove</button>` : ""}
+          </div>
+        </div>
+      </div>
       <div class="form-grid">
         <div class="field" style="grid-column:1/-1;">
           <label>Item name</label>
@@ -1240,6 +1337,14 @@ function attachDetailEvents(){
   byId("e-date").addEventListener("change", e=>{ editState.purchaseDate = e.target.value; });
   byId("e-notes").addEventListener("input", e=>{ editState.notes = e.target.value; });
 
+  byId("e-image").addEventListener("change", e=>{
+    const file = e.target.files && e.target.files[0];
+    if(!file) return;
+    processImageFile(file, dataUrl=>{ editState.image = dataUrl; renderView(); });
+  });
+  const eImageRemove = byId("e-image-remove");
+  if(eImageRemove) eImageRemove.addEventListener("click", ()=>{ editState.image = null; renderView(); });
+
   byId("saveEditsBtn").addEventListener("click", ()=>{
     const minQty = qtySold(item);
     const qty = parseInt(editState.quantityPurchased, 10);
@@ -1255,6 +1360,7 @@ function attachDetailEvents(){
     item.retailer = editState.retailer.trim();
     item.purchaseDate = editState.purchaseDate;
     item.notes = editState.notes;
+    item.image = editState.image || null;
     saveState();
     showToast("Item updated");
     render();
@@ -2064,6 +2170,7 @@ function createPKCPreorderItem(order){
     sentToEmail: order.toEmail || null,
     lineItems: order.lineItems || [],
     sourceEmailDetected: true,
+    image: null,
     sales: []
   };
   state.items.unshift(item);
@@ -2082,6 +2189,7 @@ function createStockItemFromOrder(order){
     notes: "Auto-added from email sync — please verify item name, quantity, and price.",
     isPreorder: false,
     expectedArrival: null,
+    image: null,
     sales: []
   };
   state.items.unshift(item);
