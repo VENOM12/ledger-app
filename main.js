@@ -16,6 +16,15 @@ function createWindow() {
     backgroundColor: '#0A0A12',
     title: 'Ledger',
     icon: path.join(__dirname, 'icon.ico'),
+    // Replaces the plain default Windows title bar with one matching the
+    // app's dark theme, while keeping the real minimize/maximize/close
+    // buttons (with Windows 11 snap-layout hover menu etc.) — just recolored.
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#0D0D16',
+      symbolColor: '#EDEDF5',
+      height: 40
+    },
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -106,14 +115,18 @@ function loadAccount() {
     if (data.encryptedPassword && safeStorage.isEncryptionAvailable()) {
       data.password = safeStorage.decryptString(Buffer.from(data.encryptedPassword, 'base64'));
     }
+    // Migrate from the old single-value catchAllEmail field to a list.
+    if (!Array.isArray(data.catchAllDomains)) {
+      data.catchAllDomains = data.catchAllEmail ? [data.catchAllEmail] : [];
+    }
     return data;
   } catch (e) {
     return null;
   }
 }
 
-function saveAccount({ email, host, port, secure, password, catchAllEmail }) {
-  const data = { email, host, port, secure, catchAllEmail: catchAllEmail || null };
+function saveAccount({ email, host, port, secure, password, catchAllDomains }) {
+  const data = { email, host, port, secure, catchAllDomains: catchAllDomains || [] };
   if (safeStorage.isEncryptionAvailable()) {
     data.encryptedPassword = safeStorage.encryptString(password).toString('base64');
   } else {
@@ -142,10 +155,10 @@ function clearAccount() {
 ipcMain.handle('email:getAccountInfo', () => {
   const acc = loadAccount();
   if (!acc) return null;
-  return { email: acc.email, host: acc.host, port: acc.port, secure: acc.secure, catchAllEmail: acc.catchAllEmail || null };
+  return { email: acc.email, host: acc.host, port: acc.port, secure: acc.secure, catchAllDomains: acc.catchAllDomains || [] };
 });
 
-ipcMain.handle('email:testAndSave', async (evt, { email, password, host, port, secure, catchAllEmail }) => {
+ipcMain.handle('email:testAndSave', async (evt, { email, password, host, port, secure, catchAllDomains }) => {
   const client = new ImapFlow({
     host, port, secure,
     auth: { user: email, pass: password },
@@ -154,15 +167,15 @@ ipcMain.handle('email:testAndSave', async (evt, { email, password, host, port, s
   try {
     await client.connect();
     await client.logout();
-    saveAccount({ email, host, port, secure, password, catchAllEmail });
+    saveAccount({ email, host, port, secure, password, catchAllDomains });
     return { ok: true };
   } catch (err) {
     return { ok: false, error: humanizeImapError(err) };
   }
 });
 
-ipcMain.handle('email:updateCatchAll', (evt, { catchAllEmail }) => {
-  const ok = patchAccount({ catchAllEmail: catchAllEmail || null });
+ipcMain.handle('email:updateCatchAll', (evt, { catchAllDomains }) => {
+  const ok = patchAccount({ catchAllDomains: catchAllDomains || [] });
   return { ok };
 });
 
@@ -194,12 +207,14 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
       const baseUids = await client.search({ since });
       const forceProcess = new Set();
 
-      if (acc.catchAllEmail) {
-        try {
-          const catchAllUids = await client.search({ since, to: acc.catchAllEmail });
-          catchAllUids.forEach(u => forceProcess.add(u));
-        } catch (e) {
-          // Some servers don't support this search key well — skip silently.
+      if (acc.catchAllDomains && acc.catchAllDomains.length) {
+        for (const domain of acc.catchAllDomains) {
+          try {
+            const catchAllUids = await client.search({ since, to: domain });
+            catchAllUids.forEach(u => forceProcess.add(u));
+          } catch (e) {
+            // Some servers don't support this search key well — skip silently.
+          }
         }
       }
 
@@ -341,40 +356,42 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
 
   const result = { status, retailer, price, orderNumber, expectedDelivery, expectedDeliveryTime, carrier, trackingNumber, subject, date, fromEmail };
 
-  // Pokémon Center preorders get a much richer parse, since the person
-  // specifically wants order number, shipping address, recipient name, the
-  // address it was sent to, and itemized line items for these. This is
-  // still best-effort regex parsing of email text, not a real API — it
-  // will not be perfect on every email format.
+  // These used to be extracted only for Pokémon Center preorders, but the
+  // person wants "what was bought / sent to which email / delivery
+  // address" for every order now — so this runs on all of them. Still
+  // best-effort regex parsing of email text, not a real structured API;
+  // fields that can't be found are just left null rather than guessed at.
+  result.toEmail = toEmail || null;
+
+  const addrMatch = bodyText.match(/(?:shipping address|ship(?:ping)? to|delivery address)[:\s]*\n?([^\n]{3,80}(?:\n[^\n]{3,80}){0,4})/i);
+  if (addrMatch) {
+    const block = addrMatch[1].trim();
+    result.deliveryAddress = block.replace(/\n+/g, ', ');
+    result.recipientName = block.split('\n')[0].trim();
+  } else {
+    result.deliveryAddress = null;
+    result.recipientName = null;
+  }
+
+  // Best-effort itemized line parsing: "<product name> ... Qty: N ... $XX.XX"
+  const lineItems = [];
+  const lineRe = /([A-Za-z0-9][^\n$£€]{4,70}?)\s*(?:Qty|Quantity)[:\s]*(\d{1,3})[^\n$£€]{0,20}[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/gi;
+  let lm;
+  while ((lm = lineRe.exec(bodyText)) !== null && lineItems.length < 20) {
+    lineItems.push({
+      name: lm[1].trim().replace(/\s{2,}/g, ' '),
+      quantity: parseInt(lm[2], 10) || 1,
+      price: parseFloat(lm[3].replace(',', ''))
+    });
+  }
+  result.lineItems = lineItems;
+
+  // Pokémon Center preorders additionally get flagged so the app routes
+  // them into PKC Orders instead of the regular Orders list.
   const isPokemonCenter = /pokemoncenter/i.test(fromEmail) || /pok[eé]mon\s*center/i.test(fromName);
   const isPreorderMention = /pre-?order/i.test(hay);
   if (isPokemonCenter && isPreorderMention && status === 'confirmed') {
     result.isPKCPreorder = true;
-    result.toEmail = toEmail || null;
-
-    const addrMatch = bodyText.match(/(?:shipping address|ship(?:ping)? to|delivery address)[:\s]*\n?([^\n]{3,80}(?:\n[^\n]{3,80}){0,4})/i);
-    if (addrMatch) {
-      const block = addrMatch[1].trim();
-      result.deliveryAddress = block.replace(/\n+/g, ', ');
-      result.recipientName = block.split('\n')[0].trim();
-    } else {
-      result.deliveryAddress = null;
-      result.recipientName = null;
-    }
-
-    // Best-effort itemized line parsing: "<product name> ... Qty: N ... $XX.XX"
-    // appearing anywhere near each other. Falls back gracefully if nothing matches.
-    const lineItems = [];
-    const lineRe = /([A-Za-z0-9][^\n$£€]{4,70}?)\s*(?:Qty|Quantity)[:\s]*(\d{1,3})[^\n$£€]{0,20}[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/gi;
-    let m;
-    while ((m = lineRe.exec(bodyText)) !== null && lineItems.length < 20) {
-      lineItems.push({
-        name: m[1].trim().replace(/\s{2,}/g, ' '),
-        quantity: parseInt(m[2], 10) || 1,
-        price: parseFloat(m[3].replace(',', ''))
-      });
-    }
-    result.lineItems = lineItems;
   }
 
   return result;

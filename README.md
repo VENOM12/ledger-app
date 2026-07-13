@@ -25,6 +25,15 @@ Look in the `release` folder for `Ledger Setup 1.0.0.exe`.
 
 ## What's new in this version
 
+- **Custom dark title bar**, matching the app's theme instead of the plain
+  default Windows one. The real minimize/maximize/close buttons are still
+  there (snap layouts, etc. all still work) — just recolored to match. I
+  couldn't screenshot the actual native buttons myself (that's a real
+  Windows/Electron feature my Linux testing environment can't render), so
+  give this one a proper look once you've rebuilt — if the currency pill
+  or anything else in the top-right looks too close to the window buttons,
+  tell me and I'll adjust the spacing.
+
 - **Quantity fields are now actually typeable.** The quantity stepper in
   Mark as Sold and Add Purchase used to be a plain +/− with no way to type
   a number directly — had to click 40 times to sell 40 units. Now you can

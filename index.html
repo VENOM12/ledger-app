@@ -121,7 +121,8 @@ input,select,textarea{font-size:14px;color:var(--text);}
 .main{display:flex;flex-direction:column;min-width:0;height:100vh;}
 .topbar{
   display:flex;align-items:center;justify-content:space-between;
-  padding:22px 30px 6px;
+  padding:14px 150px 6px 30px; /* right padding clears the native min/max/close buttons in the custom title bar */
+  min-height:40px;
   flex-shrink:0;
   -webkit-app-region: drag;
 }
