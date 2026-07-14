@@ -195,10 +195,11 @@ ipcMain.handle('email:disconnect', () => {
   return { ok: true };
 });
 
-ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSenders }) => {
+ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSenders, expenseRules }) => {
   const acc = loadAccount();
   if (!acc || !acc.password) return { ok: false, error: 'No email account connected.' };
   const excludeList = (excludedSenders || []).map(s => s.toLowerCase()).filter(Boolean);
+  const rules = (expenseRules || []).map(r => ({ senderPattern: (r.senderPattern || '').toLowerCase(), tag: r.tag }));
   // IMAP's SINCE search only has day-level resolution (no time-of-day), so
   // every sync re-scans the whole current day's mail, not just what's new
   // since the last check. Message-ID tracking is what actually stops the
@@ -213,6 +214,7 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
   });
 
   const results = [];
+  const expenseResults = [];
   const newlySeenIds = [];
   const KEYWORDS = /(order|shipped|shipment|delivered|delivery|tracking|confirmation|receipt|out for delivery|sold|payout|paid|payment received)/i;
 
@@ -230,6 +232,21 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
           try {
             const catchAllUids = await client.search({ since, to: domain });
             catchAllUids.forEach(u => forceProcess.add(u));
+          } catch (e) {
+            // Some servers don't support this search key well — skip silently.
+          }
+        }
+      }
+
+      // Expense-rule senders need force-processing the same way catch-all
+      // domains do — a subscription receipt or invoice email might not
+      // contain any of the order-related KEYWORDS at all, so it would
+      // otherwise get skipped before ever being fetched.
+      if (rules.length) {
+        for (const rule of rules) {
+          try {
+            const ruleUids = await client.search({ since, from: rule.senderPattern });
+            ruleUids.forEach(u => forceProcess.add(u));
           } catch (e) {
             // Some servers don't support this search key well — skip silently.
           }
@@ -270,6 +287,24 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
 
         const bodyText = (parsed.text || parsed.html || '').toString();
 
+        // Expense-rule match takes priority over everything else — these
+        // are never orders, only expenses, regardless of what the email
+        // text itself might otherwise look like. Skips the promotional
+        // filter too, since a legitimate invoice/receipt can innocently
+        // carry an unsubscribe link without actually being unwanted noise.
+        const matchedRule = fromEmail ? rules.find(r => fromEmail.includes(r.senderPattern)) : null;
+        if (matchedRule) {
+          const amtMatch = bodyText.match(/(?<!sub)\btotal\*?(?!\s*includes)[\s\S]{0,15}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
+                            bodyText.match(/[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/);
+          const amount = amtMatch ? parseFloat(amtMatch[1].replace(',', '')) : null;
+          expenseResults.push({
+            amount, tag: matchedRule.tag, description: subject,
+            date: (parsed.date || envMsg.envelope.date || new Date()).toISOString(),
+            fromEmail
+          });
+          continue;
+        }
+
         if (blockPromotions && looksPromotional(subject, bodyText, parsed.headers)) continue;
 
         const toAddr = (parsed.to && parsed.to.value && parsed.to.value[0]) || {};
@@ -298,7 +333,7 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
       patchAccount({ processedMessageIds: trimmed });
     }
 
-    return { ok: true, results };
+    return { ok: true, results, expenseResults };
   } catch (err) {
     try { await client.logout(); } catch (e) { /* ignore */ }
     return { ok: false, error: humanizeImapError(err) };

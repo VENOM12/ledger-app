@@ -5,6 +5,7 @@
    ========================================================= */
 
 const CATEGORIES = ["Pokemon", "Sports Cards", "Sneakers", "Video Games", "Electronics", "Other"];
+const EXPENSE_TAGS = ["Proxies", "Bots", "Shipping", "Packing Materials", "Petrol", "Rent", "Electricity", "Software/Subscriptions", "Other"];
 const CURRENCIES = ["USD","EUR","GBP","JPY","CAD","AUD","CHF","CNY","HKD","SGD","MXN","NZD","SEK","NOK","KRW"];
 
 const CAT_STYLES = {
@@ -33,9 +34,15 @@ const STORAGE_KEY = "ledgerAppState.v1";
 function loadState(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
-    if(raw) return JSON.parse(raw);
+    if(raw){
+      const parsed = JSON.parse(raw);
+      // Migration for people upgrading from before expenses existed.
+      if(!Array.isArray(parsed.expenses)) parsed.expenses = [];
+      if(!Array.isArray(parsed.expenseRules)) parsed.expenseRules = [];
+      return parsed;
+    }
   }catch(e){ console.warn("Could not read saved data", e); }
-  return { displayCurrency: "USD", items: [], pendingOrders: [], pendingSales: [], emailLastSync: null, emailFilters: { blockPromotions: true, excludedSenders: [] } };
+  return { displayCurrency: "USD", items: [], pendingOrders: [], pendingSales: [], expenses: [], expenseRules: [], emailLastSync: null, emailFilters: { blockPromotions: true, excludedSenders: [] } };
 }
 function saveState(){
   try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
@@ -219,6 +226,7 @@ function render(){
         ${navBtn("sold","tag","Sold")}
         ${navBtn("add","plus","Add Purchase")}
         ${navBtn("email","mail","Email Sync")}
+        ${navBtn("expenses","cash","Expenses")}
       </div>
       <div class="sidebar-footer">
         <div class="status-row"><span class="pulse"></span><span>Saved locally</span></div>
@@ -317,6 +325,7 @@ function renderView(){
   else if(ui.tab==="preorders"){ view.innerHTML = preordersHTML(); attachPreordersEvents(); }
   else if(ui.tab==="sold"){ view.innerHTML = soldHTML(); attachSoldEvents(); }
   else if(ui.tab==="email"){ view.innerHTML = emailSyncHTML(); attachEmailEvents(); }
+  else if(ui.tab==="expenses"){ view.innerHTML = expensesHTML(); attachExpensesEvents(); }
 }
 
 /* ============================================================
@@ -330,12 +339,21 @@ function dashboardHTML(){
   const purchasesInPeriod = state.items.filter(i => inPeriod(i.purchaseDate));
   const salesInPeriod = [];
   state.items.forEach(item => item.sales.forEach(s => { if(inPeriod(s.saleDate)) salesInPeriod.push({sale:s, item}); }));
+  const expensesInPeriod = (state.expenses||[]).filter(e => inPeriod(e.date));
 
-  const totalSpent = purchasesInPeriod.reduce((s,i)=>s+totalCost(i),0);
+  const inventorySpent = purchasesInPeriod.reduce((s,i)=>s+totalCost(i),0);
+  const totalExpenses = expensesInPeriod.reduce((s,e)=>s+(e.amount||0),0);
+  // Total Spent is now the full "money out" picture — inventory purchases
+  // plus running costs — not just inventory alone.
+  const totalSpent = inventorySpent + totalExpenses;
   const totalRev = salesInPeriod.reduce((s,p)=>s+saleRevenue(p.sale),0);
-  const totalProfit = salesInPeriod.reduce((s,p)=> s + (saleNet(p.sale) - p.sale.quantitySold*p.item.purchasePricePerUnit), 0);
+  const salesProfitGross = salesInPeriod.reduce((s,p)=> s + (saleNet(p.sale) - p.sale.quantitySold*p.item.purchasePricePerUnit), 0);
+  // Bottom-line profit: what sales actually made, minus what it cost to
+  // run the business, not just what it cost to buy the stock that sold.
+  const totalProfit = salesProfitGross - totalExpenses;
   const cogs = salesInPeriod.reduce((s,p)=> s + p.sale.quantitySold*p.item.purchasePricePerUnit, 0);
-  const roiVal = cogs>0 ? (totalProfit/cogs)*100 : 0;
+  const roiCostBasis = cogs + totalExpenses;
+  const roiVal = roiCostBasis>0 ? (totalProfit/roiCostBasis)*100 : 0;
 
   // Forward-looking window (unlike periodStart, which looks backward for
   // spend/profit history) — "Day" means due today, "Week" means due in
@@ -361,8 +379,8 @@ function dashboardHTML(){
     return true;
   }).length;
   const deliveriesDueLabel = {
-    "Day": "Due Today", "Week": "Due This Week", "Month": "Due This Month",
-    "Year": "Due This Year", "All Time": "Deliveries Due"
+    "Day": "Deliveries Today", "Week": "Deliveries This Week", "Month": "Deliveries This Month",
+    "Year": "Deliveries This Year", "All Time": "Deliveries"
   }[ui.period];
 
   const liveItems = state.items.filter(i=>!i.isPreorder);
@@ -395,6 +413,7 @@ function dashboardHTML(){
       ${statCard("trend", "Total Profit", fmtMoney(totalProfit), totalProfit>=0?"var(--green)":"var(--red)", totalProfit>=0?"var(--green-bg)":"var(--red-bg)")}
       ${statCard("percent", "ROI", fmtPct(roiVal), roiVal>=0?"var(--green)":"var(--red)", roiVal>=0?"var(--green-bg)":"var(--red-bg)")}
       ${statCard("cash", "Revenue", fmtMoney(totalRev), "var(--cyan)", "var(--cyan-bg)")}
+      ${statCard("cart", "Expenses", fmtMoney(totalExpenses), "var(--red)", "var(--red-bg)")}
     </div>
 
     <div class="dash-grid">
@@ -411,8 +430,8 @@ function dashboardHTML(){
     <div class="mini-grid">
       ${miniCard("mail",deliveriesDueLabel, ""+deliveriesDueCount, "var(--violet)","var(--violet-bg)")}
       ${miniCard("percent","Sell-Through", sellThrough.toFixed(0)+"%", "var(--green)","var(--green-bg)")}
-      ${miniCard("layers","Active Stock", ""+activeStock, "var(--gold)","var(--gold-bg)")}
-      ${miniCard("mail","Open Orders", ""+pendingDeliveryCount, "var(--magenta)","var(--magenta-bg)")}
+      ${miniCard("layers","Products In-Stock", ""+activeStock, "var(--gold)","var(--gold-bg)")}
+      ${miniCard("mail","Confirmed Orders", ""+pendingDeliveryCount, "var(--magenta)","var(--magenta-bg)")}
     </div>
 
     <div class="section-title">Most Profitable Items</div>
@@ -1180,6 +1199,163 @@ function attachSoldEvents(){
   });
 }
 
+/* ---------------- Expenses ---------------- */
+
+let expensesUI = { tagFilter: "All" };
+
+function expensesHTML(){
+  return `
+    <div class="toolbar-row">
+      <select id="expenseTagFilterSelect" style="width:auto;padding:9px 30px 9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
+        <option ${expensesUI.tagFilter==="All"?"selected":""}>All</option>
+        ${EXPENSE_TAGS.map(t=>`<option ${expensesUI.tagFilter===t?"selected":""}>${t}</option>`).join("")}
+      </select>
+      <button class="btn-primary" id="addExpenseBtn">${ICONS.plus} Add Expense</button>
+    </div>
+    <div id="expensesResultsContainer">${expensesResultsHTML()}</div>
+    <div style="height:20px;"></div>
+  `;
+}
+
+function expensesResultsHTML(){
+  const filtered = state.expenses
+    .filter(e => expensesUI.tagFilter==="All" || e.tag===expensesUI.tagFilter)
+    .slice()
+    .sort((a,b)=> new Date(b.date) - new Date(a.date));
+
+  const total = filtered.reduce((s,e)=>s+(e.amount||0),0);
+
+  if(filtered.length===0){
+    return `
+      <div class="empty-state">
+        ${ICONS.empty}
+        <div class="t">No expenses yet</div>
+        <div class="d">Add one manually, or set up email rules under Email Sync to catch them automatically.</div>
+      </div>
+    `;
+  }
+  return `
+    <div class="mini-grid" style="grid-template-columns:1fr;margin-top:14px;margin-bottom:0;">
+      ${miniCard("cash", `Total (${filtered.length} expense${filtered.length===1?"":"s"})`, fmtMoney(total), "var(--red)","var(--red-bg)")}
+    </div>
+    <div class="card table-wrap" style="margin-top:14px;">
+      <table class="data-table">
+        <thead><tr><th>Date</th><th>Tag</th><th>Description</th><th>Source</th><th style="text-align:right;">Amount</th><th></th></tr></thead>
+        <tbody>
+          ${filtered.map(e=>`
+            <tr>
+              <td class="mono dim">${formatDate(e.date)}</td>
+              <td><span style="font-size:12px;font-weight:600;color:var(--text-dim);">${escapeHTML(e.tag)}</span></td>
+              <td>${escapeHTML(e.description||"—")}</td>
+              <td class="dim" style="font-size:12px;">${e.source==="email" ? "Auto (email)" : "Manual"}</td>
+              <td class="mono" style="text-align:right;font-weight:600;">${fmtMoney(e.amount||0)}</td>
+              <td style="text-align:right;"><button class="icon-btn" data-remove-expense="${e.id}">${ICONS.close}</button></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderExpensesResults(){
+  const container = document.getElementById("expensesResultsContainer");
+  if(!container) return;
+  container.innerHTML = expensesResultsHTML();
+  document.querySelectorAll("[data-remove-expense]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      state.expenses = state.expenses.filter(e=>e.id!==btn.dataset.removeExpense);
+      saveState();
+      renderExpensesResults();
+    });
+  });
+}
+
+function attachExpensesEvents(){
+  document.getElementById("expenseTagFilterSelect").addEventListener("change", e=>{
+    expensesUI.tagFilter = e.target.value; renderExpensesResults();
+  });
+  document.getElementById("addExpenseBtn").addEventListener("click", openAddExpenseModal);
+  document.querySelectorAll("[data-remove-expense]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      state.expenses = state.expenses.filter(e=>e.id!==btn.dataset.removeExpense);
+      saveState();
+      renderExpensesResults();
+    });
+  });
+}
+
+let addExpenseFormState = null;
+
+function openAddExpenseModal(){
+  addExpenseFormState = { amount:"", date: todayISO(), tag: EXPENSE_TAGS[0], customTag:"", description:"" };
+  renderAddExpenseModal();
+}
+
+function renderAddExpenseModal(){
+  const f = addExpenseFormState;
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open" id="addExpenseBackdrop">
+      <div class="modal" style="width:420px;">
+        <div class="modal-header">
+          <h2>Add Expense</h2>
+          <button class="icon-btn" id="closeAddExpense">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label>Amount</label>
+            <input type="number" id="ae-amount" value="${escapeAttr(f.amount)}" placeholder="0.00" step="0.01" min="0">
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>Tag</label>
+              <select id="ae-tag">
+                ${EXPENSE_TAGS.map(t=>`<option value="${t}" ${f.tag===t?"selected":""}>${t}</option>`).join("")}
+              </select>
+            </div>
+            <div class="field">
+              <label>Date</label>
+              <input type="date" id="ae-date" value="${f.date}">
+            </div>
+          </div>
+          ${f.tag==="Other" ? `
+          <div class="field">
+            <label>Custom tag</label>
+            <input type="text" id="ae-customTag" value="${escapeAttr(f.customTag)}">
+          </div>` : ""}
+          <div class="field">
+            <label>Description (optional)</label>
+            <input type="text" id="ae-description" value="${escapeAttr(f.description)}" placeholder="e.g. Monthly proxy subscription">
+          </div>
+          <div style="height:6px;"></div>
+          <button class="btn-primary block" id="saveExpenseBtn">Save Expense</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("closeAddExpense").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
+  document.getElementById("ae-amount").addEventListener("input", e=>{ f.amount = e.target.value; });
+  document.getElementById("ae-tag").addEventListener("change", e=>{ f.tag = e.target.value; renderAddExpenseModal(); });
+  document.getElementById("ae-date").addEventListener("change", e=>{ f.date = e.target.value; });
+  document.getElementById("ae-description").addEventListener("input", e=>{ f.description = e.target.value; });
+  const customTagInput = document.getElementById("ae-customTag");
+  if(customTagInput) customTagInput.addEventListener("input", e=>{ f.customTag = e.target.value; });
+  document.getElementById("saveExpenseBtn").addEventListener("click", ()=>{
+    const amount = parseFloat(f.amount);
+    if(isNaN(amount) || amount<=0){ showToast("Enter a valid amount", "close"); return; }
+    const tag = f.tag==="Other" && f.customTag.trim() ? f.customTag.trim() : f.tag;
+    state.expenses.unshift({
+      id: uid(), amount, date: f.date, tag, description: f.description.trim() || null,
+      source: "manual", fromEmail: null
+    });
+    saveState();
+    document.getElementById("modalRoot").innerHTML = "";
+    if(ui.tab==="expenses") renderExpensesResults();
+    showToast("Expense added");
+  });
+}
+
 /* ============================================================
    ITEM DETAIL — full edit + delete
    ============================================================ */
@@ -1733,6 +1909,27 @@ function emailConnectedHTML(){
     </div>
 
     <div class="card panel" style="margin-bottom:20px;">
+      <div class="panel-title" style="margin-bottom:6px;">Expense Email Rules</div>
+      <div class="hint" style="margin-bottom:12px;">Emails from these senders are tracked as expenses (proxies, bots, shipping supplies, etc.) — never as orders. Add the sender's email or domain and pick which tag it should get.</div>
+      <div id="expenseRulesList" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;">
+        ${(state.expenseRules||[]).length===0 ? `<span class="hint" style="margin:0;">No expense rules yet.</span>` : state.expenseRules.map(r=>`
+          <div style="display:flex;align-items:center;gap:10px;background:var(--card-2);border-radius:var(--radius-sm);padding:8px 12px;">
+            <span class="mono" style="font-size:12.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHTML(r.senderPattern)}</span>
+            <span style="font-size:12px;font-weight:600;color:var(--text-dim);flex-shrink:0;">${escapeHTML(r.tag)}</span>
+            <button class="icon-btn" data-remove-expense-rule="${r.id}" style="flex-shrink:0;">${ICONS.close}</button>
+          </div>
+        `).join("")}
+      </div>
+      <div style="display:flex;gap:8px;">
+        <input type="text" id="expenseRuleSender" placeholder="proxyprovider.com or billing@proxyprovider.com" style="flex:1;">
+        <select id="expenseRuleTag" style="width:auto;">
+          ${EXPENSE_TAGS.map(t=>`<option>${t}</option>`).join("")}
+        </select>
+        <button class="btn-small" id="addExpenseRuleBtn">${ICONS.plus} Add</button>
+      </div>
+    </div>
+
+    <div class="card panel" style="margin-bottom:20px;">
       <div class="panel-title" style="margin-bottom:0;">Filters</div>
       <div class="filter-toggle">
         <div>
@@ -1897,6 +2094,25 @@ function attachEmailEvents(){
       emailUI.editingCatchAll = false;
       showToast(list.length ? `${list.length} catch-all domain${list.length===1?"":"s"} saved` : "Catch-all domains cleared");
       await refreshAccountInfo();
+    });
+
+    const addExpenseRuleBtn = document.getElementById("addExpenseRuleBtn");
+    if(addExpenseRuleBtn) addExpenseRuleBtn.addEventListener("click", ()=>{
+      const senderInput = document.getElementById("expenseRuleSender");
+      const tagSelect = document.getElementById("expenseRuleTag");
+      const senderPattern = senderInput.value.trim().toLowerCase();
+      if(!senderPattern){ showToast("Enter a sender email or domain first", "close"); return; }
+      state.expenseRules = state.expenseRules || [];
+      state.expenseRules.push({ id: uid(), senderPattern, tag: tagSelect.value });
+      saveState();
+      renderView();
+    });
+    document.querySelectorAll("[data-remove-expense-rule]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        state.expenseRules = state.expenseRules.filter(r=>r.id!==btn.dataset.removeExpenseRule);
+        saveState();
+        renderView();
+      });
     });
 
     const blockPromoToggle = document.getElementById("blockPromoToggle");
@@ -2076,7 +2292,8 @@ async function syncNow(silent){
     const res = await window.emailAPI.sync({
       sinceISO: state.emailLastSync,
       blockPromotions: state.emailFilters.blockPromotions,
-      excludedSenders: state.emailFilters.excludedSenders
+      excludedSenders: state.emailFilters.excludedSenders,
+      expenseRules: state.expenseRules || []
     });
     emailUI.syncing = false;
     if(!res.ok){
@@ -2085,14 +2302,17 @@ async function syncNow(silent){
       return;
     }
     const { addedCount, cancelledCount } = mergeSyncResults(res.results);
+    const newExpenseCount = mergeExpenseResults(res.expenseResults || []);
     state.emailLastSync = new Date().toISOString();
     saveState();
     if(!isTypingInField()) renderView();
-    if(!silent || res.results.length>0){
+    const totalFound = res.results.length + (res.expenseResults ? res.expenseResults.length : 0);
+    if(!silent || totalFound>0){
       const extras = [];
       if(addedCount) extras.push(`${addedCount} added to stock`);
       if(cancelledCount) extras.push(`${cancelledCount} order${cancelledCount===1?"":"s"} cancelled`);
-      showToast(`Synced — ${res.results.length} order email(s) found${extras.length ? `, ${extras.join(", ")}` : ""}`, cancelledCount ? "close" : "check");
+      if(newExpenseCount) extras.push(`${newExpenseCount} expense${newExpenseCount===1?"":"s"} tracked`);
+      showToast(`Synced — ${totalFound} email(s) found${extras.length ? `, ${extras.join(", ")}` : ""}`, cancelledCount ? "close" : "check");
     }
   }catch(e){
     emailUI.syncing = false;
@@ -2111,6 +2331,25 @@ function startAutoSync(){
 }
 function stopAutoSync(){
   if(autoSyncTimer){ clearInterval(autoSyncTimer); autoSyncTimer = null; }
+}
+
+// Dedup by fromEmail+date+amount (the same day's re-scan issue that
+// affects orders applies here too — this stops the same expense email
+// from being added twice on repeat syncs).
+function mergeExpenseResults(expenseResults){
+  let newCount = 0;
+  expenseResults.forEach(r=>{
+    if(r.amount==null) return; // couldn't find an amount — skip rather than log a $0 expense
+    const matchKey = "expense:"+(r.fromEmail||"")+"|"+r.date+"|"+r.amount;
+    if(state.expenses.some(e=>e.matchKey===matchKey)) return;
+    state.expenses.unshift({
+      id: uid(), matchKey, amount: r.amount, tag: r.tag,
+      date: (r.date||new Date().toISOString()).slice(0,10),
+      description: r.description || null, source: "email", fromEmail: r.fromEmail||null
+    });
+    newCount++;
+  });
+  return newCount;
 }
 
 function mergeSyncResults(results){
