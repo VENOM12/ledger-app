@@ -721,10 +721,24 @@ function bindChartHoverEvents(){
     return best;
   }
 
-  svg.addEventListener("mousemove", (e)=>{
-    const rect = svg.getBoundingClientRect();
-    const svgX = ((e.clientX - rect.left) / rect.width) * viewBoxWidth;
-    const p = nearestPoint(svgX);
+  // getBoundingClientRect() forces the browser to synchronously recompute
+  // layout — calling it on every single mousemove event (which can fire
+  // 60+ times a second) was what actually caused the visible "bouncing":
+  // real, continuous jank from redoing that work far more than needed,
+  // not a genuine change in the page's layout (a snapshot-based check at
+  // rest wouldn't have caught this, since it only shows up under rapid,
+  // continuous movement). Cached once per hover session instead, and all
+  // the actual DOM writes are batched to at most once per animation frame.
+  let cachedRect = null;
+  let pendingPoint = null;
+  let rafScheduled = false;
+  let lastShownPointX = null;
+
+  function flush(){
+    rafScheduled = false;
+    const p = pendingPoint;
+    if(!p || p.x === lastShownPointX) return;
+    lastShownPointX = p.x;
 
     hoverLine.setAttribute("x1", p.x); hoverLine.setAttribute("x2", p.x); hoverLine.setAttribute("opacity", "0.5");
     hoverDot.setAttribute("cx", p.x); hoverDot.setAttribute("cy", p.y); hoverDot.setAttribute("opacity", "1");
@@ -733,13 +747,26 @@ function bindChartHoverEvents(){
     tooltipValue.textContent = fmtMoney(p.value);
     tooltipValue.className = "mono " + (p.value>=0 ? "pos" : "neg");
 
-    const leftPct = (p.x / viewBoxWidth) * 100;
-    tooltip.style.left = leftPct + "%";
+    tooltip.style.left = ((p.x / viewBoxWidth) * 100) + "%";
     tooltip.style.top = ((p.y / 150) * 100) + "%";
     tooltip.style.opacity = "1";
+  }
+
+  svg.addEventListener("mouseenter", ()=>{ cachedRect = svg.getBoundingClientRect(); });
+
+  svg.addEventListener("mousemove", (e)=>{
+    if(!cachedRect) cachedRect = svg.getBoundingClientRect();
+    const svgX = ((e.clientX - cachedRect.left) / cachedRect.width) * viewBoxWidth;
+    pendingPoint = nearestPoint(svgX);
+    if(!rafScheduled){
+      rafScheduled = true;
+      requestAnimationFrame(flush);
+    }
   });
 
   svg.addEventListener("mouseleave", ()=>{
+    cachedRect = null;
+    lastShownPointX = null;
     hoverLine.setAttribute("opacity", "0");
     hoverDot.setAttribute("opacity", "0");
     tooltip.style.opacity = "0";
