@@ -78,19 +78,6 @@ function periodStart(period){
   }
 }
 
-// Forward-looking window used for "deliveries due" — includes anything already overdue.
-function periodDueEnd(period){
-  const now = new Date();
-  const d = new Date(now); d.setHours(23,59,59,999);
-  switch(period){
-    case "Day": return d;
-    case "Week": d.setDate(d.getDate()+6); return d;
-    case "Month": { const m=new Date(d); m.setMonth(m.getMonth()+1); return m; }
-    case "Year": { const y=new Date(d); y.setFullYear(y.getFullYear()+1); return y; }
-    default: return null;
-  }
-}
-
 /* ---------------- Computed item stats (single currency, no conversion) ---------------- */
 
 function qtySold(item){ return item.sales.reduce((s,r)=>s+r.quantitySold,0); }
@@ -350,12 +337,33 @@ function dashboardHTML(){
   const cogs = salesInPeriod.reduce((s,p)=> s + p.sale.quantitySold*p.item.purchasePricePerUnit, 0);
   const roiVal = cogs>0 ? (totalProfit/cogs)*100 : 0;
 
-  const dueEnd = periodDueEnd(ui.period);
-  const deliveriesDue = state.pendingOrders.filter(p=>
-    p.status!=="delivered" && p.status!=="cancelled" && p.expectedDelivery &&
-    (!dueEnd || new Date(p.expectedDelivery) <= dueEnd)
-  ).length;
-  const dueLabel = { Day:"Due Today", Week:"Due This Week", Month:"Due This Month", Year:"Due This Year", "All Time":"Deliveries Due" }[ui.period] || "Deliveries Due";
+  // Forward-looking window (unlike periodStart, which looks backward for
+  // spend/profit history) — "Day" means due today, "Week" means due in
+  // the next 7 days, etc. "All Time" has no bounds at all, so it also
+  // catches anything overdue, not just future-dated ones.
+  function deliveryWindow(period){
+    const today = new Date(); today.setHours(0,0,0,0);
+    if(period==="All Time") return { from:null, to:null };
+    const to = new Date(today);
+    if(period==="Day") to.setHours(23,59,59,999);
+    else if(period==="Week"){ to.setDate(to.getDate()+6); to.setHours(23,59,59,999); }
+    else if(period==="Month"){ to.setMonth(to.getMonth()+1); to.setHours(23,59,59,999); }
+    else if(period==="Year"){ to.setFullYear(to.getFullYear()+1); to.setHours(23,59,59,999); }
+    return { from: today, to };
+  }
+  const { from: dueFrom, to: dueTo } = deliveryWindow(ui.period);
+  const deliveriesDueCount = state.pendingOrders.filter(p=>{
+    if(p.status==="delivered" || p.status==="cancelled") return false;
+    if(!p.expectedDelivery) return false;
+    const d = new Date(p.expectedDelivery);
+    if(dueFrom && d < dueFrom) return false;
+    if(dueTo && d > dueTo) return false;
+    return true;
+  }).length;
+  const deliveriesDueLabel = {
+    "Day": "Due Today", "Week": "Due This Week", "Month": "Due This Month",
+    "Year": "Due This Year", "All Time": "Deliveries Due"
+  }[ui.period];
 
   const liveItems = state.items.filter(i=>!i.isPreorder);
   const totalBought = liveItems.reduce((s,i)=>s+i.quantityPurchased,0);
@@ -401,7 +409,7 @@ function dashboardHTML(){
     </div>
 
     <div class="mini-grid">
-      ${miniCard("box",dueLabel, ""+deliveriesDue, "var(--violet)","var(--violet-bg)")}
+      ${miniCard("mail",deliveriesDueLabel, ""+deliveriesDueCount, "var(--violet)","var(--violet-bg)")}
       ${miniCard("percent","Sell-Through", sellThrough.toFixed(0)+"%", "var(--green)","var(--green-bg)")}
       ${miniCard("layers","Active Stock", ""+activeStock, "var(--gold)","var(--gold-bg)")}
       ${miniCard("mail","Open Orders", ""+pendingDeliveryCount, "var(--magenta)","var(--magenta-bg)")}
