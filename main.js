@@ -144,8 +144,8 @@ function loadLicenseState() {
   }
 }
 
-function saveLicenseState({ licenseKey, machineId, activated, lastValidatedAt }) {
-  const data = { machineId, activated, lastValidatedAt };
+function saveLicenseState({ licenseKey, machineId, activated, lastValidatedAt, expiresAt }) {
+  const data = { machineId, activated, lastValidatedAt, expiresAt: expiresAt || null };
   if (safeStorage.isEncryptionAvailable()) {
     data.encryptedKey = safeStorage.encryptString(licenseKey).toString('base64');
   } else {
@@ -176,7 +176,19 @@ async function validateWithWhop(licenseKey, machineId) {
       },
       body: JSON.stringify({ metadata: { machine_id: machineId } })
     });
-    if (resp.status === 201) return { ok: true };
+    if (resp.status === 201) {
+      // Whop returns expires_at and renewal_period_end as Unix timestamps
+      // (seconds) — expires_at is the more direct "when this membership
+      // actually ends" field, but isn't always set for an active
+      // subscription, so renewal_period_end is kept as a fallback.
+      let expiresAt = null;
+      try {
+        const body = await resp.json();
+        const raw = body.expires_at || body.renewal_period_end || null;
+        if (raw) expiresAt = new Date(raw * 1000).toISOString().slice(0, 10);
+      } catch (e) { /* body parsing is best-effort — activation still succeeded */ }
+      return { ok: true, expiresAt };
+    }
     if (resp.status === 400) return { ok: false, error: 'invalid', message: 'That key isn\'t valid, or it\'s already active on a different computer.' };
     return { ok: false, error: 'unexpected', message: `Unexpected response from the activation server (${resp.status}).` };
   } catch (e) {
@@ -188,7 +200,7 @@ ipcMain.handle('license:getStatus', () => {
   const state = loadLicenseState();
   if (!state || !state.activated) return { activated: false };
   const needsRevalidation = !state.lastValidatedAt || (Date.now() - new Date(state.lastValidatedAt).getTime()) > REVALIDATE_INTERVAL_MS;
-  return { activated: true, needsRevalidation };
+  return { activated: true, needsRevalidation, expiresAt: state.expiresAt || null };
 });
 
 ipcMain.handle('license:activate', async (evt, { licenseKey }) => {
@@ -197,7 +209,7 @@ ipcMain.handle('license:activate', async (evt, { licenseKey }) => {
   const machineId = getOrCreateMachineId();
   const result = await validateWithWhop(key, machineId);
   if (result.ok) {
-    saveLicenseState({ licenseKey: key, machineId, activated: true, lastValidatedAt: new Date().toISOString() });
+    saveLicenseState({ licenseKey: key, machineId, activated: true, lastValidatedAt: new Date().toISOString(), expiresAt: result.expiresAt });
     return { ok: true };
   }
   return { ok: false, error: result.message };
@@ -208,15 +220,15 @@ ipcMain.handle('license:revalidate', async () => {
   if (!state || !state.activated || !state.licenseKey) return { ok: false, error: 'not_activated' };
   const result = await validateWithWhop(state.licenseKey, state.machineId);
   if (result.ok) {
-    saveLicenseState({ licenseKey: state.licenseKey, machineId: state.machineId, activated: true, lastValidatedAt: new Date().toISOString() });
-    return { ok: true };
+    saveLicenseState({ licenseKey: state.licenseKey, machineId: state.machineId, activated: true, lastValidatedAt: new Date().toISOString(), expiresAt: result.expiresAt });
+    return { ok: true, expiresAt: result.expiresAt };
   }
   if (result.error === 'network' || result.error === 'config' || result.error === 'unexpected') {
     // Don't lock someone out just because we couldn't reach the server —
     // only an explicit "invalid" response from Whop revokes access.
     return { ok: false, error: result.error };
   }
-  saveLicenseState({ licenseKey: state.licenseKey, machineId: state.machineId, activated: false, lastValidatedAt: new Date().toISOString() });
+  saveLicenseState({ licenseKey: state.licenseKey, machineId: state.machineId, activated: false, lastValidatedAt: new Date().toISOString(), expiresAt: state.expiresAt });
   return { ok: false, error: result.error, message: result.message };
 });
 

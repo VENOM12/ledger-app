@@ -6,6 +6,23 @@
 
 const CATEGORIES = ["Pokemon", "Sports Cards", "Sneakers", "Video Games", "Electronics", "Other"];
 const EXPENSE_TAGS = ["Proxies", "Bots", "Shipping", "Packing Materials", "Petrol", "Rent", "Electricity", "Software/Subscriptions", "Other"];
+
+const THEMES = {
+  violet: { name:"Violet", violet:"#9B6BF5", violetBg:"rgba(155,107,245,0.14)", magenta:"#E869E0", magentaBg:"rgba(232,105,224,0.14)", glowRgb:"155,107,245" },
+  ocean:  { name:"Ocean",  violet:"#4FA9F7", violetBg:"rgba(79,169,247,0.14)",  magenta:"#33D6C0", magentaBg:"rgba(51,214,192,0.14)",  glowRgb:"79,169,247" },
+  emerald:{ name:"Emerald",violet:"#3DD68C", violetBg:"rgba(61,214,140,0.14)", magenta:"#2DD4BF", magentaBg:"rgba(45,212,191,0.14)",  glowRgb:"61,214,140" },
+  sunset: { name:"Sunset", violet:"#F5A623", violetBg:"rgba(245,166,35,0.14)", magenta:"#F5576C", magentaBg:"rgba(245,87,108,0.14)",  glowRgb:"245,140,60" }
+};
+
+function applyTheme(key){
+  const t = THEMES[key] || THEMES.violet;
+  const root = document.documentElement.style;
+  root.setProperty("--violet", t.violet);
+  root.setProperty("--violet-bg", t.violetBg);
+  root.setProperty("--magenta", t.magenta);
+  root.setProperty("--magenta-bg", t.magentaBg);
+  root.setProperty("--glow-rgb", t.glowRgb);
+}
 const CURRENCIES = ["USD","EUR","GBP","JPY","CAD","AUD","CHF","CNY","HKD","SGD","MXN","NZD","SEK","NOK","KRW"];
 
 const CAT_STYLES = {
@@ -36,13 +53,14 @@ function loadState(){
     const raw = localStorage.getItem(STORAGE_KEY);
     if(raw){
       const parsed = JSON.parse(raw);
-      // Migration for people upgrading from before expenses existed.
+      // Migration for people upgrading from before expenses/themes existed.
       if(!Array.isArray(parsed.expenses)) parsed.expenses = [];
       if(!Array.isArray(parsed.expenseRules)) parsed.expenseRules = [];
+      if(!parsed.colorScheme || !THEMES[parsed.colorScheme]) parsed.colorScheme = "violet";
       return parsed;
     }
   }catch(e){ console.warn("Could not read saved data", e); }
-  return { displayCurrency: "USD", items: [], pendingOrders: [], pendingSales: [], expenses: [], expenseRules: [], emailLastSync: null, emailFilters: { blockPromotions: true, excludedSenders: [] } };
+  return { displayCurrency: "USD", items: [], pendingOrders: [], pendingSales: [], expenses: [], expenseRules: [], colorScheme: "violet", emailLastSync: null, emailFilters: { blockPromotions: true, excludedSenders: [] } };
 }
 function saveState(){
   try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
@@ -56,6 +74,7 @@ if(!state.displayCurrency) state.displayCurrency = "USD";
 if(!state.emailFilters) state.emailFilters = { blockPromotions: true, excludedSenders: [] };
 
 let ui = { tab: "dashboard", period: "Month", stockFilter: "In Stock", stockCategoryFilter: "All", search: "", detailItemId: null };
+let licenseExpiresAt = null; // shown next to "Saved locally" in the sidebar once known
 
 /* ---------------- Helpers ---------------- */
 
@@ -149,6 +168,7 @@ const ICONS = {
   chev: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>`,
   download: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
   trash: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`,
+  pencil: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>`,
   layers: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>`,
   mail: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/></svg>`,
   refresh: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`,
@@ -246,7 +266,7 @@ function render(){
         ${navBtn("expenses","cash","Expenses")}
       </div>
       <div class="sidebar-footer">
-        <div class="status-row"><span class="pulse"></span><span>Saved locally</span></div>
+        <div class="status-row"><span class="pulse"></span><span>Saved locally${licenseExpiresAt ? ` · Renews ${formatDate(licenseExpiresAt)}` : ""}</span></div>
         <div id="updateBannerSlot"></div>
         <button class="ghost-btn" id="settingsNavBtn">${ICONS.gear}<span>Settings</span></button>
       </div>
@@ -611,13 +631,13 @@ function sparklineSVG(series){
 
   return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;display:block;">
     <defs><linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#9B6BF5" stop-opacity="0.35"/>
-      <stop offset="100%" stop-color="#9B6BF5" stop-opacity="0"/>
+      <stop offset="0%" style="stop-color:var(--violet);stop-opacity:0.35"/>
+      <stop offset="100%" style="stop-color:var(--violet);stop-opacity:0"/>
     </linearGradient></defs>
     <line x1="${pad}" y1="${zeroY.toFixed(1)}" x2="${w-pad}" y2="${zeroY.toFixed(1)}" stroke="#232332" stroke-width="1" stroke-dasharray="3 3"/>
     <text x="${pad}" y="${(zeroY-5).toFixed(1)}" font-size="9.5" fill="#5C5C72" font-family="IBM Plex Mono, monospace">${fmtMoney(0)}</text>
     <path d="${areaPath}" fill="url(#sparkFill)" stroke="none"/>
-    <path d="${linePath}" fill="none" stroke="#9B6BF5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="${linePath}" fill="none" style="stroke:var(--violet);" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
     ${valueMarkers}
     ${dateLabels.map(l=>`<text x="${l.x}" y="${h-6}" font-size="9.5" fill="#5C5C72" font-family="IBM Plex Mono, monospace" text-anchor="middle">${l.text}</text>`).join("")}
   </svg>`;
@@ -987,6 +1007,7 @@ function allOrdersContentHTML(){
 
   return `
     <div class="toolbar-row">
+      <button class="btn-primary" id="addOrderBtn">${ICONS.plus} Add Order</button>
       <select id="orderRetailerFilterSelect" style="width:auto;padding:9px 30px 9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
         <option ${ordersUI.retailerFilter==="All"?"selected":""}>All</option>
         ${retailers.map(r=>`<option ${ordersUI.retailerFilter===r?"selected":""}>${escapeHTML(r)}</option>`).join("")}
@@ -1053,6 +1074,107 @@ function renderAllOrdersResults(){
   bindAllOrdersResultEvents();
 }
 
+let addOrderFormState = null;
+const ORDER_STATUSES = [
+  ["confirmed","Order Placed"], ["shipped","Shipped"],
+  ["out_for_delivery","Out for Delivery"], ["ready_for_collection","Ready for Collection"],
+  ["delivered","Delivered"]
+];
+
+function openAddOrderModal(){
+  addOrderFormState = { retailer:"", orderNumber:"", price:"", orderDate: todayISO(), status:"confirmed", carrier:"", trackingNumber:"", expectedDelivery:"" };
+  renderAddOrderModal();
+}
+
+function renderAddOrderModal(){
+  const f = addOrderFormState;
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open" id="addOrderBackdrop">
+      <div class="modal" style="width:460px;">
+        <div class="modal-header">
+          <h2>Add Order</h2>
+          <button class="icon-btn" id="closeAddOrder">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-grid">
+            <div class="field" style="grid-column:1/-1;">
+              <label>Retailer</label>
+              <input type="text" id="ao-retailer" value="${escapeAttr(f.retailer)}" placeholder="e.g. Amazon">
+            </div>
+            <div class="field">
+              <label>Price</label>
+              <input type="number" id="ao-price" value="${escapeAttr(f.price)}" placeholder="0.00" step="0.01" min="0">
+            </div>
+            <div class="field">
+              <label>Order number (optional)</label>
+              <input type="text" id="ao-orderNumber" value="${escapeAttr(f.orderNumber)}">
+            </div>
+            <div class="field">
+              <label>Order date</label>
+              <input type="date" id="ao-orderDate" value="${f.orderDate}">
+            </div>
+            <div class="field">
+              <label>Status</label>
+              <select id="ao-status">
+                ${ORDER_STATUSES.map(([v,l])=>`<option value="${v}" ${f.status===v?"selected":""}>${l}</option>`).join("")}
+              </select>
+            </div>
+            <div class="field">
+              <label>Carrier (optional)</label>
+              <input type="text" id="ao-carrier" value="${escapeAttr(f.carrier)}">
+            </div>
+            <div class="field">
+              <label>Tracking number (optional)</label>
+              <input type="text" id="ao-trackingNumber" value="${escapeAttr(f.trackingNumber)}">
+            </div>
+            <div class="field" style="grid-column:1/-1;">
+              <label>Expected delivery (optional)</label>
+              <input type="date" id="ao-expectedDelivery" value="${f.expectedDelivery}">
+            </div>
+          </div>
+          ${f.status==="delivered" ? `<div class="hint" style="margin-bottom:10px;">Since this is already delivered, it'll be added straight to Stock too.</div>` : ""}
+          <button class="btn-primary block" id="saveAddOrderBtn">Add Order</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("closeAddOrder").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
+  document.getElementById("ao-retailer").addEventListener("input", e=>{ f.retailer = e.target.value; });
+  document.getElementById("ao-price").addEventListener("input", e=>{ f.price = e.target.value; });
+  document.getElementById("ao-orderNumber").addEventListener("input", e=>{ f.orderNumber = e.target.value; });
+  document.getElementById("ao-orderDate").addEventListener("change", e=>{ f.orderDate = e.target.value; });
+  document.getElementById("ao-status").addEventListener("change", e=>{ f.status = e.target.value; renderAddOrderModal(); });
+  document.getElementById("ao-carrier").addEventListener("input", e=>{ f.carrier = e.target.value; });
+  document.getElementById("ao-trackingNumber").addEventListener("input", e=>{ f.trackingNumber = e.target.value; });
+  document.getElementById("ao-expectedDelivery").addEventListener("change", e=>{ f.expectedDelivery = e.target.value; });
+
+  document.getElementById("saveAddOrderBtn").addEventListener("click", ()=>{
+    const retailer = f.retailer.trim();
+    const price = f.price.trim() ? parseFloat(f.price) : null;
+    if(!retailer){ showToast("Enter a retailer", "close"); return; }
+    if(f.price.trim() && (isNaN(price) || price<0)){ showToast("Enter a valid price", "close"); return; }
+
+    const order = {
+      id: uid(), matchKey: "manual:"+uid(), retailer, price,
+      fromEmail: null, orderDate: f.orderDate || todayISO(),
+      expectedDelivery: f.expectedDelivery || null, expectedDeliveryTime: null,
+      carrier: f.carrier.trim() || null, trackingNumber: f.trackingNumber.trim() || null,
+      orderNumber: f.orderNumber.trim() || null, status: f.status, addedToStockId: null, isPKCPreorder: false
+    };
+
+    if(f.status==="delivered"){
+      const item = createStockItemFromOrder(order);
+      order.addedToStockId = item.id;
+    }
+    state.pendingOrders.unshift(order);
+    saveState();
+    document.getElementById("modalRoot").innerHTML = "";
+    showToast(`Order from ${retailer} added`);
+    if(ui.tab==="orders") renderView();
+  });
+}
+
 function orderDetailModal(orderId){
   const p = state.pendingOrders.find(o=>o.id===orderId);
   if(!p) return;
@@ -1108,6 +1230,7 @@ function orderDetailModal(orderId){
 }
 
 function attachAllOrdersEvents(){
+  document.getElementById("addOrderBtn").addEventListener("click", openAddOrderModal);
   document.getElementById("orderRetailerFilterSelect").addEventListener("change", e=>{
     ordersUI.retailerFilter = e.target.value; renderAllOrdersResults();
   });
@@ -1144,15 +1267,33 @@ function bindAllOrdersResultEvents(){
   });
 }
 
+let pkcUI = { search: "" };
+
 function pkcOrdersContentHTML(){
-  const preorders = state.items.filter(i=>i.isPreorder).sort((a,b)=> new Date(a.expectedArrival||"9999-12-31") - new Date(b.expectedArrival||"9999-12-31"));
+  return `
+    <div class="toolbar-row">
+      <button class="btn-primary" id="addPkcPreorderBtn">${ICONS.plus} Add Preorder</button>
+      <div class="search-bar">
+        ${ICONS.search}
+        <input type="text" id="pkcSearchInput" placeholder="Search PKC preorders" value="${escapeAttr(pkcUI.search)}">
+      </div>
+    </div>
+    <div id="pkcResultsContainer">${pkcResultsHTML()}</div>
+    <div style="height:20px;"></div>
+  `;
+}
+
+function pkcResultsHTML(){
+  const preorders = state.items.filter(i=>i.isPreorder)
+    .filter(i=> !pkcUI.search || i.name.toLowerCase().includes(pkcUI.search.toLowerCase()))
+    .sort((a,b)=> new Date(a.expectedArrival||"9999-12-31") - new Date(b.expectedArrival||"9999-12-31"));
 
   if(preorders.length===0){
     return `
       <div class="empty-state">
         ${ICONS.clock}
         <div class="t">No PKC orders yet</div>
-        <div class="d">Pokémon Center preorder confirmations are detected automatically via Email Sync, or check "This is a preorder" when adding a purchase manually.</div>
+        <div class="d">Pokémon Center preorder confirmations are detected automatically via Email Sync, or use "Add Preorder" above.</div>
       </div>
     `;
   }
@@ -1222,11 +1363,24 @@ function pkcOrdersContentHTML(){
       of the confirmation email's text, which varies a lot even within Pokémon Center's own emails.
       Double check anything here before relying on it.
     </div>
-    <div style="height:20px;"></div>
   `;
 }
 
+function renderPkcResults(){
+  const container = document.getElementById("pkcResultsContainer");
+  if(!container) return;
+  container.innerHTML = pkcResultsHTML();
+  bindPkcResultEvents();
+}
+
 function attachPreordersEvents(){
+  document.getElementById("addPkcPreorderBtn").addEventListener("click", openAddPkcPreorderModal);
+  const search = document.getElementById("pkcSearchInput");
+  search.addEventListener("input", e=>{ pkcUI.search = e.target.value; renderPkcResults(); });
+  bindPkcResultEvents();
+}
+
+function bindPkcResultEvents(){
   document.querySelectorAll("[data-open]").forEach(el=>{
     el.addEventListener("click", ()=>{ ui.detailItemId = el.dataset.open; render(); });
   });
@@ -1237,8 +1391,102 @@ function attachPreordersEvents(){
       item.isPreorder = false;
       saveState();
       showToast(`${item.name} moved to Stock`);
-      renderView();
+      renderPkcResults();
     });
+  });
+}
+
+let addPkcFormState = null;
+
+function openAddPkcPreorderModal(){
+  addPkcFormState = { name:"", price:"", orderNumber:"", orderDate: todayISO(), expectedArrival:"", deliveryAddress:"", recipientName:"" };
+  renderAddPkcPreorderModal();
+}
+
+function renderAddPkcPreorderModal(){
+  const f = addPkcFormState;
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open" id="addPkcBackdrop">
+      <div class="modal" style="width:460px;">
+        <div class="modal-header">
+          <h2>Add PKC Preorder</h2>
+          <button class="icon-btn" id="closeAddPkc">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label>Item name</label>
+            <input type="text" id="apk-name" value="${escapeAttr(f.name)}" placeholder="e.g. Charizard VMAX Booster Box">
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>Price</label>
+              <input type="number" id="apk-price" value="${escapeAttr(f.price)}" placeholder="0.00" step="0.01" min="0">
+            </div>
+            <div class="field">
+              <label>Order number (optional)</label>
+              <input type="text" id="apk-orderNumber" value="${escapeAttr(f.orderNumber)}">
+            </div>
+            <div class="field">
+              <label>Order date</label>
+              <input type="date" id="apk-orderDate" value="${f.orderDate}">
+            </div>
+            <div class="field">
+              <label>Expected arrival (optional)</label>
+              <input type="date" id="apk-expectedArrival" value="${f.expectedArrival}">
+            </div>
+          </div>
+          <div class="field">
+            <label>Recipient name (optional)</label>
+            <input type="text" id="apk-recipientName" value="${escapeAttr(f.recipientName)}">
+          </div>
+          <div class="field">
+            <label>Delivery address (optional)</label>
+            <input type="text" id="apk-deliveryAddress" value="${escapeAttr(f.deliveryAddress)}">
+          </div>
+          <div style="height:6px;"></div>
+          <button class="btn-primary block" id="saveAddPkcBtn">Add Preorder</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("closeAddPkc").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
+  document.getElementById("apk-name").addEventListener("input", e=>{ f.name = e.target.value; });
+  document.getElementById("apk-price").addEventListener("input", e=>{ f.price = e.target.value; });
+  document.getElementById("apk-orderNumber").addEventListener("input", e=>{ f.orderNumber = e.target.value; });
+  document.getElementById("apk-orderDate").addEventListener("change", e=>{ f.orderDate = e.target.value; });
+  document.getElementById("apk-expectedArrival").addEventListener("change", e=>{ f.expectedArrival = e.target.value; });
+  document.getElementById("apk-recipientName").addEventListener("input", e=>{ f.recipientName = e.target.value; });
+  document.getElementById("apk-deliveryAddress").addEventListener("input", e=>{ f.deliveryAddress = e.target.value; });
+
+  document.getElementById("saveAddPkcBtn").addEventListener("click", ()=>{
+    const name = f.name.trim();
+    const price = parseFloat(f.price);
+    if(!name){ showToast("Enter an item name", "close"); return; }
+    if(isNaN(price) || price<0){ showToast("Enter a valid price", "close"); return; }
+
+    const item = {
+      id: uid(), name, category: "Pokemon", quantityPurchased: 1, purchasePricePerUnit: price,
+      retailer: "Pokemon Center", purchaseDate: f.orderDate || todayISO(), notes: "",
+      isPreorder: true, expectedArrival: f.expectedArrival || null,
+      orderNumber: f.orderNumber.trim() || null,
+      deliveryAddress: f.deliveryAddress.trim() || null, recipientName: f.recipientName.trim() || null,
+      sentToEmail: null, lineItems: [], sourceEmailDetected: false,
+      needsAttention: false, attentionDeadline: null, attentionDeadlineTime: null,
+      isCancelled: false, image: null, sales: []
+    };
+    state.items.unshift(item);
+    state.pendingOrders.unshift({
+      id: uid(), matchKey: "manual:"+item.id, retailer: "Pokemon Center", price,
+      fromEmail: null, orderDate: f.orderDate || todayISO(),
+      expectedDelivery: f.expectedArrival || null, expectedDeliveryTime: null,
+      carrier: null, trackingNumber: null, orderNumber: f.orderNumber.trim() || null,
+      status: "confirmed", addedToStockId: item.id, isPKCPreorder: true
+    });
+    saveState();
+    document.getElementById("modalRoot").innerHTML = "";
+    showToast(`${name} added as a preorder`);
+    if(ui.tab==="orders") renderView();
   });
 }
 
@@ -1294,7 +1542,7 @@ function soldResultsHTML(){
     </div>
     <div class="card table-wrap" style="margin-top:14px;">
       <table class="data-table">
-        <thead><tr><th>Date</th><th>Item</th><th>Platform</th><th>Qty</th><th>Gross</th><th>Fees</th><th>Net</th><th style="text-align:right;">Profit</th></tr></thead>
+        <thead><tr><th>Date</th><th>Item</th><th>Platform</th><th>Qty</th><th>Gross</th><th>Fees</th><th>Net</th><th style="text-align:right;">Profit</th><th></th></tr></thead>
         <tbody>
           ${filtered.map(({item,sale})=>{
             const net = saleNet(sale);
@@ -1308,6 +1556,7 @@ function soldResultsHTML(){
               <td class="mono dim">${sale.fees ? "-"+fmtMoney(sale.fees) : "—"}</td>
               <td class="mono" style="font-weight:600;">${fmtMoney(net)}</td>
               <td class="mono ${itemProfit>=0?'pos':'neg'}" style="text-align:right;">${itemProfit>=0?'+':''}${fmtMoney(itemProfit)}</td>
+              <td style="text-align:right;"><button class="icon-btn" data-edit-sale="${item.id}:${sale.id}" title="Edit sale">${ICONS.pencil}</button></td>
             </tr>`;
           }).join("")}
         </tbody>
@@ -1320,8 +1569,120 @@ function renderSoldResults(){
   const container = document.getElementById("soldResultsContainer");
   if(!container) return;
   container.innerHTML = soldResultsHTML();
+  bindSoldResultEvents();
+}
+
+function bindSoldResultEvents(){
   document.querySelectorAll("tr[data-open]").forEach(row=>{
-    row.addEventListener("click", ()=>{ ui.detailItemId = row.dataset.open; render(); });
+    row.addEventListener("click", (e)=>{
+      if(e.target.closest("button")) return;
+      ui.detailItemId = row.dataset.open; render();
+    });
+  });
+  document.querySelectorAll("[data-edit-sale]").forEach(btn=>{
+    btn.addEventListener("click", (e)=>{
+      e.stopPropagation();
+      const [itemId, saleId] = btn.dataset.editSale.split(":");
+      openEditSaleModal(itemId, saleId);
+    });
+  });
+}
+
+let editSaleFormState = null;
+
+function openEditSaleModal(itemId, saleId){
+  const item = state.items.find(i=>i.id===itemId);
+  if(!item) return;
+  const sale = item.sales.find(s=>s.id===saleId);
+  if(!sale) return;
+  editSaleFormState = {
+    itemId, saleId,
+    platform: sale.platform || PLATFORMS[0],
+    customPlatform: PLATFORMS.includes(sale.platform) ? "" : (sale.platform||""),
+    price: String(sale.salePricePerUnit), fees: String(sale.fees||0),
+    quantity: String(sale.quantitySold), date: sale.saleDate
+  };
+  renderEditSaleModal();
+}
+
+function renderEditSaleModal(){
+  const f = editSaleFormState;
+  const item = state.items.find(i=>i.id===f.itemId);
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open" id="editSaleBackdrop">
+      <div class="modal" style="width:420px;">
+        <div class="modal-header">
+          <h2>Edit Sale</h2>
+          <button class="icon-btn" id="closeEditSale">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          <div class="hint" style="margin-bottom:14px;">${item ? escapeHTML(item.name) : ""}</div>
+          <div class="form-grid">
+            <div class="field">
+              <label>Platform</label>
+              <select id="es-platform">
+                ${PLATFORMS.map(p=>`<option value="${p}" ${f.platform===p?"selected":""}>${p}</option>`).join("")}
+              </select>
+            </div>
+            <div class="field">
+              <label>Quantity sold</label>
+              <input type="number" id="es-quantity" value="${escapeAttr(f.quantity)}" min="1" step="1">
+            </div>
+          </div>
+          ${f.platform==="Other" ? `
+          <div class="field">
+            <label>Custom platform</label>
+            <input type="text" id="es-customPlatform" value="${escapeAttr(f.customPlatform)}">
+          </div>` : ""}
+          <div class="form-grid">
+            <div class="field">
+              <label>Sale price (per unit)</label>
+              <input type="number" id="es-price" value="${escapeAttr(f.price)}" step="0.01" min="0">
+            </div>
+            <div class="field">
+              <label>Fees (total)</label>
+              <input type="number" id="es-fees" value="${escapeAttr(f.fees)}" step="0.01" min="0">
+            </div>
+          </div>
+          <div class="field">
+            <label>Sale date</label>
+            <input type="date" id="es-date" value="${f.date}">
+          </div>
+          <div style="height:6px;"></div>
+          <button class="btn-primary block" id="saveEditSaleBtn">Save Changes</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("closeEditSale").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
+  document.getElementById("es-platform").addEventListener("change", e=>{ f.platform = e.target.value; renderEditSaleModal(); });
+  document.getElementById("es-quantity").addEventListener("input", e=>{ f.quantity = e.target.value; });
+  const customInput = document.getElementById("es-customPlatform");
+  if(customInput) customInput.addEventListener("input", e=>{ f.customPlatform = e.target.value; });
+  document.getElementById("es-price").addEventListener("input", e=>{ f.price = e.target.value; });
+  document.getElementById("es-fees").addEventListener("input", e=>{ f.fees = e.target.value; });
+  document.getElementById("es-date").addEventListener("change", e=>{ f.date = e.target.value; });
+
+  document.getElementById("saveEditSaleBtn").addEventListener("click", ()=>{
+    const price = parseFloat(f.price);
+    const fees = parseFloat(f.fees)||0;
+    const qty = parseInt(f.quantity, 10);
+    if(isNaN(price) || price<0){ showToast("Enter a valid sale price", "close"); return; }
+    if(isNaN(qty) || qty<1){ showToast("Enter a valid quantity", "close"); return; }
+    const targetItem = state.items.find(i=>i.id===f.itemId);
+    if(!targetItem) return;
+    const sale = targetItem.sales.find(s=>s.id===f.saleId);
+    if(!sale) return;
+    sale.platform = f.platform==="Other" && f.customPlatform.trim() ? f.customPlatform.trim() : f.platform;
+    sale.salePricePerUnit = price;
+    sale.fees = fees;
+    sale.quantitySold = qty;
+    sale.saleDate = f.date;
+    saveState();
+    document.getElementById("modalRoot").innerHTML = "";
+    showToast("Sale updated");
+    if(ui.tab==="sold") renderSoldResults();
   });
 }
 
@@ -1404,9 +1765,7 @@ function attachSoldEvents(){
   });
   const search = document.getElementById("soldSearchInput");
   search.addEventListener("input", e=>{ soldUI.search = e.target.value; renderSoldResults(); });
-  document.querySelectorAll("tr[data-open]").forEach(row=>{
-    row.addEventListener("click", ()=>{ ui.detailItemId = row.dataset.open; render(); });
-  });
+  bindSoldResultEvents();
 }
 
 /* ---------------- Expenses ---------------- */
@@ -2980,6 +3339,17 @@ function openSettings(){
           <div class="hint">This only changes how numbers are formatted — enter all your prices in this same currency; Restock doesn't convert between currencies.</div>
 
           <div style="height:24px;"></div>
+          <div class="panel-title" style="margin-bottom:10px;">Color Theme</div>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            ${Object.entries(THEMES).map(([key,t])=>`
+              <button class="theme-swatch-btn ${state.colorScheme===key?'active':''}" data-theme="${key}" title="${t.name}">
+                <span class="theme-swatch" style="background:linear-gradient(135deg,${t.violet},${t.magenta});"></span>
+                <span>${t.name}</span>
+              </button>
+            `).join("")}
+          </div>
+
+          <div style="height:20px;"></div>
           <div class="panel-title" style="margin-bottom:10px;">Email Sync</div>
           ${emailSyncHTML()}
 
@@ -3005,11 +3375,20 @@ function openSettings(){
   document.getElementById("currencySelect").addEventListener("change", e=>{
     state.displayCurrency = e.target.value; saveState(); render();
   });
+  document.querySelectorAll("[data-theme]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const key = btn.dataset.theme;
+      state.colorScheme = key;
+      saveState();
+      applyTheme(key);
+      openSettings(); // rebuild so the correct swatch shows as active
+    });
+  });
   document.getElementById("exportBtn").addEventListener("click", exportData);
   document.getElementById("clearBtn").addEventListener("click", ()=>{
     if(confirm("This deletes all stock, sales, orders, and expense data on this device. This can't be undone. Continue?")){
       state = {
-        displayCurrency: state.displayCurrency, items: [], pendingOrders: [], pendingSales: [],
+        displayCurrency: state.displayCurrency, colorScheme: state.colorScheme, items: [], pendingOrders: [], pendingSales: [],
         expenses: [], expenseRules: [], emailLastSync: null,
         emailFilters: { blockPromotions: true, excludedSenders: [] }
       };
@@ -3081,6 +3460,7 @@ async function bootWithLicenseGate(){
     showActivationScreen();
     return;
   }
+  licenseExpiresAt = status.expiresAt || null;
   // Already activated — boot immediately rather than blocking on a network
   // round-trip every launch. Re-checks with Whop in the background only
   // when it's actually due (once a week), and only locks the app back out
@@ -3092,6 +3472,9 @@ async function bootWithLicenseGate(){
     window.licenseAPI.revalidate().then(res=>{
       if(!res.ok && res.error!=="network" && res.error!=="config" && res.error!=="unexpected"){
         showActivationScreen(true);
+      } else if(res.ok && res.expiresAt !== licenseExpiresAt){
+        licenseExpiresAt = res.expiresAt || null;
+        if(!isTypingInField()) render(); // sidebar footer needs a full rebuild to pick this up, not just renderView()
       }
     });
   }
@@ -3143,7 +3526,7 @@ function showActivationScreen(wasRevoked){
   const getKeyLink = document.getElementById("getKeyLink");
   getKeyLink.addEventListener("click", (e)=>{
     e.preventDefault();
-    if(window.shellAPI) window.shellAPI.openExternal("https://whop.com/joined/restock-2140/");
+    if(window.shellAPI) window.shellAPI.openExternal("https://whop.com/restock");
   });
 }
 
@@ -3166,4 +3549,5 @@ document.addEventListener("keydown", (e)=>{
   }
 });
 
+applyTheme(state.colorScheme);
 bootWithLicenseGate();
