@@ -1,6 +1,7 @@
-const { app, BrowserWindow, Menu, ipcMain, safeStorage } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, safeStorage, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const { autoUpdater } = require('electron-updater');
@@ -114,6 +115,114 @@ ipcMain.handle('app:getVersion', () => app.getVersion());
    Credential Manager / DPAPI on Windows). It never touches
    the renderer or gets written to the app's regular JSON state.
    ========================================================= */
+
+// ---------------- Licensing (Whop activation) ----------------
+//
+// The API key lives in a separate, gitignored file (whop-config.js) so it
+// never ends up in the public GitHub repo — the build still bundles it
+// fine since electron-builder packages whatever's on disk locally,
+// gitignore only affects what gets pushed to GitHub.
+let WHOP_CONFIG = { WHOP_API_KEY: null };
+try { WHOP_CONFIG = require('./whop-config.js'); } catch (e) { /* not configured yet */ }
+
+const REVALIDATE_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // re-check with Whop once a week
+
+function licenseFilePath() {
+  return path.join(app.getPath('userData'), 'license.json');
+}
+
+function loadLicenseState() {
+  try {
+    const raw = fs.readFileSync(licenseFilePath(), 'utf-8');
+    const data = JSON.parse(raw);
+    if (data.encryptedKey && safeStorage.isEncryptionAvailable()) {
+      data.licenseKey = safeStorage.decryptString(Buffer.from(data.encryptedKey, 'base64'));
+    }
+    return data;
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveLicenseState({ licenseKey, machineId, activated, lastValidatedAt }) {
+  const data = { machineId, activated, lastValidatedAt };
+  if (safeStorage.isEncryptionAvailable()) {
+    data.encryptedKey = safeStorage.encryptString(licenseKey).toString('base64');
+  } else {
+    data.licenseKey = licenseKey;
+  }
+  fs.writeFileSync(licenseFilePath(), JSON.stringify(data), 'utf-8');
+}
+
+// A random ID generated once and stored locally — simpler and more
+// privacy-respecting than fingerprinting real hardware, and it still lets
+// Whop bind a key to "this specific install" the same way.
+function getOrCreateMachineId() {
+  const existing = loadLicenseState();
+  if (existing && existing.machineId) return existing.machineId;
+  return crypto.randomUUID();
+}
+
+async function validateWithWhop(licenseKey, machineId) {
+  if (!WHOP_CONFIG.WHOP_API_KEY) {
+    return { ok: false, error: 'config', message: 'This build is missing its Whop configuration. Contact support.' };
+  }
+  try {
+    const resp = await fetch(`https://api.whop.com/api/v2/memberships/${encodeURIComponent(licenseKey)}/validate_license`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${WHOP_CONFIG.WHOP_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ metadata: { machine_id: machineId } })
+    });
+    if (resp.status === 201) return { ok: true };
+    if (resp.status === 400) return { ok: false, error: 'invalid', message: 'That key isn\'t valid, or it\'s already active on a different computer.' };
+    return { ok: false, error: 'unexpected', message: `Unexpected response from the activation server (${resp.status}).` };
+  } catch (e) {
+    return { ok: false, error: 'network', message: 'Couldn\'t reach the activation server — check your internet connection and try again.' };
+  }
+}
+
+ipcMain.handle('license:getStatus', () => {
+  const state = loadLicenseState();
+  if (!state || !state.activated) return { activated: false };
+  const needsRevalidation = !state.lastValidatedAt || (Date.now() - new Date(state.lastValidatedAt).getTime()) > REVALIDATE_INTERVAL_MS;
+  return { activated: true, needsRevalidation };
+});
+
+ipcMain.handle('license:activate', async (evt, { licenseKey }) => {
+  const key = (licenseKey || '').trim();
+  if (!key) return { ok: false, error: 'Enter a license key.' };
+  const machineId = getOrCreateMachineId();
+  const result = await validateWithWhop(key, machineId);
+  if (result.ok) {
+    saveLicenseState({ licenseKey: key, machineId, activated: true, lastValidatedAt: new Date().toISOString() });
+    return { ok: true };
+  }
+  return { ok: false, error: result.message };
+});
+
+ipcMain.handle('license:revalidate', async () => {
+  const state = loadLicenseState();
+  if (!state || !state.activated || !state.licenseKey) return { ok: false, error: 'not_activated' };
+  const result = await validateWithWhop(state.licenseKey, state.machineId);
+  if (result.ok) {
+    saveLicenseState({ licenseKey: state.licenseKey, machineId: state.machineId, activated: true, lastValidatedAt: new Date().toISOString() });
+    return { ok: true };
+  }
+  if (result.error === 'network' || result.error === 'config' || result.error === 'unexpected') {
+    // Don't lock someone out just because we couldn't reach the server —
+    // only an explicit "invalid" response from Whop revokes access.
+    return { ok: false, error: result.error };
+  }
+  saveLicenseState({ licenseKey: state.licenseKey, machineId: state.machineId, activated: false, lastValidatedAt: new Date().toISOString() });
+  return { ok: false, error: result.error, message: result.message };
+});
+
+ipcMain.handle('shell:openExternal', (evt, url) => {
+  if (/^https:\/\//i.test(url)) shell.openExternal(url);
+});
 
 function accountFilePath() {
   return path.join(app.getPath('userData'), 'email-account.json');

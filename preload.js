@@ -1,5 +1,15 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+contextBridge.exposeInMainWorld('licenseAPI', {
+  getStatus: () => ipcRenderer.invoke('license:getStatus'),
+  activate: (licenseKey) => ipcRenderer.invoke('license:activate', { licenseKey }),
+  revalidate: () => ipcRenderer.invoke('license:revalidate')
+});
+
+contextBridge.exposeInMainWorld('shellAPI', {
+  openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url)
+});
+
 contextBridge.exposeInMainWorld('emailAPI', {
   getAccountInfo: () => ipcRenderer.invoke('email:getAccountInfo'),
   testAndSave: (config) => ipcRenderer.invoke('email:testAndSave', config),

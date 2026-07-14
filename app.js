@@ -3064,6 +3064,89 @@ function escapeHTML(str){
 }
 function escapeAttr(str){ return escapeHTML(str); }
 
+function bootApp(){
+  render();
+  initUpdater();
+  refreshAccountInfo(); // loads email account status regardless of active tab, so auto-sync can start
+}
+
+async function bootWithLicenseGate(){
+  if(!window.licenseAPI){
+    // Dev/unpackaged context without the preload bridge — just boot normally.
+    bootApp();
+    return;
+  }
+  const status = await window.licenseAPI.getStatus();
+  if(!status.activated){
+    showActivationScreen();
+    return;
+  }
+  // Already activated — boot immediately rather than blocking on a network
+  // round-trip every launch. Re-checks with Whop in the background only
+  // when it's actually due (once a week), and only locks the app back out
+  // on an explicit "invalid" response — never just because the check
+  // couldn't reach the internet, so a paying customer without wifi for a
+  // few days isn't locked out of software they already own.
+  bootApp();
+  if(status.needsRevalidation){
+    window.licenseAPI.revalidate().then(res=>{
+      if(!res.ok && res.error!=="network" && res.error!=="config" && res.error!=="unexpected"){
+        showActivationScreen(true);
+      }
+    });
+  }
+}
+
+function showActivationScreen(wasRevoked){
+  const app = document.getElementById("app");
+  app.innerHTML = `
+    <div style="grid-column:1/-1;height:100vh;display:flex;align-items:center;justify-content:center;">
+      <div class="card" style="width:420px;padding:32px;text-align:center;">
+        <div style="width:60px;height:60px;border-radius:15px;background:linear-gradient(135deg,var(--violet),var(--magenta));display:flex;align-items:center;justify-content:center;margin:0 auto 20px;color:#fff;">
+          ${ICONS.stock}
+        </div>
+        <h2 style="margin-bottom:8px;">Activate Restock</h2>
+        <div class="hint" style="margin-bottom:20px;">${wasRevoked ? "Your license couldn't be reverified — enter your key again to keep using Restock." : "Enter the license key from your Whop purchase to get started."}</div>
+        <div class="field" style="text-align:left;margin-bottom:6px;">
+          <input type="text" id="licenseKeyInput" placeholder="License key" autocomplete="off">
+        </div>
+        <div id="activationError" style="color:var(--red);font-size:13px;margin-bottom:14px;min-height:16px;text-align:left;"></div>
+        <button class="btn-primary block" id="activateBtn">Activate</button>
+        <div class="hint" style="margin-top:18px;">Don't have a key yet? <a href="#" id="getKeyLink" style="color:var(--violet);text-decoration:none;">Get one on Whop</a></div>
+      </div>
+    </div>
+  `;
+  const input = document.getElementById("licenseKeyInput");
+  const errorEl = document.getElementById("activationError");
+  const btn = document.getElementById("activateBtn");
+
+  async function tryActivate(){
+    const key = input.value.trim();
+    if(!key){ errorEl.textContent = "Enter a license key."; return; }
+    btn.disabled = true;
+    btn.textContent = "Activating…";
+    errorEl.textContent = "";
+    const res = await window.licenseAPI.activate(key);
+    if(res.ok){
+      bootApp();
+    } else {
+      errorEl.textContent = res.error || "Activation failed.";
+      btn.disabled = false;
+      btn.textContent = "Activate";
+    }
+  }
+
+  btn.addEventListener("click", tryActivate);
+  input.addEventListener("keydown", e=>{ if(e.key==="Enter") tryActivate(); });
+  input.focus();
+
+  const getKeyLink = document.getElementById("getKeyLink");
+  getKeyLink.addEventListener("click", (e)=>{
+    e.preventDefault();
+    if(window.shellAPI) window.shellAPI.openExternal("https://whop.com/joined/restock-2140/");
+  });
+}
+
 /* ---------------- Boot ---------------- */
 
 // Safety net: any open modal can now be dismissed by clicking the dark
@@ -3083,6 +3166,4 @@ document.addEventListener("keydown", (e)=>{
   }
 });
 
-render();
-initUpdater();
-refreshAccountInfo(); // loads email account status regardless of active tab, so auto-sync can start
+bootWithLicenseGate();

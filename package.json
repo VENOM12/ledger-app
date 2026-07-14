@@ -29,6 +29,7 @@
       "index.html",
       "app.js",
       "icon.ico",
+      "whop-config.js",
       "node_modules/**/*"
     ],
     "win": {

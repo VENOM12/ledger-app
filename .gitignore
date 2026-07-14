@@ -1,2 +1,6 @@
+# Secrets — never commit this. Contains your real Whop API key.
+whop-config.js
+
+# Dependencies and build output
 node_modules/
 release/
