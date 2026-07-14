@@ -55,7 +55,7 @@ if(!state.pendingSales) state.pendingSales = [];
 if(!state.displayCurrency) state.displayCurrency = "USD";
 if(!state.emailFilters) state.emailFilters = { blockPromotions: true, excludedSenders: [] };
 
-let ui = { tab: "dashboard", period: "Month", stockFilter: "In Stock", search: "", detailItemId: null };
+let ui = { tab: "dashboard", period: "Month", stockFilter: "In Stock", stockCategoryFilter: "All", search: "", detailItemId: null };
 
 /* ---------------- Helpers ---------------- */
 
@@ -877,6 +877,10 @@ function stockListHTML(){
         <button class="${ui.stockFilter==='In Stock'?'active':''}" data-filter="In Stock">In Stock</button>
         <button class="${ui.stockFilter==='Sold Out'?'active':''}" data-filter="Sold Out">Sold Out</button>
       </div>
+      <select id="stockCategoryFilterSelect" style="width:auto;padding:9px 30px 9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
+        <option ${ui.stockCategoryFilter==="All"?"selected":""}>All</option>
+        ${CATEGORIES.map(c=>`<option ${ui.stockCategoryFilter===c?"selected":""}>${c}</option>`).join("")}
+      </select>
       <div class="search-bar">
         ${ICONS.search}
         <input type="text" id="searchInput" placeholder="Search stock" value="${escapeAttr(ui.search)}">
@@ -890,6 +894,7 @@ function stockListHTML(){
 function stockResultsHTML(){
   const filtered = state.items.filter(i => !i.isPreorder)
     .filter(i => ui.stockFilter==="In Stock" ? !isSoldOut(i) : isSoldOut(i))
+    .filter(i => ui.stockCategoryFilter==="All" || i.category===ui.stockCategoryFilter)
     .filter(i => !ui.search || i.name.toLowerCase().includes(ui.search.toLowerCase()));
 
   if(filtered.length===0){
@@ -936,6 +941,9 @@ function attachStockEvents(){
   document.querySelectorAll("[data-filter]").forEach(btn=>{
     btn.addEventListener("click", ()=>{ ui.stockFilter = btn.dataset.filter; renderView(); });
   });
+  document.getElementById("stockCategoryFilterSelect").addEventListener("change", e=>{
+    ui.stockCategoryFilter = e.target.value; renderStockResults();
+  });
   const search = document.getElementById("searchInput");
   search.addEventListener("input", e=>{ ui.search = e.target.value; renderStockResults(); });
   document.querySelectorAll("tr[data-id]").forEach(row=>{
@@ -947,7 +955,7 @@ function attachStockEvents(){
    PREORDERS
    ============================================================ */
 
-let ordersUI = { subTab: "all" };
+let ordersUI = { subTab: "all", search: "", retailerFilter: "All" };
 
 function ordersHTML(){
   return `
@@ -974,7 +982,30 @@ function attachOrdersEvents(){
 }
 
 function allOrdersContentHTML(){
-  const orders = state.pendingOrders.filter(p=>!p.isPKCPreorder).slice().sort((a,b)=> new Date(b.orderDate)-new Date(a.orderDate));
+  const orders = state.pendingOrders.filter(p=>!p.isPKCPreorder);
+  const retailers = Array.from(new Set(orders.map(p=>p.retailer).filter(Boolean))).sort();
+
+  return `
+    <div class="toolbar-row">
+      <select id="orderRetailerFilterSelect" style="width:auto;padding:9px 30px 9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
+        <option ${ordersUI.retailerFilter==="All"?"selected":""}>All</option>
+        ${retailers.map(r=>`<option ${ordersUI.retailerFilter===r?"selected":""}>${escapeHTML(r)}</option>`).join("")}
+      </select>
+      <div class="search-bar">
+        ${ICONS.search}
+        <input type="text" id="orderSearchInput" placeholder="Search orders" value="${escapeAttr(ordersUI.search)}">
+      </div>
+    </div>
+    <div id="allOrdersResultsContainer">${allOrdersResultsHTML()}</div>
+    <div style="height:20px;"></div>
+  `;
+}
+
+function allOrdersResultsHTML(){
+  const orders = state.pendingOrders.filter(p=>!p.isPKCPreorder)
+    .filter(p=> ordersUI.retailerFilter==="All" || p.retailer===ordersUI.retailerFilter)
+    .filter(p=> !ordersUI.search || (p.retailer||"").toLowerCase().includes(ordersUI.search.toLowerCase()) || (p.orderNumber||"").toLowerCase().includes(ordersUI.search.toLowerCase()))
+    .sort((a,b)=> new Date(b.orderDate)-new Date(a.orderDate));
 
   if(orders.length===0){
     return `
@@ -1012,8 +1043,14 @@ function allOrdersContentHTML(){
       </table>
     </div>
     <div class="hint" style="margin-top:10px;">Click any order for full details — what was bought, delivery address, and which email it was sent to.</div>
-    <div style="height:20px;"></div>
   `;
+}
+
+function renderAllOrdersResults(){
+  const container = document.getElementById("allOrdersResultsContainer");
+  if(!container) return;
+  container.innerHTML = allOrdersResultsHTML();
+  bindAllOrdersResultEvents();
 }
 
 function orderDetailModal(orderId){
@@ -1071,6 +1108,15 @@ function orderDetailModal(orderId){
 }
 
 function attachAllOrdersEvents(){
+  document.getElementById("orderRetailerFilterSelect").addEventListener("change", e=>{
+    ordersUI.retailerFilter = e.target.value; renderAllOrdersResults();
+  });
+  const search = document.getElementById("orderSearchInput");
+  search.addEventListener("input", e=>{ ordersUI.search = e.target.value; renderAllOrdersResults(); });
+  bindAllOrdersResultEvents();
+}
+
+function bindAllOrdersResultEvents(){
   document.querySelectorAll("[data-open-order]").forEach(row=>{
     row.addEventListener("click", (e)=>{
       if(e.target.closest("button")) return; // let the row's own buttons handle their own clicks
@@ -1093,7 +1139,7 @@ function attachAllOrdersEvents(){
       e.stopPropagation();
       state.pendingOrders = state.pendingOrders.filter(p=>p.id!==btn.dataset.remove);
       saveState();
-      renderView();
+      renderAllOrdersResults();
     });
   });
 }
