@@ -629,10 +629,13 @@ function sparklineSVG(series){
 
   // Label every day that actually had activity — most days will be $0 and
   // stay unlabeled to avoid clutter, but every real data point gets its
-  // exact value shown directly on the chart, plus a native hover tooltip.
+  // exact value shown directly on the chart, plus a hover tooltip. The
+  // single point on a "Day" chart is the one exception — suppressing a
+  // $0 label there left the whole chart looking completely blank, since
+  // there's no other point to give it context the way a 7-day chart has.
   const valueMarkers = pts.map((pt,i)=>{
     const v = series[i].value;
-    if(v===0) return "";
+    if(v===0 && !wasSinglePoint) return "";
     const above = v >= 0;
     const labelY = above ? pt[1]-9 : pt[1]+16;
     const color = v>=0 ? "#3DD68C" : "#F16565";
@@ -671,7 +674,7 @@ function sparklineSVG(series){
         <line id="chartHoverLine" x1="0" y1="${plotTop}" x2="0" y2="${plotBottom}" stroke="var(--violet)" stroke-width="1" opacity="0" pointer-events="none"/>
         <circle id="chartHoverDot" cx="0" cy="0" r="4.5" fill="var(--violet)" stroke="var(--bg)" stroke-width="2" opacity="0" pointer-events="none"/>
       </svg>
-      <div id="chartTooltip" style="position:absolute;pointer-events:none;opacity:0;transition:opacity .1s;background:var(--card-2);border:1px solid var(--border);border-radius:8px;padding:7px 11px;font-size:12px;white-space:nowrap;transform:translate(-50%,-115%);z-index:5;box-shadow:0 6px 20px rgba(0,0,0,0.35);">
+      <div id="chartTooltip" style="position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;background:var(--card-2);border:1px solid var(--border);border-radius:8px;padding:7px 11px;font-size:12px;white-space:nowrap;transform:translate(-50%,-115%);z-index:50;box-shadow:0 6px 20px rgba(0,0,0,0.35);">
         <div id="chartTooltipDate" class="hint" style="margin:0 0 2px;"></div>
         <div id="chartTooltipValue" class="mono" style="font-weight:700;"></div>
       </div>
@@ -747,8 +750,23 @@ function bindChartHoverEvents(){
     tooltipValue.textContent = fmtMoney(p.value);
     tooltipValue.className = "mono " + (p.value>=0 ? "pos" : "neg");
 
-    tooltip.style.left = ((p.x / viewBoxWidth) * 100) + "%";
-    tooltip.style.top = ((p.y / 150) * 100) + "%";
+    // Fixed positioning with real viewport pixel coordinates — not
+    // percentage-based position:absolute relative to a parent. A
+    // position:absolute descendant still counts toward its nearest
+    // scrollable ancestor's overflow calculation even though it's out of
+    // normal flow, which was very likely what caused the reported
+    // "only when maximized" bounce: a maximized window has more
+    // borderline-available space, making it more likely for the tooltip
+    // to tip that calculation over the threshold that toggles a
+    // scrollbar on/off, shifting everything sideways. position:fixed
+    // elements are positioned purely from the viewport and cannot affect
+    // an ancestor's scrollable area at all, regardless of window size.
+    if(cachedRect){
+      const pixelX = cachedRect.left + (p.x / viewBoxWidth) * cachedRect.width;
+      const pixelY = cachedRect.top + (p.y / 150) * cachedRect.height;
+      tooltip.style.left = pixelX + "px";
+      tooltip.style.top = pixelY + "px";
+    }
     tooltip.style.opacity = "1";
   }
 
