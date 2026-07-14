@@ -85,6 +85,13 @@ function refreshSettingsIfOpen(){
   }
 }
 
+function periodQualifier(period){
+  return {
+    "Day": "Today", "Week": "This Week", "Month": "This Month",
+    "Year": "This Year", "All Time": "All Time"
+  }[period];
+}
+
 function periodStart(period){
   const now = new Date();
   const d = new Date(now); d.setHours(0,0,0,0);
@@ -416,17 +423,17 @@ function dashboardHTML(){
     </div>
 
     <div class="stat-grid">
-      ${statCard("cart", "Total Spent", fmtMoney(totalSpent), "var(--blue)", "var(--blue-bg)")}
-      ${statCard("trend", "Total Profit", fmtMoney(totalProfit), totalProfit>=0?"var(--green)":"var(--red)", totalProfit>=0?"var(--green-bg)":"var(--red-bg)")}
-      ${statCard("percent", "ROI", fmtPct(roiVal), roiVal>=0?"var(--green)":"var(--red)", roiVal>=0?"var(--green-bg)":"var(--red-bg)")}
-      ${statCard("cash", "Revenue", fmtMoney(totalRev), "var(--cyan)", "var(--cyan-bg)")}
-      ${statCard("cart", "Expenses", fmtMoney(totalExpenses), "var(--red)", "var(--red-bg)")}
+      ${statCard("cart", `Total Spent ${periodQualifier(ui.period)}`, fmtMoney(totalSpent), "var(--blue)", "var(--blue-bg)")}
+      ${statCard("trend", `Total Profit ${periodQualifier(ui.period)}`, fmtMoney(totalProfit), totalProfit>=0?"var(--green)":"var(--red)", totalProfit>=0?"var(--green-bg)":"var(--red-bg)")}
+      ${statCard("percent", `ROI ${periodQualifier(ui.period)}`, fmtPct(roiVal), roiVal>=0?"var(--green)":"var(--red)", roiVal>=0?"var(--green-bg)":"var(--red-bg)")}
+      ${statCard("cash", `Revenue ${periodQualifier(ui.period)}`, fmtMoney(totalRev), "var(--cyan)", "var(--cyan-bg)")}
+      ${statCard("cart", `Expenses ${periodQualifier(ui.period)}`, fmtMoney(totalExpenses), "var(--red)", "var(--red-bg)")}
     </div>
 
     <div class="dash-grid">
       <div class="card panel">
-        <div class="panel-title">Profit — Last 14 Days</div>
-        ${sparklineSVG(dailyProfitSeries())}
+        <div class="panel-title">Profit — ${periodQualifier(ui.period)}</div>
+        ${sparklineSVG(profitSeriesForPeriod(ui.period))}
       </div>
       <div class="card panel">
         <div class="panel-title">Recent Sales</div>
@@ -501,25 +508,75 @@ function miniCard(iconKey, label, value, fg, bg){
   `;
 }
 
-function last14Days(){
-  const days = [];
-  const now = new Date(); now.setHours(0,0,0,0);
-  for(let i=13;i>=0;i--){ const d=new Date(now); d.setDate(d.getDate()-i); days.push(d); }
-  return days;
-}
-function dailyProfitSeries(){
-  return last14Days().map(d=>{
-    const iso = d.toISOString().slice(0,10);
-    let p = 0;
-    state.items.forEach(item=>{
-      item.sales.forEach(s=>{
-        if(s.saleDate===iso) p += saleNet(s) - s.quantitySold*item.purchasePricePerUnit;
-      });
+function profitOnDate(iso){
+  let p = 0;
+  state.items.forEach(item=>{
+    item.sales.forEach(s=>{
+      if(s.saleDate===iso) p += saleNet(s) - s.quantitySold*item.purchasePricePerUnit;
     });
-    return {date:d, value:p};
   });
+  return p;
+}
+function profitInMonth(year, month){
+  let p = 0;
+  state.items.forEach(item=>{
+    item.sales.forEach(s=>{
+      const d = new Date(s.saleDate);
+      if(d.getFullYear()===year && d.getMonth()===month) p += saleNet(s) - s.quantitySold*item.purchasePricePerUnit;
+    });
+  });
+  return p;
+}
+
+// Matches the chart to whichever period is selected up top, the same way
+// the stat cards do — "Day" only has one real data point (sales only
+// record a date, not a time, so there's no finer granularity available),
+// Week/Month show daily points, Year/All Time aggregate by month since
+// hundreds of daily points wouldn't be readable.
+function profitSeriesForPeriod(period){
+  const today = new Date(); today.setHours(0,0,0,0);
+
+  if(period==="Day"){
+    return [{date: new Date(today), value: profitOnDate(today.toISOString().slice(0,10))}];
+  }
+  if(period==="Week" || period==="Month"){
+    const spanDays = period==="Week" ? 6 : 29;
+    const days = [];
+    for(let i=spanDays; i>=0; i--){ const d=new Date(today); d.setDate(d.getDate()-i); days.push(d); }
+    return days.map(d=>({date:d, value: profitOnDate(d.toISOString().slice(0,10))}));
+  }
+  if(period==="Year"){
+    const months = [];
+    for(let i=11; i>=0; i--){ months.push(new Date(today.getFullYear(), today.getMonth()-i, 1)); }
+    return months.map(d=>({date:d, value: profitInMonth(d.getFullYear(), d.getMonth())}));
+  }
+  // All Time: monthly from the earliest sale on record through now, capped
+  // to the most recent 36 months so a very long history stays readable.
+  let earliest = null;
+  state.items.forEach(item=>item.sales.forEach(s=>{
+    const d = new Date(s.saleDate);
+    if(!earliest || d<earliest) earliest = d;
+  }));
+  if(!earliest){
+    return [{date: new Date(today.getFullYear(), today.getMonth(), 1), value: 0}];
+  }
+  const months = [];
+  let cursor = new Date(earliest.getFullYear(), earliest.getMonth(), 1);
+  const end = new Date(today.getFullYear(), today.getMonth(), 1);
+  while(cursor <= end){
+    months.push(new Date(cursor));
+    cursor.setMonth(cursor.getMonth()+1);
+  }
+  return months.slice(-36).map(d=>({date:d, value: profitInMonth(d.getFullYear(), d.getMonth())}));
 }
 function sparklineSVG(series){
+  // A single-point series (the "Day" period — sales only record a date,
+  // not a time, so there's no finer breakdown available) would divide by
+  // zero in the stepX calculation below. Duplicating the point renders it
+  // as a flat line instead of crashing.
+  if(series.length === 1){
+    series = [series[0], series[0]];
+  }
   const w=520, h=150, pad=10, topPad=26, bottomPad=24;
   const values = series.map(p=>p.value);
   let min = Math.min(0, ...values), max = Math.max(0, ...values);
@@ -877,7 +934,7 @@ function renderStockResults(){
 
 function attachStockEvents(){
   document.querySelectorAll("[data-filter]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{ ui.stockFilter = btn.dataset.filter; renderStockResults(); });
+    btn.addEventListener("click", ()=>{ ui.stockFilter = btn.dataset.filter; renderView(); });
   });
   const search = document.getElementById("searchInput");
   search.addEventListener("input", e=>{ ui.search = e.target.value; renderStockResults(); });
@@ -1158,7 +1215,7 @@ function soldHTML(){
         ${ICONS.search}
         <input type="text" id="soldSearchInput" placeholder="Search sold items" value="${escapeAttr(soldUI.search)}">
       </div>
-      <button class="btn-primary" id="markSoldBtn" style="flex-shrink:0;">${ICONS.check} Mark Item as Sold</button>
+      <button class="btn-primary" id="markSoldBtn" style="flex-shrink:0;height:38px;padding:0 18px;font-size:13.5px;">${ICONS.check} Mark Item as Sold</button>
     </div>
     <div id="soldResultsContainer">${soldResultsHTML()}</div>
     <div style="height:20px;"></div>
