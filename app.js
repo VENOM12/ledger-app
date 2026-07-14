@@ -73,6 +73,18 @@ function isTypingInField(){
   return el && ["INPUT","TEXTAREA","SELECT"].includes(el.tagName);
 }
 
+// Email Sync content now lives inside the Settings modal (its own DOM
+// subtree under #modalRoot), not in #view — so its handlers can't just
+// call renderView() anymore, that would refresh whatever's behind the
+// modal instead of the modal itself. This only rebuilds Settings if it's
+// actually the open modal, so a background auto-sync tick doesn't yank
+// Settings open on someone who wasn't looking at it.
+function refreshSettingsIfOpen(){
+  if(document.getElementById("settingsBackdrop") && !isTypingInField()){
+    openSettings();
+  }
+}
+
 function periodStart(period){
   const now = new Date();
   const d = new Date(now); d.setHours(0,0,0,0);
@@ -221,11 +233,9 @@ function render(){
       <div class="nav">
         ${navBtn("dashboard","dashboard","Dashboard")}
         ${navBtn("stock","stock","Stock")}
-        ${navBtn("orders","cart","Orders")}
-        ${navBtn("preorders","clock","PKC Orders")}
+        ${navBtn("orders","cart","Confirmed Orders")}
         ${navBtn("sold","tag","Sold")}
-        ${navBtn("add","plus","Add Purchase")}
-        ${navBtn("email","mail","Email Sync")}
+        ${navBtn("add","plus","Add Stock")}
         ${navBtn("expenses","cash","Expenses")}
       </div>
       <div class="sidebar-footer">
@@ -268,13 +278,12 @@ function setTab(tab){
   ui.tab = tab;
   ui.detailItemId = null;
   render();
-  if(tab==="email" && emailUI.accountInfo===undefined) refreshAccountInfo();
 }
 
 function renderTopbar(){
   const bar = document.getElementById("topbar");
   if(!bar) return;
-  const titles = { dashboard: "Dashboard", stock: "Stock", add: "Add Purchase", email: "Email Sync", preorders: "PKC Orders", sold: "Sold", orders: "Orders" };
+  const titles = { dashboard: "Dashboard", stock: "Stock", add: "Add Stock", sold: "Sold", orders: "Confirmed Orders", expenses: "Expenses" };
   let heading;
   if(ui.detailItemId){
     const item = state.items.find(i=>i.id===ui.detailItemId);
@@ -322,9 +331,7 @@ function renderView(){
   else if(ui.tab==="add"){ view.innerHTML = addFormHTML(); attachAddEvents(); }
   else if(ui.tab==="stock"){ view.innerHTML = stockListHTML(); attachStockEvents(); }
   else if(ui.tab==="orders"){ view.innerHTML = ordersHTML(); attachOrdersEvents(); }
-  else if(ui.tab==="preorders"){ view.innerHTML = preordersHTML(); attachPreordersEvents(); }
   else if(ui.tab==="sold"){ view.innerHTML = soldHTML(); attachSoldEvents(); }
-  else if(ui.tab==="email"){ view.innerHTML = emailSyncHTML(); attachEmailEvents(); }
   else if(ui.tab==="expenses"){ view.innerHTML = expensesHTML(); attachExpensesEvents(); }
 }
 
@@ -883,7 +890,33 @@ function attachStockEvents(){
    PREORDERS
    ============================================================ */
 
+let ordersUI = { subTab: "all" };
+
 function ordersHTML(){
+  return `
+    <div class="segmented" style="margin-bottom:4px;">
+      <button class="${ordersUI.subTab==='all'?'active':''}" data-orders-subtab="all">All Orders</button>
+      <button class="${ordersUI.subTab==='pkc'?'active':''}" data-orders-subtab="pkc">PKC Preorders</button>
+    </div>
+    ${ordersUI.subTab==='all' ? allOrdersContentHTML() : pkcOrdersContentHTML()}
+  `;
+}
+
+function attachOrdersEvents(){
+  document.querySelectorAll("[data-orders-subtab]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      ordersUI.subTab = btn.dataset.ordersSubtab;
+      renderView();
+    });
+  });
+  if(ordersUI.subTab==='all'){
+    attachAllOrdersEvents();
+  } else {
+    attachPreordersEvents();
+  }
+}
+
+function allOrdersContentHTML(){
   const orders = state.pendingOrders.filter(p=>!p.isPKCPreorder).slice().sort((a,b)=> new Date(b.orderDate)-new Date(a.orderDate));
 
   if(orders.length===0){
@@ -980,7 +1013,7 @@ function orderDetailModal(orderId){
   });
 }
 
-function attachOrdersEvents(){
+function attachAllOrdersEvents(){
   document.querySelectorAll("[data-open-order]").forEach(row=>{
     row.addEventListener("click", (e)=>{
       if(e.target.closest("button")) return; // let the row's own buttons handle their own clicks
@@ -1008,7 +1041,7 @@ function attachOrdersEvents(){
   });
 }
 
-function preordersHTML(){
+function pkcOrdersContentHTML(){
   const preorders = state.items.filter(i=>i.isPreorder).sort((a,b)=> new Date(a.expectedArrival||"9999-12-31") - new Date(b.expectedArrival||"9999-12-31"));
 
   if(preorders.length===0){
@@ -1125,6 +1158,7 @@ function soldHTML(){
         ${ICONS.search}
         <input type="text" id="soldSearchInput" placeholder="Search sold items" value="${escapeAttr(soldUI.search)}">
       </div>
+      <button class="btn-primary" id="markSoldBtn" style="flex-shrink:0;">${ICONS.check} Mark Item as Sold</button>
     </div>
     <div id="soldResultsContainer">${soldResultsHTML()}</div>
     <div style="height:20px;"></div>
@@ -1188,7 +1222,80 @@ function renderSoldResults(){
   });
 }
 
+let pickSellUI = { search: "" };
+
+function openPickItemToSellModal(){
+  pickSellUI.search = "";
+  renderPickItemToSellModalShell();
+}
+
+function pickSellResultsHTML(){
+  const allInStock = state.items.filter(i=>!i.isPreorder && qtyRemaining(i)>0);
+  const candidates = allInStock.filter(i => !pickSellUI.search || i.name.toLowerCase().includes(pickSellUI.search.toLowerCase()));
+  if(candidates.length===0){
+    return `<div class="pending-empty">${allInStock.length===0 ? "No in-stock items to sell. Add stock first." : "No items match your search."}</div>`;
+  }
+  return `
+    <div class="card table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Item</th><th>Left</th><th></th></tr></thead>
+        <tbody>
+          ${candidates.map(i=>`
+            <tr>
+              <td style="font-weight:600;">${escapeHTML(i.name)}</td>
+              <td class="mono dim">${qtyRemaining(i)}</td>
+              <td style="text-align:right;"><button class="btn-small" data-pick-sell="${i.id}">Select</button></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderPickItemToSellModalShell(){
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open" id="pickSellBackdrop">
+      <div class="modal">
+        <div class="modal-header">
+          <h2>Which item sold?</h2>
+          <button class="icon-btn" id="closePickSell">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          <div class="search-bar" style="margin-bottom:14px;">
+            ${ICONS.search}
+            <input type="text" id="pickSellSearch" placeholder="Search your stock" value="${escapeAttr(pickSellUI.search)}">
+          </div>
+          <div id="pickSellResults">${pickSellResultsHTML()}</div>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("closePickSell").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
+  document.getElementById("pickSellSearch").addEventListener("input", e=>{
+    // Surgical update only — never touch the search input itself while
+    // typing, same fix as the earlier Stock/Sold search backwards-typing
+    // bug (rebuilding the input mid-keystroke resets the cursor).
+    pickSellUI.search = e.target.value;
+    document.getElementById("pickSellResults").innerHTML = pickSellResultsHTML();
+    bindPickSellSelectButtons();
+  });
+  bindPickSellSelectButtons();
+}
+
+function bindPickSellSelectButtons(){
+  document.querySelectorAll("[data-pick-sell]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const itemId = btn.dataset.pickSell;
+      document.getElementById("modalRoot").innerHTML = "";
+      openSellSheet(itemId);
+    });
+  });
+}
+
 function attachSoldEvents(){
+  document.getElementById("markSoldBtn").addEventListener("click", openPickItemToSellModal);
   document.getElementById("platformFilterSelect").addEventListener("change", e=>{
     soldUI.platformFilter = e.target.value; renderSoldResults();
   });
@@ -1954,8 +2061,8 @@ function emailConnectedHTML(){
     </div>
 
     <div class="hint" style="margin:6px 0 20px;display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border-soft);border-radius:var(--radius-md);padding:14px 16px;">
-      <span>Detected orders now live in their own <strong style="color:var(--text);">Orders</strong> tab, tracked from Order Placed through delivery.</span>
-      <button class="btn-small" data-nav="orders">Go to Orders ${ICONS.chev}</button>
+      <span>Detected orders live in the <strong style="color:var(--text);">Confirmed Orders</strong> tab (Pokémon Center preorders under its "PKC Preorders" sub-tab), tracked from placed through delivery.</span>
+      <button class="btn-small" id="goToOrdersFromSettings">Go to Orders ${ICONS.chev}</button>
     </div>
 
     <div class="section-title">Detected Sales</div>
@@ -2007,8 +2114,13 @@ function statusChip(status){
 }
 
 function attachEmailEvents(){
-  const goToOrdersBtn = document.querySelector('[data-nav="orders"]');
-  if(goToOrdersBtn) goToOrdersBtn.addEventListener("click", ()=> setTab("orders"));
+  const goToOrdersBtn = document.getElementById("goToOrdersFromSettings");
+  if(goToOrdersBtn) goToOrdersBtn.addEventListener("click", ()=>{
+    const modalRoot = document.getElementById("modalRoot");
+    if(modalRoot) modalRoot.innerHTML = "";
+    ordersUI.subTab = "all";
+    setTab("orders");
+  });
 
   if(!emailUI.accountInfo){
     document.querySelectorAll("[data-provider]").forEach(btn=>{
@@ -2019,7 +2131,7 @@ function attachEmailEvents(){
         emailUI.formHost = preset.host;
         emailUI.formPort = preset.port;
         emailUI.formSecure = preset.secure;
-        renderView();
+        refreshSettingsIfOpen();
       });
     });
     const emailInput = document.getElementById("e-email");
@@ -2037,12 +2149,12 @@ function attachEmailEvents(){
       const val = normalizeCatchAllDomain(emailUI.formCatchAllInput);
       if(val && !emailUI.formCatchAllList.includes(val)) emailUI.formCatchAllList.push(val);
       emailUI.formCatchAllInput = "";
-      renderView();
+      refreshSettingsIfOpen();
     });
     document.querySelectorAll("[data-remove-form-catchall]").forEach(btn=>{
       btn.addEventListener("click", ()=>{
         emailUI.formCatchAllList = emailUI.formCatchAllList.filter(d=>d!==btn.dataset.removeFormCatchall);
-        renderView();
+        refreshSettingsIfOpen();
       });
     });
 
@@ -2060,7 +2172,7 @@ function attachEmailEvents(){
       btn.addEventListener("click", ()=>{
         state.pendingOrders = state.pendingOrders.filter(p=>p.id!==btn.dataset.remove);
         saveState();
-        renderView();
+        refreshSettingsIfOpen();
       });
     });
     const editCatchAllBtn = document.getElementById("editCatchAllBtn");
@@ -2068,10 +2180,10 @@ function attachEmailEvents(){
       emailUI.editingCatchAll = true;
       emailUI.editCatchAllList = (emailUI.accountInfo.catchAllDomains || []).slice();
       emailUI.editCatchAllInput = "";
-      renderView();
+      refreshSettingsIfOpen();
     });
     const cancelCatchAllBtn = document.getElementById("cancelCatchAllBtn");
-    if(cancelCatchAllBtn) cancelCatchAllBtn.addEventListener("click", ()=>{ emailUI.editingCatchAll = false; renderView(); });
+    if(cancelCatchAllBtn) cancelCatchAllBtn.addEventListener("click", ()=>{ emailUI.editingCatchAll = false; refreshSettingsIfOpen(); });
     const catchAllEditInput = document.getElementById("catchAllInput");
     if(catchAllEditInput) catchAllEditInput.addEventListener("input", e=>{ emailUI.editCatchAllInput = e.target.value; });
     const addEditCatchAllBtn = document.getElementById("addEditCatchAllBtn");
@@ -2079,12 +2191,12 @@ function attachEmailEvents(){
       const val = normalizeCatchAllDomain(emailUI.editCatchAllInput);
       if(val && !emailUI.editCatchAllList.includes(val)) emailUI.editCatchAllList.push(val);
       emailUI.editCatchAllInput = "";
-      renderView();
+      refreshSettingsIfOpen();
     });
     document.querySelectorAll("[data-remove-edit-catchall]").forEach(btn=>{
       btn.addEventListener("click", ()=>{
         emailUI.editCatchAllList = emailUI.editCatchAllList.filter(d=>d!==btn.dataset.removeEditCatchall);
-        renderView();
+        refreshSettingsIfOpen();
       });
     });
     const saveCatchAllBtn = document.getElementById("saveCatchAllBtn");
@@ -2105,13 +2217,13 @@ function attachEmailEvents(){
       state.expenseRules = state.expenseRules || [];
       state.expenseRules.push({ id: uid(), senderPattern, tag: tagSelect.value });
       saveState();
-      renderView();
+      refreshSettingsIfOpen();
     });
     document.querySelectorAll("[data-remove-expense-rule]").forEach(btn=>{
       btn.addEventListener("click", ()=>{
         state.expenseRules = state.expenseRules.filter(r=>r.id!==btn.dataset.removeExpenseRule);
         saveState();
-        renderView();
+        refreshSettingsIfOpen();
       });
     });
 
@@ -2133,7 +2245,7 @@ function attachEmailEvents(){
       btn.addEventListener("click", ()=>{
         state.emailFilters.excludedSenders = state.emailFilters.excludedSenders.filter(s=>s!==btn.dataset.unblock);
         saveState();
-        renderView();
+        refreshSettingsIfOpen();
       });
     });
     document.querySelectorAll("[data-block]").forEach(btn=>{
@@ -2150,7 +2262,7 @@ function attachEmailEvents(){
       btn.addEventListener("click", ()=>{
         state.pendingSales = state.pendingSales.filter(p=>p.id!==btn.dataset.removeSale);
         saveState();
-        renderView();
+        refreshSettingsIfOpen();
       });
     });
   }
@@ -2203,7 +2315,7 @@ function openMatchSaleModal(pendingSaleId){
       </div>
     </div>
   `;
-  document.getElementById("closeMatch").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
+  document.getElementById("closeMatch").addEventListener("click", ()=>{ openSettings(); });
   document.querySelectorAll("[data-pick]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
       const itemId = btn.dataset.pick;
@@ -2230,7 +2342,11 @@ function addExclusion(raw, silent){
   saveState();
   if(!silent) showToast(`Blocked ${val}`);
   else showToast(`Blocked ${val}${removedCount ? ` — removed ${removedCount} detected order(s)` : ""}`);
-  renderView();
+  // Called from both the Orders tab ("Block this sender" on a row) and
+  // from within Settings (the exclusion filter panel) — refresh both,
+  // since either or neither may currently be visible.
+  if(!isTypingInField()) renderView();
+  refreshSettingsIfOpen();
 }
 
 function normalizeCatchAllDomain(v){
@@ -2243,12 +2359,12 @@ async function connectEmailAccount(){
   const f = emailUI;
   if(!f.formEmail.trim() || !f.formPassword.trim()){
     f.error = "Enter both your email address and app password.";
-    renderView();
+    refreshSettingsIfOpen();
     return;
   }
   f.connecting = true;
   f.error = null;
-  renderView();
+  refreshSettingsIfOpen();
 
   try{
     const res = await window.emailAPI.testAndSave({
@@ -2267,12 +2383,12 @@ async function connectEmailAccount(){
       syncNow(true);
     } else {
       f.error = res.error || "Couldn't connect. Check your details and try again.";
-      renderView();
+      refreshSettingsIfOpen();
     }
   }catch(e){
     f.connecting = false;
     f.error = "Something went wrong connecting to your email. Try again.";
-    renderView();
+    refreshSettingsIfOpen();
   }
 }
 
@@ -2281,13 +2397,13 @@ async function disconnectEmail(){
   await window.emailAPI.disconnect();
   emailUI = { ...emailUI, accountInfo: null, formEmail:"", formPassword:"", formCatchAllList:[], formCatchAllInput:"" };
   stopAutoSync();
-  renderView();
+  refreshSettingsIfOpen();
 }
 
 async function syncNow(silent){
   if(!emailUI.accountInfo || emailUI.syncing) return;
   emailUI.syncing = true;
-  if(!silent) renderView();
+  if(!silent) refreshSettingsIfOpen();
   try{
     const res = await window.emailAPI.sync({
       sinceISO: state.emailLastSync,
@@ -2299,13 +2415,19 @@ async function syncNow(silent){
     if(!res.ok){
       if(!silent) showToast(res.error || "Sync failed", "close");
       if(!isTypingInField()) renderView();
+      refreshSettingsIfOpen();
       return;
     }
     const { addedCount, cancelledCount } = mergeSyncResults(res.results);
     const newExpenseCount = mergeExpenseResults(res.expenseResults || []);
     state.emailLastSync = new Date().toISOString();
     saveState();
+    // Sync results can change data visible in two separate places at
+    // once — the main page (Stock/Orders/Dashboard/Sold) and, if it's
+    // open, the Settings modal (Detected Sales, connection status) —
+    // so both need refreshing, not just whichever happens to be showing.
     if(!isTypingInField()) renderView();
+    refreshSettingsIfOpen();
     const totalFound = res.results.length + (res.expenseResults ? res.expenseResults.length : 0);
     if(!silent || totalFound>0){
       const extras = [];
@@ -2318,6 +2440,7 @@ async function syncNow(silent){
     emailUI.syncing = false;
     if(!silent) showToast("Sync failed — check your connection", "close");
     if(!isTypingInField()) renderView();
+    refreshSettingsIfOpen();
   }
 }
 
@@ -2739,7 +2862,7 @@ function openSettings(){
   const root = document.getElementById("modalRoot");
   root.innerHTML = `
     <div class="modal-backdrop open" id="settingsBackdrop">
-      <div class="modal">
+      <div class="modal" style="width:640px;">
         <div class="modal-header">
           <h2>Settings</h2>
           <button class="icon-btn" id="closeSettings">${ICONS.close}</button>
@@ -2752,6 +2875,10 @@ function openSettings(){
             </select>
           </div>
           <div class="hint">This only changes how numbers are formatted — enter all your prices in this same currency; Restock doesn't convert between currencies.</div>
+
+          <div style="height:24px;"></div>
+          <div class="panel-title" style="margin-bottom:10px;">Email Sync</div>
+          ${emailSyncHTML()}
 
           <div style="height:20px;"></div>
           <div class="panel-title" style="margin-bottom:10px;">Updates</div>
@@ -2777,8 +2904,12 @@ function openSettings(){
   });
   document.getElementById("exportBtn").addEventListener("click", exportData);
   document.getElementById("clearBtn").addEventListener("click", ()=>{
-    if(confirm("This deletes all stock, sales, and detected order data on this device. This can't be undone. Continue?")){
-      state = { displayCurrency: state.displayCurrency, items: [], pendingOrders: [], emailLastSync: null };
+    if(confirm("This deletes all stock, sales, orders, and expense data on this device. This can't be undone. Continue?")){
+      state = {
+        displayCurrency: state.displayCurrency, items: [], pendingOrders: [], pendingSales: [],
+        expenses: [], expenseRules: [], emailLastSync: null,
+        emailFilters: { blockPromotions: true, excludedSenders: [] }
+      };
       saveState();
       document.getElementById("modalRoot").innerHTML = "";
       render();
@@ -2794,6 +2925,8 @@ function openSettings(){
   });
   const installBtn = document.getElementById("installUpdateBtnSettings");
   if(installBtn) installBtn.addEventListener("click", ()=>{ window.updaterAPI && window.updaterAPI.install(); });
+
+  attachEmailEvents();
 }
 
 function updateStatusMessage(){
