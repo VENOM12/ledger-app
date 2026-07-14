@@ -214,14 +214,18 @@ function recentSalesPanelHTML(){
     <div style="display:flex;flex-direction:column;gap:12px;">
       ${recent.map(({item,sale})=>{
         const net = saleNet(sale);
+        const profit = net - sale.quantitySold*item.purchasePricePerUnit;
         return `
         <div style="display:flex;align-items:center;gap:12px;">
           ${itemThumb(item, 38)}
           <div style="flex:1;min-width:0;">
             <div style="font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(item.name)}</div>
-            <div class="hint" style="margin:1px 0 0;">${escapeHTML(sale.platform||"—")} · ${formatDate(sale.saleDate)}</div>
+            <div class="hint" style="margin:1px 0 0;">${escapeHTML(sale.platform||"—")} · ${formatDate(sale.saleDate)} · Qty ${sale.quantitySold}</div>
           </div>
-          <div class="mono" style="font-weight:700;color:var(--green);flex-shrink:0;">${fmtMoney(net)}</div>
+          <div style="text-align:right;flex-shrink:0;">
+            <div class="mono" style="font-weight:700;color:var(--green);">${fmtMoney(net)}</div>
+            <div class="mono ${profit>=0?'pos':'neg'}" style="font-size:11.5px;font-weight:600;margin-top:1px;">${profit>=0?'+':''}${fmtMoney(profit)} profit</div>
+          </div>
         </div>`;
       }).join("")}
     </div>
@@ -591,16 +595,27 @@ function profitSeriesForPeriod(period){
 }
 function sparklineSVG(series){
   // A single-point series (the "Day" period — sales only record a date,
-  // not a time, so there's no finer breakdown available) would divide by
-  // zero in the stepX calculation below. Duplicating the point renders it
-  // as a flat line instead of crashing.
-  if(series.length === 1){
+  // not a time, so there's no finer breakdown available) needs different
+  // handling before it gets duplicated below: with only one real value,
+  // the normal min/max-based scaling makes that value BE the max (or
+  // min), which pins the line right at the very top or bottom edge of the
+  // chart — technically present but visually cramped enough that it read
+  // as "missing." A symmetric range around zero keeps the point
+  // comfortably in view regardless of its sign.
+  const wasSinglePoint = series.length === 1;
+  if(wasSinglePoint){
     series = [series[0], series[0]];
   }
   const w=520, h=150, pad=10, topPad=26, bottomPad=24;
   const values = series.map(p=>p.value);
-  let min = Math.min(0, ...values), max = Math.max(0, ...values);
-  if(min===max){ min-=1; max+=1; }
+  let min, max;
+  if(wasSinglePoint){
+    const range = Math.max(Math.abs(values[0]), 1) * 1.6;
+    min = -range; max = range;
+  } else {
+    min = Math.min(0, ...values); max = Math.max(0, ...values);
+    if(min===max){ min-=1; max+=1; }
+  }
   const plotTop = topPad, plotBottom = h-bottomPad;
   const stepX = (w-pad*2)/(series.length-1);
   const yFor = v => plotBottom - ((v-min)/(max-min)) * (plotBottom-plotTop);
@@ -629,18 +644,39 @@ function sparklineSVG(series){
     `;
   }).join("");
 
-  return `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;display:block;">
-    <defs><linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" style="stop-color:var(--violet);stop-opacity:0.35"/>
-      <stop offset="100%" style="stop-color:var(--violet);stop-opacity:0"/>
-    </linearGradient></defs>
-    <line x1="${pad}" y1="${zeroY.toFixed(1)}" x2="${w-pad}" y2="${zeroY.toFixed(1)}" stroke="#232332" stroke-width="1" stroke-dasharray="3 3"/>
-    <text x="${pad}" y="${(zeroY-5).toFixed(1)}" font-size="9.5" fill="#5C5C72" font-family="IBM Plex Mono, monospace">${fmtMoney(0)}</text>
-    <path d="${areaPath}" fill="url(#sparkFill)" stroke="none"/>
-    <path d="${linePath}" fill="none" style="stroke:var(--violet);" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-    ${valueMarkers}
-    ${dateLabels.map(l=>`<text x="${l.x}" y="${h-6}" font-size="9.5" fill="#5C5C72" font-family="IBM Plex Mono, monospace" text-anchor="middle">${l.text}</text>`).join("")}
-  </svg>`;
+  // Exposed so a mousemove handler (bound separately, after this HTML is
+  // actually in the DOM) can find the nearest point and show a proper
+  // custom tooltip — the <title> attributes above only give a slow,
+  // plain browser-native tooltip, not something that actually feels
+  // interactive.
+  window.__chartPoints = pts.map((pt,i)=>({
+    x: pt[0], y: pt[1], value: series[i].value,
+    dateLabel: series[i].date.toLocaleDateString(undefined,{month:'short',day:'numeric', year:'numeric'})
+  }));
+  window.__chartWidth = w;
+
+  return `
+    <div id="profitChartWrap" style="position:relative;">
+      <svg id="profitChartSvg" viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;display:block;cursor:crosshair;">
+        <defs><linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" style="stop-color:var(--violet);stop-opacity:0.35"/>
+          <stop offset="100%" style="stop-color:var(--violet);stop-opacity:0"/>
+        </linearGradient></defs>
+        <line x1="${pad}" y1="${zeroY.toFixed(1)}" x2="${w-pad}" y2="${zeroY.toFixed(1)}" stroke="#232332" stroke-width="1" stroke-dasharray="3 3"/>
+        <text x="${pad}" y="${(zeroY-5).toFixed(1)}" font-size="9.5" fill="#5C5C72" font-family="IBM Plex Mono, monospace">${fmtMoney(0)}</text>
+        <path d="${areaPath}" fill="url(#sparkFill)" stroke="none"/>
+        <path d="${linePath}" fill="none" style="stroke:var(--violet);" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        ${valueMarkers}
+        ${dateLabels.map(l=>`<text x="${l.x}" y="${h-6}" font-size="9.5" fill="#5C5C72" font-family="IBM Plex Mono, monospace" text-anchor="middle">${l.text}</text>`).join("")}
+        <line id="chartHoverLine" x1="0" y1="${plotTop}" x2="0" y2="${plotBottom}" stroke="var(--violet)" stroke-width="1" opacity="0" pointer-events="none"/>
+        <circle id="chartHoverDot" cx="0" cy="0" r="4.5" fill="var(--violet)" stroke="var(--bg)" stroke-width="2" opacity="0" pointer-events="none"/>
+      </svg>
+      <div id="chartTooltip" style="position:absolute;pointer-events:none;opacity:0;transition:opacity .1s;background:var(--card-2);border:1px solid var(--border);border-radius:8px;padding:7px 11px;font-size:12px;white-space:nowrap;transform:translate(-50%,-115%);z-index:5;box-shadow:0 6px 20px rgba(0,0,0,0.35);">
+        <div id="chartTooltipDate" class="hint" style="margin:0 0 2px;"></div>
+        <div id="chartTooltipValue" class="mono" style="font-weight:700;"></div>
+      </div>
+    </div>
+  `;
 }
 function donutSVG(entries, total){
   const r=48, cx=60, cy=60, sw=15;
@@ -660,6 +696,53 @@ function donutSVG(entries, total){
 function attachDashboardEvents(){
   document.querySelectorAll("[data-period]").forEach(btn=>{
     btn.addEventListener("click", ()=>{ ui.period = btn.dataset.period; renderView(); });
+  });
+  bindChartHoverEvents();
+}
+
+function bindChartHoverEvents(){
+  const svg = document.getElementById("profitChartSvg");
+  if(!svg || !window.__chartPoints || window.__chartPoints.length===0) return;
+  const wrap = document.getElementById("profitChartWrap");
+  const tooltip = document.getElementById("chartTooltip");
+  const tooltipDate = document.getElementById("chartTooltipDate");
+  const tooltipValue = document.getElementById("chartTooltipValue");
+  const hoverLine = document.getElementById("chartHoverLine");
+  const hoverDot = document.getElementById("chartHoverDot");
+  const points = window.__chartPoints;
+  const viewBoxWidth = window.__chartWidth;
+
+  function nearestPoint(svgX){
+    let best = points[0], bestDist = Infinity;
+    for(const p of points){
+      const d = Math.abs(p.x - svgX);
+      if(d < bestDist){ bestDist = d; best = p; }
+    }
+    return best;
+  }
+
+  svg.addEventListener("mousemove", (e)=>{
+    const rect = svg.getBoundingClientRect();
+    const svgX = ((e.clientX - rect.left) / rect.width) * viewBoxWidth;
+    const p = nearestPoint(svgX);
+
+    hoverLine.setAttribute("x1", p.x); hoverLine.setAttribute("x2", p.x); hoverLine.setAttribute("opacity", "0.5");
+    hoverDot.setAttribute("cx", p.x); hoverDot.setAttribute("cy", p.y); hoverDot.setAttribute("opacity", "1");
+
+    tooltipDate.textContent = p.dateLabel;
+    tooltipValue.textContent = fmtMoney(p.value);
+    tooltipValue.className = "mono " + (p.value>=0 ? "pos" : "neg");
+
+    const leftPct = (p.x / viewBoxWidth) * 100;
+    tooltip.style.left = leftPct + "%";
+    tooltip.style.top = ((p.y / 150) * 100) + "%";
+    tooltip.style.opacity = "1";
+  });
+
+  svg.addEventListener("mouseleave", ()=>{
+    hoverLine.setAttribute("opacity", "0");
+    hoverDot.setAttribute("opacity", "0");
+    tooltip.style.opacity = "0";
   });
 }
 
