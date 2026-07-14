@@ -475,6 +475,20 @@ function looksPromotional(subject, bodyText, headers) {
   return PROMO.test(hay);
 }
 
+// Same fix as the renderer side's todayISO()/localISO(): local date
+// components directly, not toISOString().slice(0,10) — that converts to
+// UTC first, which silently shifts the date by a day for anyone in a
+// timezone ahead of UTC. Used below for dates parsed out of email text
+// (delivery estimates, payment deadlines), where the email itself has no
+// timezone info to anchor to, so "the machine's local date" is the only
+// sensible interpretation.
+function localISO(d){
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }) {
   // Invisible Unicode formatting characters (zero-width spaces, RTL/LTR
   // embedding marks, word joiners, BOM) show up in real marketing emails
@@ -587,7 +601,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
     let deadlineDate = null;
     if (deadlineMatch) {
       const d = new Date(deadlineMatch[1]);
-      if (!isNaN(d)) deadlineDate = d.toISOString().slice(0, 10);
+      if (!isNaN(d)) deadlineDate = localISO(d);
     }
     const deadlineTime = deadlineMatch && deadlineMatch[2] ? deadlineMatch[2].trim() : null;
 
@@ -634,7 +648,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       if (d.getMonth() < emailDate.getMonth() - 6) {
         d = new Date(dateStr.replace(String(emailYear), String(emailYear + 1)));
       }
-      if (!isNaN(d)) expectedDelivery = d.toISOString().slice(0, 10);
+      if (!isNaN(d)) expectedDelivery = localISO(d);
     }
   }
   const timeMatch = bodyText.match(/\b(?:by|before|between)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))(?:\s*(?:and|-|to)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)))?/i);

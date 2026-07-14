@@ -85,7 +85,19 @@ function fmtMoney(value){
   catch(e){ return (state.displayCurrency||"USD") + " " + (value||0).toFixed(2); }
 }
 function fmtPct(v){ return v.toFixed(1) + "%"; }
-function todayISO(){ return new Date().toISOString().slice(0,10); }
+// Uses local date components directly rather than new Date().toISOString()
+// — converting to UTC before taking the date portion silently shifts the
+// date by a day for anyone in a timezone ahead of UTC (confirmed real
+// bug: a UK user in BST, UTC+1, hit local midnight becoming "yesterday"
+// once converted to UTC, causing a sale recorded today to not match
+// today's date everywhere else in the app expected it to).
+function todayISO(){
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,"0");
+  const day = String(d.getDate()).padStart(2,"0");
+  return `${y}-${m}-${day}`;
+}
 function daysBetween(a,b){ return Math.round((new Date(b)-new Date(a))/86400000); }
 function isTypingInField(){
   const el = document.activeElement;
@@ -357,6 +369,8 @@ function greetingWord(){
 function renderView(){
   const view = document.getElementById("view");
   if(!view) return;
+  const existingTooltip = document.getElementById("chartTooltip");
+  if(existingTooltip) existingTooltip.style.opacity = "0";
   if(ui.detailItemId){ view.innerHTML = detailHTML(ui.detailItemId); attachDetailEvents(); return; }
   if(ui.tab==="dashboard"){ view.innerHTML = dashboardHTML(); attachDashboardEvents(); }
   else if(ui.tab==="add"){ view.innerHTML = addFormHTML(); attachAddEvents(); }
@@ -557,17 +571,27 @@ function profitInMonth(year, month){
 // record a date, not a time, so there's no finer granularity available),
 // Week/Month show daily points, Year/All Time aggregate by month since
 // hundreds of daily points wouldn't be readable.
+// Same local-date logic as todayISO(), but for an arbitrary date — used
+// throughout the chart's day-by-day lookups below, which had the exact
+// same UTC-conversion bug todayISO() did.
+function localISO(d){
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,"0");
+  const day = String(d.getDate()).padStart(2,"0");
+  return `${y}-${m}-${day}`;
+}
+
 function profitSeriesForPeriod(period){
   const today = new Date(); today.setHours(0,0,0,0);
 
   if(period==="Day"){
-    return [{date: new Date(today), value: profitOnDate(today.toISOString().slice(0,10))}];
+    return [{date: new Date(today), value: profitOnDate(todayISO())}];
   }
   if(period==="Week" || period==="Month"){
     const spanDays = period==="Week" ? 6 : 29;
     const days = [];
     for(let i=spanDays; i>=0; i--){ const d=new Date(today); d.setDate(d.getDate()-i); days.push(d); }
-    return days.map(d=>({date:d, value: profitOnDate(d.toISOString().slice(0,10))}));
+    return days.map(d=>({date:d, value: profitOnDate(localISO(d))}));
   }
   if(period==="Year"){
     const months = [];
@@ -674,12 +698,32 @@ function sparklineSVG(series){
         <line id="chartHoverLine" x1="0" y1="${plotTop}" x2="0" y2="${plotBottom}" stroke="var(--violet)" stroke-width="1" opacity="0" pointer-events="none"/>
         <circle id="chartHoverDot" cx="0" cy="0" r="4.5" fill="var(--violet)" stroke="var(--bg)" stroke-width="2" opacity="0" pointer-events="none"/>
       </svg>
-      <div id="chartTooltip" style="position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;background:var(--card-2);border:1px solid var(--border);border-radius:8px;padding:7px 11px;font-size:12px;white-space:nowrap;transform:translate(-50%,-115%);z-index:50;box-shadow:0 6px 20px rgba(0,0,0,0.35);">
-        <div id="chartTooltipDate" class="hint" style="margin:0 0 2px;"></div>
-        <div id="chartTooltipValue" class="mono" style="font-weight:700;"></div>
-      </div>
     </div>
   `;
+}
+
+// The tooltip lives permanently as a direct child of <body>, created once
+// and reused — never nested inside the dashboard's own re-rendered HTML.
+// This is deliberate, not just tidiness: position:fixed is only
+// guaranteed to position relative to the viewport if no ancestor sets a
+// transform/filter/will-change (any of those silently makes position:fixed
+// behave like position:absolute relative to THAT ancestor instead). Every
+// other fix attempt still left the tooltip nested somewhere inside the
+// dashboard's DOM tree, relying on none of its ancestors ever having such
+// a property — appending directly to body sidesteps that risk entirely,
+// with certainty, regardless of anything else on the page.
+function ensureChartTooltipElement(){
+  let tooltip = document.getElementById("chartTooltip");
+  if(tooltip) return tooltip;
+  tooltip = document.createElement("div");
+  tooltip.id = "chartTooltip";
+  tooltip.style.cssText = "position:fixed;pointer-events:none;opacity:0;transition:opacity .1s;background:var(--card-2);border:1px solid var(--border);border-radius:8px;padding:7px 11px;font-size:12px;white-space:nowrap;transform:translate(-50%,-115%);z-index:9999;box-shadow:0 6px 20px rgba(0,0,0,0.35);";
+  tooltip.innerHTML = `
+    <div id="chartTooltipDate" class="hint" style="margin:0 0 2px;"></div>
+    <div id="chartTooltipValue" class="mono" style="font-weight:700;"></div>
+  `;
+  document.body.appendChild(tooltip);
+  return tooltip;
 }
 function donutSVG(entries, total){
   const r=48, cx=60, cy=60, sw=15;
@@ -706,8 +750,7 @@ function attachDashboardEvents(){
 function bindChartHoverEvents(){
   const svg = document.getElementById("profitChartSvg");
   if(!svg || !window.__chartPoints || window.__chartPoints.length===0) return;
-  const wrap = document.getElementById("profitChartWrap");
-  const tooltip = document.getElementById("chartTooltip");
+  const tooltip = ensureChartTooltipElement();
   const tooltipDate = document.getElementById("chartTooltipDate");
   const tooltipValue = document.getElementById("chartTooltipValue");
   const hoverLine = document.getElementById("chartHoverLine");
