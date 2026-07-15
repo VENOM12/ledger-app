@@ -311,9 +311,25 @@ ipcMain.handle('email:updateCatchAll', (evt, { catchAllDomains }) => {
   return { ok };
 });
 
+// Clears the "already looked at this" tracking without touching anything
+// else (password, catch-all domains, etc.) — lets a previously-missed
+// email get a genuine second chance on the next sync, e.g. one that a
+// since-fixed classification bug had permanently blacklisted before the
+// fix existed. The 24-hour minimum lookback window means this only
+// re-examines roughly the last day's mail, not the whole inbox history.
+ipcMain.handle('email:resetTracking', () => {
+  const ok = patchAccount({ processedMessageIds: [] });
+  return { ok };
+});
+
 ipcMain.handle('email:disconnect', () => {
   clearAccount();
   return { ok: true };
+});
+
+ipcMain.handle('email:resetTracking', () => {
+  const ok = patchAccount({ processedMessageIds: [] });
+  return { ok };
 });
 
 ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSenders, expenseRules }) => {
@@ -337,13 +353,20 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
   const results = [];
   const expenseResults = [];
   const newlySeenIds = [];
-  const KEYWORDS = /(order|shipped|shipment|delivered|delivery|tracking|confirmation|receipt|out for delivery|sold|payout|paid|payment received)/i;
+  const KEYWORDS = /(order|shipped|shipment|delivered|delivery|tracking|confirmation|receipt|out for delivery|sold|sale|payout|paid|payment received)/i;
 
   try {
     await client.connect();
     const lock = await client.getMailboxLock('INBOX');
     try {
-      const since = sinceISO ? new Date(sinceISO) : new Date(Date.now() - 90 * 86400000);
+      // Always look back at least 24 hours, even if the last sync was
+      // more recent than that — a rolling safety window, so a transient
+      // issue (or a classification bug that's since been fixed) doesn't
+      // permanently miss something. Message-ID dedup still prevents this
+      // from reprocessing anything already successfully handled.
+      const sinceFromLastSync = sinceISO ? new Date(sinceISO) : new Date(Date.now() - 90 * 86400000);
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const since = sinceFromLastSync < twentyFourHoursAgo ? sinceFromLastSync : twentyFourHoursAgo;
 
       const baseUids = await client.search({ since });
       const forceProcess = new Set();
@@ -399,12 +422,13 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
         let parsed;
         try { parsed = await simpleParser(full.source); } catch (e) { continue; }
 
-        if (messageId) newlySeenIds.push(messageId);
-
         const fromAddr = (parsed.from && parsed.from.value && parsed.from.value[0]) || {};
         const fromEmail = (fromAddr.address || '').toLowerCase();
 
-        if (fromEmail && excludeList.some(ex => fromEmail.includes(ex))) continue;
+        if (fromEmail && excludeList.some(ex => fromEmail.includes(ex))) {
+          if (messageId) newlySeenIds.push(messageId); // deliberately blocked — a definitive outcome, safe to remember
+          continue;
+        }
 
         const bodyText = (parsed.text || parsed.html || '').toString();
 
@@ -423,10 +447,14 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
             date: (parsed.date || envMsg.envelope.date || new Date()).toISOString(),
             fromEmail
           });
+          if (messageId) newlySeenIds.push(messageId); // successfully handled as an expense
           continue;
         }
 
-        if (blockPromotions && looksPromotional(subject, bodyText, parsed.headers)) continue;
+        if (blockPromotions && looksPromotional(subject, bodyText, parsed.headers)) {
+          if (messageId) newlySeenIds.push(messageId); // deliberately filtered as promotional — a definitive outcome
+          continue;
+        }
 
         const toAddr = (parsed.to && parsed.to.value && parsed.to.value[0]) || {};
 
@@ -438,7 +466,18 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
           toEmail: toAddr.address || '',
           date: (parsed.date || envMsg.envelope.date || new Date()).toISOString()
         });
-        if (classified) results.push(classified);
+        if (classified) {
+          results.push(classified);
+          if (messageId) newlySeenIds.push(messageId); // successfully classified — a definitive outcome
+        }
+        // If classification returned null, deliberately NOT marking this
+        // seen — an email that doesn't match anything today stays
+        // eligible for re-examination on future syncs, in case a later
+        // fix changes that outcome. This is exactly the bug that caused a
+        // real PKC preorder to stop being detected: it was marked "seen"
+        // the moment it was parsed, regardless of whether classification
+        // actually succeeded, so a since-fixed bug in classifyEmail could
+        // never get a second chance at the same email.
       }
     } finally {
       lock.release();
@@ -514,7 +553,17 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // not just the body text. "baa-customer-appeal" is Amazon's own sender
   // pattern regardless of body language (covers a real Swedish example).
   else if ((/sign in to resolve|account is (?:temporarily )?(?:on hold|closed|suspended|st[äa]ngt|avst[äa]ngt)/i.test(hay) && /amazon/i.test(fromEmail)) || /baa-customer-appeal/i.test(fromEmail)) status = 'account_suspended';
-  else if (/action required|unable to (?:authorise|authorize|charge)|reauthorise|reauthorize|re-authorise|re-authorize|update your payment/i.test(hay)) status = 'action_required';
+  // A real "please update your payment" notice comes with an actual
+  // deadline ("before 15 July 2026..."). A routine order confirmation can
+  // ALSO contain nearly identical trigger phrasing though — Pokémon
+  // Center's standard confirmation includes boilerplate explaining what
+  // happens *if* a future charge fails ("If we're unable to charge you
+  // for your preorder, you'll receive a reminder...") as routine policy
+  // text, not an actual notice. A real confirmation email was
+  // misclassified as action_required by this exact phrase before this
+  // fix. Requiring a real deadline alongside the trigger phrase is what
+  // actually distinguishes "this happened" from "here's our policy."
+  else if (/before\s+\d{1,2}\s+[A-Za-z]+\s+\d{4}/i.test(hay) && /action required|unable to (?:authorise|authorize|charge)|reauthorise|reauthorize|re-authorise|re-authorize|update your payment/i.test(hay)) status = 'action_required';
   // "Collected" covers click-and-collect pickup confirmations (Argos,
   // Sainsbury's, etc.) — functionally the same end state as a home
   // delivery, just worded completely differently.

@@ -565,6 +565,15 @@ function profitInMonth(year, month){
   });
   return p;
 }
+function expensesOnDate(iso){
+  return (state.expenses||[]).filter(e=>e.date===iso).reduce((s,e)=>s+(e.amount||0),0);
+}
+function expensesInMonth(year, month){
+  return (state.expenses||[]).filter(e=>{
+    const d = new Date(e.date);
+    return d.getFullYear()===year && d.getMonth()===month;
+  }).reduce((s,e)=>s+(e.amount||0),0);
+}
 
 // Matches the chart to whichever period is selected up top, the same way
 // the stat cards do — "Day" only has one real data point (sales only
@@ -585,28 +594,34 @@ function profitSeriesForPeriod(period){
   const today = new Date(); today.setHours(0,0,0,0);
 
   if(period==="Day"){
-    return [{date: new Date(today), value: profitOnDate(todayISO())}];
+    const iso = todayISO();
+    return [{date: new Date(today), value: profitOnDate(iso), expenses: expensesOnDate(iso)}];
   }
   if(period==="Week" || period==="Month"){
     const spanDays = period==="Week" ? 6 : 29;
     const days = [];
     for(let i=spanDays; i>=0; i--){ const d=new Date(today); d.setDate(d.getDate()-i); days.push(d); }
-    return days.map(d=>({date:d, value: profitOnDate(localISO(d))}));
+    return days.map(d=>{ const iso=localISO(d); return {date:d, value: profitOnDate(iso), expenses: expensesOnDate(iso)}; });
   }
   if(period==="Year"){
     const months = [];
     for(let i=11; i>=0; i--){ months.push(new Date(today.getFullYear(), today.getMonth()-i, 1)); }
-    return months.map(d=>({date:d, value: profitInMonth(d.getFullYear(), d.getMonth())}));
+    return months.map(d=>({date:d, value: profitInMonth(d.getFullYear(), d.getMonth()), expenses: expensesInMonth(d.getFullYear(), d.getMonth())}));
   }
-  // All Time: monthly from the earliest sale on record through now, capped
-  // to the most recent 36 months so a very long history stays readable.
+  // All Time: monthly from the earliest sale OR expense on record through
+  // now, capped to the most recent 36 months so a very long history stays
+  // readable.
   let earliest = null;
   state.items.forEach(item=>item.sales.forEach(s=>{
     const d = new Date(s.saleDate);
     if(!earliest || d<earliest) earliest = d;
   }));
+  (state.expenses||[]).forEach(e=>{
+    const d = new Date(e.date);
+    if(!earliest || d<earliest) earliest = d;
+  });
   if(!earliest){
-    return [{date: new Date(today.getFullYear(), today.getMonth(), 1), value: 0}];
+    return [{date: new Date(today.getFullYear(), today.getMonth(), 1), value: 0, expenses: 0}];
   }
   const months = [];
   let cursor = new Date(earliest.getFullYear(), earliest.getMonth(), 1);
@@ -615,7 +630,7 @@ function profitSeriesForPeriod(period){
     months.push(new Date(cursor));
     cursor.setMonth(cursor.getMonth()+1);
   }
-  return months.slice(-36).map(d=>({date:d, value: profitInMonth(d.getFullYear(), d.getMonth())}));
+  return months.slice(-36).map(d=>({date:d, value: profitInMonth(d.getFullYear(), d.getMonth()), expenses: expensesInMonth(d.getFullYear(), d.getMonth())}));
 }
 function sparklineSVG(series){
   // A single-point series (the "Day" period — sales only record a date,
@@ -632,19 +647,24 @@ function sparklineSVG(series){
   }
   const w=520, h=150, pad=10, topPad=26, bottomPad=24;
   const values = series.map(p=>p.value);
+  const expenseValues = series.map(p=>p.expenses||0);
   let min, max;
   if(wasSinglePoint){
-    const range = Math.max(Math.abs(values[0]), 1) * 1.6;
+    const range = Math.max(Math.abs(values[0]), Math.abs(expenseValues[0]), 1) * 1.6;
     min = -range; max = range;
   } else {
-    min = Math.min(0, ...values); max = Math.max(0, ...values);
+    // Expenses are always >= 0, but included here so the red line always
+    // fits on the same vertical scale as the profit line, never clipped.
+    min = Math.min(0, ...values); max = Math.max(0, ...values, ...expenseValues);
     if(min===max){ min-=1; max+=1; }
   }
   const plotTop = topPad, plotBottom = h-bottomPad;
   const stepX = (w-pad*2)/(series.length-1);
   const yFor = v => plotBottom - ((v-min)/(max-min)) * (plotBottom-plotTop);
   const pts = series.map((p,i)=>[pad+i*stepX, yFor(p.value)]);
+  const expensePts = series.map((p,i)=>[pad+i*stepX, yFor(p.expenses||0)]);
   const linePath = pts.map((p,i)=> (i===0?"M":"L")+p[0].toFixed(1)+","+p[1].toFixed(1)).join(" ");
+  const expenseLinePath = expensePts.map((p,i)=> (i===0?"M":"L")+p[0].toFixed(1)+","+p[1].toFixed(1)).join(" ");
   const areaPath = linePath + ` L${pts[pts.length-1][0].toFixed(1)},${plotBottom} L${pts[0][0].toFixed(1)},${plotBottom} Z`;
   const zeroY = yFor(0);
 
@@ -657,6 +677,9 @@ function sparklineSVG(series){
   // single point on a "Day" chart is the one exception — suppressing a
   // $0 label there left the whole chart looking completely blank, since
   // there's no other point to give it context the way a 7-day chart has.
+  // Only the profit line gets these — showing labels for both lines at
+  // every point would clutter the chart fast; expenses are still fully
+  // visible via the red line itself and the hover tooltip.
   const valueMarkers = pts.map((pt,i)=>{
     const v = series[i].value;
     if(v===0 && !wasSinglePoint) return "";
@@ -677,13 +700,17 @@ function sparklineSVG(series){
   // plain browser-native tooltip, not something that actually feels
   // interactive.
   window.__chartPoints = pts.map((pt,i)=>({
-    x: pt[0], y: pt[1], value: series[i].value,
+    x: pt[0], y: pt[1], value: series[i].value, expenses: series[i].expenses||0,
     dateLabel: series[i].date.toLocaleDateString(undefined,{month:'short',day:'numeric', year:'numeric'})
   }));
   window.__chartWidth = w;
 
   return `
     <div id="profitChartWrap" style="position:relative;">
+      <div style="display:flex;gap:16px;justify-content:flex-end;margin-bottom:2px;">
+        <span style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-dim);"><span style="width:10px;height:2.5px;border-radius:2px;background:var(--violet);display:inline-block;"></span>Profit</span>
+        <span style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-dim);"><span style="width:10px;height:2.5px;border-radius:2px;background:var(--red);display:inline-block;"></span>Expenses</span>
+      </div>
       <svg id="profitChartSvg" viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;display:block;cursor:crosshair;">
         <defs><linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" style="stop-color:var(--violet);stop-opacity:0.35"/>
@@ -692,6 +719,7 @@ function sparklineSVG(series){
         <line x1="${pad}" y1="${zeroY.toFixed(1)}" x2="${w-pad}" y2="${zeroY.toFixed(1)}" stroke="#232332" stroke-width="1" stroke-dasharray="3 3"/>
         <text x="${pad}" y="${(zeroY-5).toFixed(1)}" font-size="9.5" fill="#5C5C72" font-family="IBM Plex Mono, monospace">${fmtMoney(0)}</text>
         <path d="${areaPath}" fill="url(#sparkFill)" stroke="none"/>
+        <path d="${expenseLinePath}" fill="none" style="stroke:var(--red);" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="4 3" opacity="0.85"/>
         <path d="${linePath}" fill="none" style="stroke:var(--violet);" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
         ${valueMarkers}
         ${dateLabels.map(l=>`<text x="${l.x}" y="${h-6}" font-size="9.5" fill="#5C5C72" font-family="IBM Plex Mono, monospace" text-anchor="middle">${l.text}</text>`).join("")}
@@ -790,8 +818,11 @@ function bindChartHoverEvents(){
     hoverDot.setAttribute("cx", p.x); hoverDot.setAttribute("cy", p.y); hoverDot.setAttribute("opacity", "1");
 
     tooltipDate.textContent = p.dateLabel;
-    tooltipValue.textContent = fmtMoney(p.value);
-    tooltipValue.className = "mono " + (p.value>=0 ? "pos" : "neg");
+    tooltipValue.innerHTML = `
+      <div><span style="color:var(--violet);">Profit</span> ${fmtMoney(p.value)}</div>
+      ${p.expenses>0 ? `<div style="margin-top:2px;"><span style="color:var(--red);">Expenses</span> ${fmtMoney(p.expenses)}</div>` : ""}
+    `;
+    tooltipValue.className = "mono";
 
     // Fixed positioning with real viewport pixel coordinates — not
     // percentage-based position:absolute relative to a parent. A
@@ -1149,10 +1180,12 @@ function attachStockEvents(){
 let ordersUI = { subTab: "all", search: "", retailerFilter: "All" };
 
 function ordersHTML(){
+  const allCount = state.pendingOrders.filter(p=>!p.isPKCPreorder).length;
+  const pkcCount = state.items.filter(i=>i.isPreorder).length;
   return `
     <div class="segmented" style="margin-bottom:4px;">
-      <button class="${ordersUI.subTab==='all'?'active':''}" data-orders-subtab="all">All Orders</button>
-      <button class="${ordersUI.subTab==='pkc'?'active':''}" data-orders-subtab="pkc">PKC Preorders</button>
+      <button class="${ordersUI.subTab==='all'?'active':''}" data-orders-subtab="all">All Orders (${allCount})</button>
+      <button class="${ordersUI.subTab==='pkc'?'active':''}" data-orders-subtab="pkc">PKC Preorders (${pkcCount})</button>
     </div>
     ${ordersUI.subTab==='all' ? allOrdersContentHTML() : pkcOrdersContentHTML()}
   `;
@@ -2620,6 +2653,7 @@ function emailConnectedHTML(){
       </div>
       <div style="display:flex;gap:8px;">
         <button class="btn-secondary" id="syncNowBtn" ${emailUI.syncing?"disabled":""}>${ICONS.refresh} ${emailUI.syncing ? "Syncing…" : "Sync Now"}</button>
+        <button class="btn-small" id="resetTrackingBtn" title="Forces the next sync to look at every email again within the search window — useful after a detection fix, so an email that was previously missed gets a fresh look.">Re-scan Recent Mail</button>
         <button class="btn-secondary" id="disconnectBtn" style="border-color:var(--red);color:var(--red);">Disconnect</button>
       </div>
     </div>
@@ -2796,6 +2830,14 @@ function attachEmailEvents(){
   } else {
     const syncBtn = document.getElementById("syncNowBtn");
     if(syncBtn) syncBtn.addEventListener("click", ()=>syncNow(false));
+    const resetTrackingBtn = document.getElementById("resetTrackingBtn");
+    if(resetTrackingBtn) resetTrackingBtn.addEventListener("click", async ()=>{
+      resetTrackingBtn.disabled = true;
+      resetTrackingBtn.textContent = "Resetting…";
+      await window.emailAPI.resetTracking();
+      showToast("Tracking reset — next sync will look at recent mail fresh");
+      await syncNow(false);
+    });
     const disconnectBtn = document.getElementById("disconnectBtn");
     if(disconnectBtn) disconnectBtn.addEventListener("click", disconnectEmail);
     document.querySelectorAll("[data-view]").forEach(btn=>{
