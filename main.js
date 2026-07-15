@@ -317,11 +317,6 @@ ipcMain.handle('email:updateCatchAll', (evt, { catchAllDomains }) => {
 // since-fixed classification bug had permanently blacklisted before the
 // fix existed. The 24-hour minimum lookback window means this only
 // re-examines roughly the last day's mail, not the whole inbox history.
-ipcMain.handle('email:resetTracking', () => {
-  const ok = patchAccount({ processedMessageIds: [] });
-  return { ok };
-});
-
 ipcMain.handle('email:disconnect', () => {
   clearAccount();
   return { ok: true };
