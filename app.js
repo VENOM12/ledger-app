@@ -454,7 +454,7 @@ function dashboardHTML(){
     const units = group.reduce((s,i)=>s+qtySold(i),0);
     const r = cost>0 ? (p/cost)*100 : 0;
     return {name, profit:p, roi:r, units, category: group[0].category};
-  }).sort((a,b)=>b.profit-a.profit).slice(0,6);
+  }).sort((a,b)=>b.roi-a.roi).slice(0,6);
 
   const pendingDeliveryCount = state.pendingOrders.filter(p=>p.status!=="delivered" && p.status!=="cancelled").length;
 
@@ -1185,14 +1185,16 @@ function attachStockEvents(){
 let ordersUI = { subTab: "all", search: "", retailerFilter: "All" };
 
 function ordersHTML(){
-  const allCount = state.pendingOrders.filter(p=>!p.isPKCPreorder).length;
-  const pkcCount = state.items.filter(i=>i.isPreorder).length;
+  const allCount = state.pendingOrders.filter(p=>!p.isPKCPreorder && p.status!=="cancelled").length;
+  const pkcCount = state.items.filter(i=>i.isPreorder && i.retailer==="Pokemon Center" && !i.isCancelled).length;
+  const cancelledCount = state.pendingOrders.filter(p=>p.status==="cancelled").length;
   return `
     <div class="segmented" style="margin-bottom:4px;">
       <button class="${ordersUI.subTab==='all'?'active':''}" data-orders-subtab="all">All Orders (${allCount})</button>
       <button class="${ordersUI.subTab==='pkc'?'active':''}" data-orders-subtab="pkc">PKC Preorders (${pkcCount})</button>
+      <button class="${ordersUI.subTab==='cancelled'?'active':''}" data-orders-subtab="cancelled">Cancelled (${cancelledCount})</button>
     </div>
-    ${ordersUI.subTab==='all' ? allOrdersContentHTML() : pkcOrdersContentHTML()}
+    ${ordersUI.subTab==='all' ? allOrdersContentHTML() : ordersUI.subTab==='pkc' ? pkcOrdersContentHTML() : cancelledOrdersContentHTML()}
   `;
 }
 
@@ -1205,13 +1207,15 @@ function attachOrdersEvents(){
   });
   if(ordersUI.subTab==='all'){
     attachAllOrdersEvents();
-  } else {
+  } else if(ordersUI.subTab==='pkc'){
     attachPreordersEvents();
+  } else {
+    attachCancelledOrdersEvents();
   }
 }
 
 function allOrdersContentHTML(){
-  const orders = state.pendingOrders.filter(p=>!p.isPKCPreorder);
+  const orders = state.pendingOrders.filter(p=>!p.isPKCPreorder && p.status!=="cancelled");
   const retailers = Array.from(new Set(orders.map(p=>p.retailer).filter(Boolean))).sort();
 
   return `
@@ -1232,7 +1236,7 @@ function allOrdersContentHTML(){
 }
 
 function allOrdersResultsHTML(){
-  const orders = state.pendingOrders.filter(p=>!p.isPKCPreorder)
+  const orders = state.pendingOrders.filter(p=>!p.isPKCPreorder && p.status!=="cancelled")
     .filter(p=> ordersUI.retailerFilter==="All" || p.retailer===ordersUI.retailerFilter)
     .filter(p=> !ordersUI.search || (p.retailer||"").toLowerCase().includes(ordersUI.search.toLowerCase()) || (p.orderNumber||"").toLowerCase().includes(ordersUI.search.toLowerCase()))
     .sort((a,b)=> new Date(b.orderDate)-new Date(a.orderDate));
@@ -1489,11 +1493,24 @@ function pkcTotalToPay(){
   return activePkcPreorders().reduce((s,i)=>s+i.quantityPurchased*i.purchasePricePerUnit, 0);
 }
 function pkcQuantitySummary(){
-  const groups = {};
+  // Exact-string grouping was silently splitting one real product's total
+  // across multiple boxes whenever it got extracted with slightly
+  // different text between two separate emails (extra whitespace, minor
+  // wording differences, etc.) — reusing the same fuzzy matcher already
+  // used elsewhere in the app for matching sales/items to consolidate
+  // these correctly instead of treating near-identical names as
+  // completely different products.
+  const groups = [];
   activePkcPreorders().forEach(i=>{
-    groups[i.name] = (groups[i.name]||0) + i.quantityPurchased;
+    const existing = groups.find(g => namesLikelyMatch(g.name, i.name));
+    if(existing){
+      existing.qty += i.quantityPurchased;
+      if(i.name.length > existing.name.length) existing.name = i.name; // keep the more descriptive of the matched names
+    } else {
+      groups.push({ name: i.name, qty: i.quantityPurchased });
+    }
   });
-  return Object.entries(groups).sort((a,b)=>b[1]-a[1]);
+  return groups.sort((a,b)=>b.qty-a.qty).map(g=>[g.name, g.qty]);
 }
 
 // Display-only shortening — the underlying stored name is untouched
@@ -1504,12 +1521,81 @@ function shortenPkcProductName(name){
   return name.replace(/^pok[eé]mon\s*tcg:\s*/i, "").trim();
 }
 
+let cancelledUI = { search: "" };
+
+function cancelledOrdersContentHTML(){
+  return `
+    <div class="toolbar-row">
+      <div class="search-bar">
+        ${ICONS.search}
+        <input type="text" id="cancelledSearchInput" placeholder="Search cancelled orders" value="${escapeAttr(cancelledUI.search)}">
+      </div>
+    </div>
+    <div id="cancelledResultsContainer">${cancelledResultsHTML()}</div>
+    <div style="height:20px;"></div>
+  `;
+}
+
+function cancelledResultsHTML(){
+  const orders = state.pendingOrders.filter(p=>p.status==="cancelled")
+    .filter(p=> !cancelledUI.search || (p.retailer||"").toLowerCase().includes(cancelledUI.search.toLowerCase()) || (p.orderNumber||"").toLowerCase().includes(cancelledUI.search.toLowerCase()))
+    .sort((a,b)=> new Date(b.orderDate)-new Date(a.orderDate));
+
+  if(orders.length===0){
+    return `
+      <div class="empty-state">
+        ${ICONS.empty}
+        <div class="t">No cancelled orders</div>
+        <div class="d">Orders the retailer cancels show up here, kept separate so they don't clutter your active orders.</div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="card table-wrap" style="margin-top:14px;">
+      <table class="data-table">
+        <thead><tr><th>Retailer</th><th>Order #</th><th>Order Date</th><th>Reason</th><th>Price</th></tr></thead>
+        <tbody>
+          ${orders.map(p=>`
+            <tr data-open-order="${p.id}">
+              <td style="font-weight:600;">${escapeHTML(p.retailer)}${p.isPKCPreorder ? ` <span class="status-chip" style="background:var(--violet-bg);color:var(--violet);margin-left:6px;">PKC</span>` : ""}</td>
+              <td class="mono dim">${p.orderNumber ? escapeHTML(p.orderNumber) : "—"}</td>
+              <td class="mono dim">${p.orderDate ? formatDate(p.orderDate) : "—"}</td>
+              <td class="dim" style="font-size:12px;">${p.cancelReason ? escapeHTML(p.cancelReason) : "—"}</td>
+              <td class="mono">${p.price!==null && p.price!==undefined ? fmtMoney(p.price) : "—"}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderCancelledResults(){
+  const container = document.getElementById("cancelledResultsContainer");
+  if(!container) return;
+  container.innerHTML = cancelledResultsHTML();
+  bindCancelledResultEvents();
+}
+
+function attachCancelledOrdersEvents(){
+  const search = document.getElementById("cancelledSearchInput");
+  search.addEventListener("input", e=>{ cancelledUI.search = e.target.value; renderCancelledResults(); });
+  bindCancelledResultEvents();
+}
+
+function bindCancelledResultEvents(){
+  document.querySelectorAll("#cancelledResultsContainer tr[data-open-order]").forEach(row=>{
+    row.addEventListener("click", ()=>{ orderDetailModal(row.dataset.openOrder); });
+  });
+}
+
 function pkcOrdersContentHTML(){
   const totalToPay = pkcTotalToPay();
   const quantitySummary = pkcQuantitySummary();
 
   return `
-    <div class="stat-grid">
+    <div class="stat-grid compact-stats">
       ${statCard("cash", "Total To Pay", fmtMoney(totalToPay), "var(--gold)", "var(--gold-bg)")}
       ${quantitySummary.map(([name, qty])=>{
         const shortName = shortenPkcProductName(name);
