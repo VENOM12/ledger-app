@@ -1230,7 +1230,14 @@ let ordersUI = { subTab: "all", search: "", retailerFilter: "All" };
 
 function ordersHTML(){
   const allCount = state.pendingOrders.filter(p=>!p.isPKCPreorder && p.status!=="cancelled").length;
-  const pkcCount = state.items.filter(i=>i.isPreorder && i.retailer==="Pokemon Center" && !i.isCancelled).length;
+  // Counts distinct orders, not individual stock items — the card list
+  // below is order-centric (one card per order, however many products it
+  // has), so this tab label needs to match that, not the item count.
+  const pkcOrderNumbers = new Set(
+    state.items.filter(i=>i.isPreorder && i.retailer==="Pokemon Center" && !i.isCancelled)
+      .map(i=>i.orderNumber || i.id)
+  );
+  const pkcCount = pkcOrderNumbers.size;
   const cancelledCount = state.pendingOrders.filter(p=>p.status==="cancelled").length;
   return `
     <div class="segmented" style="margin-bottom:4px;">
