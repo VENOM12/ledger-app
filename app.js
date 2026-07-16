@@ -1669,8 +1669,7 @@ function pkcResultsHTML(){
   // Stock's checkbox for a different retailer was incorrectly showing up
   // here before, since the filter only checked isPreorder.
   const preorders = state.items.filter(i=>i.isPreorder && i.retailer==="Pokemon Center")
-    .filter(i=> !pkcUI.search || i.name.toLowerCase().includes(pkcUI.search.toLowerCase()))
-    .sort((a,b)=> new Date(a.expectedArrival||"9999-12-31") - new Date(b.expectedArrival||"9999-12-31"));
+    .filter(i=> !pkcUI.search || i.name.toLowerCase().includes(pkcUI.search.toLowerCase()));
 
   if(preorders.length===0){
     return `
@@ -1682,24 +1681,43 @@ function pkcResultsHTML(){
     `;
   }
 
+  // Grouped by order — an order with several products used to render as
+  // that many separate cards, all showing the exact same order
+  // number/email/total in their header, which looked exactly like
+  // duplicate orders rather than what it actually was (several different
+  // products within one order). Items with no order number at all get
+  // their own single-item group rather than risk being merged together.
+  const groups = {};
+  preorders.forEach(i=>{
+    const key = i.orderNumber || ("__no_order__"+i.id);
+    (groups[key] = groups[key] || []).push(i);
+  });
+  const orderGroups = Object.entries(groups).sort((a,b)=>{
+    const da = a[1][0].expectedArrival || "9999-12-31", db = b[1][0].expectedArrival || "9999-12-31";
+    return new Date(da) - new Date(db);
+  });
+
   return `
     <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px;">
-      ${preorders.map(i=>{
-        const linkedOrder = state.pendingOrders.find(p=>p.addedToStockId===i.id);
-        const cancelled = i.isCancelled;
-        const expanded = pkcExpandedIds.has(i.id);
-        const orderTotal = i.lineItems && i.lineItems.length ? i.lineItems.reduce((s,li)=>s+li.quantity*li.price,0) : totalCost(i);
-        const firstLineAddress = i.deliveryAddress ? i.deliveryAddress.split(",")[0].trim() : "—";
+      ${orderGroups.map(([orderKey, group])=>{
+        const rep = group[0]; // representative item for order-level shared fields
+        const linkedOrder = state.pendingOrders.find(p=>group.some(g=>g.id===p.addedToStockId));
+        const cancelled = group.every(g=>g.isCancelled);
+        const needsAttention = group.some(g=>g.needsAttention);
+        const expanded = pkcExpandedIds.has(orderKey);
+        const orderTotal = group.reduce((s,g)=>s+g.quantityPurchased*g.purchasePricePerUnit,0);
+        const firstLineAddress = rep.deliveryAddress ? rep.deliveryAddress.split(",")[0].trim() : "—";
+        const titleSummary = group.length===1 ? rep.name : `${group[0].name}${group.length>1 ? ` +${group.length-1} more` : ""}`;
 
         return `
-        <div class="card" style="padding:13px 16px;${i.needsAttention && !cancelled ? "border-color:var(--red);box-shadow:0 0 0 1px var(--red);" : ""}${cancelled ? "opacity:0.6;" : ""}">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;cursor:pointer;" data-toggle-pkc="${i.id}">
+        <div class="card" style="padding:13px 16px;${needsAttention && !cancelled ? "border-color:var(--red);box-shadow:0 0 0 1px var(--red);" : ""}${cancelled ? "opacity:0.6;" : ""}">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;cursor:pointer;" data-toggle-pkc="${escapeAttr(orderKey)}">
             <div style="min-width:0;flex:1;">
               <div style="font-weight:700;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                ${escapeHTML(i.name)}
-                ${cancelled ? `<span class="status-chip chip-cancelled" style="vertical-align:middle;margin-left:4px;">Cancelled</span>` : i.needsAttention ? `<span class="status-chip" style="vertical-align:middle;margin-left:4px;background:var(--red-bg);color:var(--red);">Requires Attention</span>` : ""}
+                ${escapeHTML(titleSummary)}
+                ${cancelled ? `<span class="status-chip chip-cancelled" style="vertical-align:middle;margin-left:4px;">Cancelled</span>` : needsAttention ? `<span class="status-chip" style="vertical-align:middle;margin-left:4px;background:var(--red-bg);color:var(--red);">Requires Attention</span>` : ""}
               </div>
-              <div class="hint mono" style="margin:3px 0 0;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${i.orderNumber ? escapeHTML(i.orderNumber) : "—"} · ${i.sentToEmail ? escapeHTML(i.sentToEmail) : "—"} · ${fmtMoney(orderTotal)} · ${escapeHTML(firstLineAddress)}</div>
+              <div class="hint mono" style="margin:3px 0 0;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${rep.orderNumber ? escapeHTML(rep.orderNumber) : "—"} · ${rep.sentToEmail ? escapeHTML(rep.sentToEmail) : "—"} · ${fmtMoney(orderTotal)} · ${escapeHTML(firstLineAddress)}</div>
             </div>
             <div style="flex-shrink:0;color:var(--text-mute);transform:rotate(${expanded?90:-90}deg);transition:transform .15s;">${ICONS.chev}</div>
           </div>
@@ -1713,47 +1731,39 @@ function pkcResultsHTML(){
                 <div style="font-weight:700;font-size:13px;color:var(--text-dim);">Cancelled</div>
                 <div class="hint" style="margin:1px 0 0;">${linkedOrder && linkedOrder.cancelReason ? escapeHTML(linkedOrder.cancelReason) : "This preorder was cancelled."}</div>
               </div>
-            </div>` : i.needsAttention ? `
+            </div>` : needsAttention ? `
             <div style="display:flex;align-items:center;gap:10px;background:var(--red-bg);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:14px;">
               ${ICONS.close}
               <div style="flex:1;min-width:0;">
                 <div style="font-weight:700;font-size:13px;color:var(--red);">Requires Attention — payment issue</div>
-                <div class="hint" style="margin:1px 0 0;">${i.attentionDeadline ? `Update payment before ${formatDate(i.attentionDeadline)}${i.attentionDeadlineTime ? " · "+escapeHTML(i.attentionDeadlineTime) : ""}, or the preorder may be cancelled.` : "Check your email for details, or the preorder may be cancelled."}</div>
+                <div class="hint" style="margin:1px 0 0;">${rep.attentionDeadline ? `Update payment before ${formatDate(rep.attentionDeadline)}${rep.attentionDeadlineTime ? " · "+escapeHTML(rep.attentionDeadlineTime) : ""}, or the preorder may be cancelled.` : "Check your email for details, or the preorder may be cancelled."}</div>
               </div>
             </div>` : ""}
 
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-              ${itemThumb(i,34)}
-              <div class="hint">${escapeHTML(i.category)} · ${escapeHTML(i.retailer||"Unknown retailer")}${linkedOrder && !cancelled ? ` · ${statusChip(linkedOrder.status)}` : ""}${i.sourceEmailDetected ? ` · <span class="status-chip chip-confirmed" style="vertical-align:middle;">Auto-detected</span>` : ""}</div>
-            </div>
+            <div class="hint" style="margin-bottom:12px;">${escapeHTML(rep.category)} · ${escapeHTML(rep.retailer||"Unknown retailer")}${linkedOrder && !cancelled ? ` · ${statusChip(linkedOrder.status)}` : ""}${rep.sourceEmailDetected ? ` · <span class="status-chip chip-confirmed" style="vertical-align:middle;">Auto-detected</span>` : ""}</div>
 
             <div class="kv-card" style="border:1px solid var(--border-soft);border-radius:var(--radius-md);">
-              ${kvRow("Order #", i.orderNumber ? escapeHTML(i.orderNumber) : "—")}
-              ${kvRow("Ordered", formatDate(i.purchaseDate))}
-              ${kvRow("Expected arrival", i.expectedArrival ? formatDate(i.expectedArrival) : "—")}
+              ${kvRow("Order #", rep.orderNumber ? escapeHTML(rep.orderNumber) : "—")}
+              ${kvRow("Ordered", formatDate(rep.purchaseDate))}
+              ${kvRow("Expected arrival", rep.expectedArrival ? formatDate(rep.expectedArrival) : "—")}
               ${linkedOrder && linkedOrder.trackingNumber ? kvRow("Tracking", `${linkedOrder.carrier ? escapeHTML(linkedOrder.carrier)+" · " : ""}${escapeHTML(linkedOrder.trackingNumber)}`) : ""}
               ${kvRow("Order Total", fmtMoney(orderTotal))}
-              ${kvRow("Sent to", i.sentToEmail ? escapeHTML(i.sentToEmail) : "—")}
-              ${kvRow("Recipient name", i.recipientName ? escapeHTML(i.recipientName) : "—")}
-              ${kvRow("Delivery address", i.deliveryAddress ? escapeHTML(i.deliveryAddress) : "—")}
+              ${kvRow("Sent to", rep.sentToEmail ? escapeHTML(rep.sentToEmail) : "—")}
+              ${kvRow("Recipient name", rep.recipientName ? escapeHTML(rep.recipientName) : "—")}
+              ${kvRow("Delivery address", rep.deliveryAddress ? escapeHTML(rep.deliveryAddress) : "—")}
             </div>
 
-            ${i.lineItems && i.lineItems.length>0 ? `
-              <div class="hint" style="margin:12px 0 6px;">Items detected in this order:</div>
-              <div class="card table-wrap" style="box-shadow:none;">
-                <table class="data-table">
-                  <thead><tr><th>Item</th><th>Qty</th><th style="text-align:right;">Price</th></tr></thead>
-                  <tbody>
-                    ${i.lineItems.map(li=>`<tr><td>${escapeHTML(li.name)}</td><td class="mono dim">${li.quantity}</td><td class="mono" style="text-align:right;">${fmtMoney(li.price)}</td></tr>`).join("")}
-                  </tbody>
-                </table>
-              </div>
-            ` : ""}
-
-            <div style="display:flex;gap:8px;margin-top:12px;">
-              <button class="btn-ghost" data-open="${i.id}">View full item ${ICONS.chev}</button>
-              ${cancelled ? "" : `<button class="btn-small" data-arrived="${i.id}" style="margin-left:auto;">${ICONS.check} Mark Arrived</button>`}
+            <div class="hint" style="margin:12px 0 6px;">Products in this order:</div>
+            <div class="card table-wrap" style="box-shadow:none;">
+              <table class="data-table">
+                <thead><tr><th>Item</th><th>Qty</th><th style="text-align:right;">Price</th><th></th></tr></thead>
+                <tbody>
+                  ${group.map(g=>`<tr><td>${escapeHTML(g.name)}</td><td class="mono dim">${g.quantityPurchased}</td><td class="mono" style="text-align:right;">${fmtMoney(g.purchasePricePerUnit)}</td><td style="text-align:right;"><button class="btn-ghost" data-open="${g.id}">View ${ICONS.chev}</button></td></tr>`).join("")}
+                </tbody>
+              </table>
             </div>
+
+            ${cancelled ? "" : `<button class="btn-small" data-arrived-group="${escapeAttr(orderKey)}" style="margin-top:12px;">${ICONS.check} Mark Whole Order Arrived</button>`}
           </div>
           ` : ""}
         </div>
@@ -1794,23 +1804,20 @@ function bindPkcResultEvents(){
   document.querySelectorAll("[data-open]").forEach(el=>{
     el.addEventListener("click", ()=>{ ui.detailItemId = el.dataset.open; render(); });
   });
-  document.querySelectorAll("[data-arrived]").forEach(btn=>{
+  document.querySelectorAll("[data-arrived-group]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
-      const item = state.items.find(i=>i.id===btn.dataset.arrived);
-      if(!item) return;
-      // A multi-product order has a separate card (and separate "Mark
-      // Arrived" button) per product now — clicking just one used to
-      // leave every other product from that same order stuck as "still
-      // on order" forever, which was very likely the real cause behind
-      // the quantity totals staying too high even after items had
-      // actually arrived. Pokémon Center ships an order's contents
-      // together, so marking one as arrived means the whole order did.
-      const relatedItems = item.orderNumber
-        ? state.items.filter(i=>i.orderNumber===item.orderNumber && i.isPreorder)
-        : [item];
+      const orderKey = btn.dataset.arrivedGroup;
+      // orderKey is either a real order number, or a synthetic
+      // "__no_order__<id>" key for the rare item with no order number at
+      // all — match items the same way the card grouping above did, so
+      // this always affects exactly the set of items shown in this card.
+      const relatedItems = orderKey.startsWith("__no_order__")
+        ? state.items.filter(i=>i.id===orderKey.replace("__no_order__","") && i.isPreorder)
+        : state.items.filter(i=>i.orderNumber===orderKey && i.isPreorder);
+      if(!relatedItems.length) return;
       relatedItems.forEach(i=>{ i.isPreorder = false; i.needsAttention = false; });
       saveState();
-      showToast(relatedItems.length>1 ? `${relatedItems.length} items from this order moved to Stock` : `${item.name} moved to Stock`);
+      showToast(relatedItems.length>1 ? `${relatedItems.length} items from this order moved to Stock` : `${relatedItems[0].name} moved to Stock`);
       // Full refresh, not just renderPkcResults() — this changes data
       // that the aggregate boxes (Total To Pay, quantity summary) at the
       // top of the page depend on, and those live in the outer page
