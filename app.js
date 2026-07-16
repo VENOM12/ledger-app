@@ -1241,7 +1241,7 @@ function attachStockEvents(){
 let ordersUI = { subTab: "all", search: "", retailerFilter: "All", statusFilter: "All" };
 
 function ordersHTML(){
-  const allCount = state.pendingOrders.filter(p=>!p.isPKCPreorder && p.status!=="cancelled").length;
+  const allCount = state.pendingOrders.length;
   // Counts distinct orders, not individual stock items — the card list
   // below is order-centric (one card per order, however many products it
   // has), so this tab label needs to match that, not the item count.
@@ -1282,7 +1282,7 @@ function attachOrdersEvents(){
 // order, and ready-for-collection/out-for-delivery are both "in transit"
 // the same way shipped is.
 const ORDER_STATUS_GROUPS = {
-  "Pre-order": ["confirmed", "action_required"],
+  "Order Placed": ["confirmed", "action_required"],
   "Shipped": ["shipped", "out_for_delivery", "ready_for_collection"],
   "Complete": ["delivered"],
   "Cancelled": ["cancelled"]
