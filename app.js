@@ -528,9 +528,9 @@ function dashboardHTML(){
   `;
 }
 
-function statCard(iconKey, label, value, fg, bg){
+function statCard(iconKey, label, value, fg, bg, titleAttr){
   return `
-    <div class="card stat-card">
+    <div class="card stat-card" ${titleAttr ? `title="${escapeAttr(titleAttr)}"` : ""}>
       <div class="top-row">
         <div class="stat-icon" style="background:${bg};color:${fg};">${ICONS[iconKey]}</div>
       </div>
@@ -1496,6 +1496,14 @@ function pkcQuantitySummary(){
   return Object.entries(groups).sort((a,b)=>b[1]-a[1]);
 }
 
+// Display-only shortening — the underlying stored name is untouched
+// (still used for matching/dedup), this just saves space so genuinely
+// different products are easier to tell apart at a glance instead of all
+// starting with the same repeated "Pokémon TCG:" prefix.
+function shortenPkcProductName(name){
+  return name.replace(/^pok[eé]mon\s*tcg:\s*/i, "").trim();
+}
+
 function pkcOrdersContentHTML(){
   const totalToPay = pkcTotalToPay();
   const quantitySummary = pkcQuantitySummary();
@@ -1503,9 +1511,10 @@ function pkcOrdersContentHTML(){
   return `
     <div class="stat-grid">
       ${statCard("cash", "Total To Pay", fmtMoney(totalToPay), "var(--gold)", "var(--gold-bg)")}
-      ${quantitySummary.map(([name, qty])=>
-        statCard("stock", name.length>34 ? name.slice(0,32)+"…" : name, ""+qty, "var(--violet)", "var(--violet-bg)")
-      ).join("")}
+      ${quantitySummary.map(([name, qty])=>{
+        const shortName = shortenPkcProductName(name);
+        return statCard("stock", shortName.length>42 ? shortName.slice(0,40)+"…" : shortName, ""+qty, "var(--violet)", "var(--violet-bg)", name);
+      }).join("")}
     </div>
     <div class="hint" style="margin:8px 0 0;">Total To Pay is what Pokémon Center will actually charge once these ship — nothing here counts as a real expense until then. Quantity boxes add up how many of each product you have on order across every preorder.</div>
     <div style="height:12px;"></div>
@@ -1578,7 +1587,8 @@ function pkcResultsHTML(){
             ${kvRow("Ordered", formatDate(i.purchaseDate))}
             ${kvRow("Expected arrival", i.expectedArrival ? formatDate(i.expectedArrival) : "—")}
             ${linkedOrder && linkedOrder.trackingNumber ? kvRow("Tracking", `${linkedOrder.carrier ? escapeHTML(linkedOrder.carrier)+" · " : ""}${escapeHTML(linkedOrder.trackingNumber)}`) : ""}
-            ${kvRow("Cost", fmtMoney(totalCost(i)))}
+            ${kvRow("Item Cost", fmtMoney(totalCost(i)))}
+            ${i.lineItems && i.lineItems.length>1 ? kvRow("Order Total", fmtMoney(i.lineItems.reduce((s,li)=>s+li.quantity*li.price,0))) : ""}
             ${kvRow("Sent to", i.sentToEmail ? escapeHTML(i.sentToEmail) : "—")}
             ${kvRow("Recipient name", i.recipientName ? escapeHTML(i.recipientName) : "—")}
             ${kvRow("Delivery address", i.deliveryAddress ? escapeHTML(i.deliveryAddress) : "—")}

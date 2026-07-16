@@ -425,7 +425,17 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
           continue;
         }
 
-        const bodyText = (parsed.text || parsed.html || '').toString();
+        // mailparser normally auto-generates parsed.text even for
+        // HTML-only emails, but falling back to raw parsed.html directly
+        // is a real risk if that's ever unavailable — RAW HTML carries
+        // CSS class names, hidden ARIA labels, and tracking URLs that can
+        // false-match keyword regexes against text nobody actually sees.
+        // Confirmed directly: a real eBay sale email's own CSS class
+        // ".couponCode" and template accessibility label "eBay Newsletter"
+        // both matched the promotional-content filter, despite the
+        // visible email having nothing promotional in it at all. Stripped
+        // here as a safety net specifically for the html fallback path.
+        const bodyText = parsed.text ? parsed.text.toString() : stripHtmlToText(parsed.html || '');
 
         // Expense-rule match takes priority over everything else — these
         // are never orders, only expenses, regardless of what the email
@@ -495,6 +505,23 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
   }
 });
 
+// Lightweight fallback text extraction for when parsed.text isn't
+// available — strips <style>/<script> blocks entirely (their content is
+// never visible to a real reader, but is exactly where things like CSS
+// class names live that can accidentally contain keyword-like text), then
+// strips remaining tags, leaving just the visible text. Not a full
+// HTML-to-text engine, but far safer than matching against raw markup.
+function stripHtmlToText(html) {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 function looksPromotional(subject, bodyText, headers) {
   // Real order/shipping emails essentially never carry a List-Unsubscribe
   // header — that's a marketing-platform signature (Mailchimp, Klaviyo, etc).
@@ -505,7 +532,16 @@ function looksPromotional(subject, bodyText, headers) {
   } catch (e) { /* ignore malformed headers */ }
 
   const hay = (subject + ' ' + bodyText).toLowerCase();
-  const PROMO = /(% off|percent off|clearance|coupon|promo code|newsletter|unsubscribe|limited time|flash sale|deal of the day|weekly ad|special offer|sneak peek|new arrivals|shop now)/i;
+  // 'unsubscribe' deliberately removed from here — confirmed on a real
+  // eBay "you made a sale" email that it has a completely standard
+  // transactional footer ("...email preferences, unsubscribe or learn
+  // about account protection"), which silently discarded the entire
+  // email before classification ever got a chance to run. Almost any
+  // legitimate transactional email can carry an unsubscribe-from-marketing
+  // footer without being promotional itself — the List-Unsubscribe HEADER
+  // check above is the reliable signal for genuine marketing platforms,
+  // this body-text keyword was redundant and too broad.
+  const PROMO = /(% off|percent off|clearance|coupon|promo code|newsletter|limited time|flash sale|deal of the day|weekly ad|special offer|sneak peek|new arrivals|shop now)/i;
   return PROMO.test(hay);
 }
 
