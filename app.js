@@ -1493,24 +1493,26 @@ function pkcTotalToPay(){
   return activePkcPreorders().reduce((s,i)=>s+i.quantityPurchased*i.purchasePricePerUnit, 0);
 }
 function pkcQuantitySummary(){
-  // Exact-string grouping was silently splitting one real product's total
-  // across multiple boxes whenever it got extracted with slightly
-  // different text between two separate emails (extra whitespace, minor
-  // wording differences, etc.) — reusing the same fuzzy matcher already
-  // used elsewhere in the app for matching sales/items to consolidate
-  // these correctly instead of treating near-identical names as
-  // completely different products.
-  const groups = [];
+  // Exact-STRING grouping split one real product's total across multiple
+  // boxes whenever extraction produced slightly different text between
+  // two emails (extra whitespace, etc.) — but the fix for that (fuzzy
+  // word-overlap matching) turned out to be a worse bug: genuinely
+  // different products that just happen to share several common words —
+  // "Tech Sticker Collection (Lucario)" vs "...({Alolan Exeggutor)" — was
+  // merging one product's count into the other's, making it vanish
+  // entirely rather than just showing as an extra box. Exact match after
+  // normalizing whitespace/punctuation/case is the safe middle ground: it
+  // still consolidates the same product written with different spacing,
+  // but can never conflate two different products, since anything more
+  // than a formatting difference keeps them separate.
+  const groups = {};
   activePkcPreorders().forEach(i=>{
-    const existing = groups.find(g => namesLikelyMatch(g.name, i.name));
-    if(existing){
-      existing.qty += i.quantityPurchased;
-      if(i.name.length > existing.name.length) existing.name = i.name; // keep the more descriptive of the matched names
-    } else {
-      groups.push({ name: i.name, qty: i.quantityPurchased });
-    }
+    const key = normalizeForMatch(i.name);
+    if(!groups[key]) groups[key] = { name: i.name, qty: 0 };
+    groups[key].qty += i.quantityPurchased;
+    if(i.name.length > groups[key].name.length) groups[key].name = i.name; // keep the more descriptive of the matched names
   });
-  return groups.sort((a,b)=>b.qty-a.qty).map(g=>[g.name, g.qty]);
+  return Object.values(groups).sort((a,b)=>b.qty-a.qty).map(g=>[g.name, g.qty]);
 }
 
 // Display-only shortening — the underlying stored name is untouched
@@ -1616,6 +1618,8 @@ function pkcOrdersContentHTML(){
   `;
 }
 
+let pkcExpandedIds = new Set();
+
 function pkcResultsHTML(){
   // Only Pokémon Center specifically — a preorder manually added via Add
   // Stock's checkbox for a different retailer was incorrectly showing up
@@ -1635,60 +1639,78 @@ function pkcResultsHTML(){
   }
 
   return `
-    <div style="display:flex;flex-direction:column;gap:12px;margin-top:14px;">
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px;">
       ${preorders.map(i=>{
-        const style = CAT_STYLES[i.category]||CAT_STYLES.Other;
         const linkedOrder = state.pendingOrders.find(p=>p.addedToStockId===i.id);
         const cancelled = i.isCancelled;
+        const expanded = pkcExpandedIds.has(i.id);
+        const orderTotal = i.lineItems && i.lineItems.length ? i.lineItems.reduce((s,li)=>s+li.quantity*li.price,0) : totalCost(i);
+        const firstLineAddress = i.deliveryAddress ? i.deliveryAddress.split(",")[0].trim() : "—";
+
         return `
-        <div class="card" style="padding:18px 20px;${i.needsAttention && !cancelled ? "border-color:var(--red);box-shadow:0 0 0 1px var(--red);" : ""}${cancelled ? "opacity:0.6;" : ""}">
-          ${cancelled ? `
-          <div style="display:flex;align-items:center;gap:10px;background:var(--card-2);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:14px;">
-            ${ICONS.close}
-            <div style="flex:1;min-width:0;">
-              <div style="font-weight:700;font-size:13px;color:var(--text-dim);">Cancelled</div>
-              <div class="hint" style="margin:1px 0 0;">${linkedOrder && linkedOrder.cancelReason ? escapeHTML(linkedOrder.cancelReason) : "This preorder was cancelled."}</div>
-            </div>
-          </div>` : i.needsAttention ? `
-          <div style="display:flex;align-items:center;gap:10px;background:var(--red-bg);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:14px;">
-            ${ICONS.close}
-            <div style="flex:1;min-width:0;">
-              <div style="font-weight:700;font-size:13px;color:var(--red);">Requires Attention — payment issue</div>
-              <div class="hint" style="margin:1px 0 0;">${i.attentionDeadline ? `Update payment before ${formatDate(i.attentionDeadline)}${i.attentionDeadlineTime ? " · "+escapeHTML(i.attentionDeadlineTime) : ""}, or the preorder may be cancelled.` : "Check your email for details, or the preorder may be cancelled."}</div>
-            </div>
-          </div>` : ""}
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;">
-            <div style="display:flex;align-items:center;gap:12px;cursor:pointer;flex:1;min-width:0;" data-open="${i.id}">
-              ${itemThumb(i,38)}
-              <div style="min-width:0;">
-                <div style="font-weight:700;font-size:14.5px;">${escapeHTML(i.name)} ${i.sourceEmailDetected ? `<span class="status-chip chip-confirmed" style="vertical-align:middle;">Auto-detected</span>` : ""} ${cancelled ? `<span class="status-chip chip-cancelled" style="vertical-align:middle;">Cancelled</span>` : i.needsAttention ? `<span class="status-chip" style="vertical-align:middle;background:var(--red-bg);color:var(--red);">Requires Attention</span>` : ""}</div>
-                <div class="hint" style="margin:2px 0 0;">${escapeHTML(i.category)} · ${escapeHTML(i.retailer||"Unknown retailer")}${linkedOrder && !cancelled ? ` · ${statusChip(linkedOrder.status)}` : ""}</div>
+        <div class="card" style="padding:13px 16px;${i.needsAttention && !cancelled ? "border-color:var(--red);box-shadow:0 0 0 1px var(--red);" : ""}${cancelled ? "opacity:0.6;" : ""}">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;cursor:pointer;" data-toggle-pkc="${i.id}">
+            <div style="min-width:0;flex:1;">
+              <div style="font-weight:700;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                ${escapeHTML(i.name)}
+                ${cancelled ? `<span class="status-chip chip-cancelled" style="vertical-align:middle;margin-left:4px;">Cancelled</span>` : i.needsAttention ? `<span class="status-chip" style="vertical-align:middle;margin-left:4px;background:var(--red-bg);color:var(--red);">Requires Attention</span>` : ""}
               </div>
+              <div class="hint mono" style="margin:3px 0 0;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${i.orderNumber ? escapeHTML(i.orderNumber) : "—"} · ${i.sentToEmail ? escapeHTML(i.sentToEmail) : "—"} · ${fmtMoney(orderTotal)} · ${escapeHTML(firstLineAddress)}</div>
             </div>
-            ${cancelled ? "" : `<button class="btn-small" data-arrived="${i.id}" style="flex-shrink:0;">${ICONS.check} Mark Arrived</button>`}
+            <div style="flex-shrink:0;color:var(--text-mute);transform:rotate(${expanded?90:-90}deg);transition:transform .15s;">${ICONS.chev}</div>
           </div>
 
-          <div class="kv-card" style="margin-top:14px;border:1px solid var(--border-soft);border-radius:var(--radius-md);">
-            ${kvRow("Order #", i.orderNumber ? escapeHTML(i.orderNumber) : "—")}
-            ${kvRow("Ordered", formatDate(i.purchaseDate))}
-            ${kvRow("Expected arrival", i.expectedArrival ? formatDate(i.expectedArrival) : "—")}
-            ${linkedOrder && linkedOrder.trackingNumber ? kvRow("Tracking", `${linkedOrder.carrier ? escapeHTML(linkedOrder.carrier)+" · " : ""}${escapeHTML(linkedOrder.trackingNumber)}`) : ""}
-            ${kvRow("Order Total", fmtMoney(i.lineItems && i.lineItems.length ? i.lineItems.reduce((s,li)=>s+li.quantity*li.price,0) : totalCost(i)))}
-            ${kvRow("Sent to", i.sentToEmail ? escapeHTML(i.sentToEmail) : "—")}
-            ${kvRow("Recipient name", i.recipientName ? escapeHTML(i.recipientName) : "—")}
-            ${kvRow("Delivery address", i.deliveryAddress ? escapeHTML(i.deliveryAddress) : "—")}
-          </div>
+          ${expanded ? `
+          <div style="margin-top:14px;">
+            ${cancelled ? `
+            <div style="display:flex;align-items:center;gap:10px;background:var(--card-2);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:14px;">
+              ${ICONS.close}
+              <div style="flex:1;min-width:0;">
+                <div style="font-weight:700;font-size:13px;color:var(--text-dim);">Cancelled</div>
+                <div class="hint" style="margin:1px 0 0;">${linkedOrder && linkedOrder.cancelReason ? escapeHTML(linkedOrder.cancelReason) : "This preorder was cancelled."}</div>
+              </div>
+            </div>` : i.needsAttention ? `
+            <div style="display:flex;align-items:center;gap:10px;background:var(--red-bg);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:14px;">
+              ${ICONS.close}
+              <div style="flex:1;min-width:0;">
+                <div style="font-weight:700;font-size:13px;color:var(--red);">Requires Attention — payment issue</div>
+                <div class="hint" style="margin:1px 0 0;">${i.attentionDeadline ? `Update payment before ${formatDate(i.attentionDeadline)}${i.attentionDeadlineTime ? " · "+escapeHTML(i.attentionDeadlineTime) : ""}, or the preorder may be cancelled.` : "Check your email for details, or the preorder may be cancelled."}</div>
+              </div>
+            </div>` : ""}
 
-          ${i.lineItems && i.lineItems.length>0 ? `
-            <div class="hint" style="margin:12px 0 6px;">Items detected in this order:</div>
-            <div class="card table-wrap" style="box-shadow:none;">
-              <table class="data-table">
-                <thead><tr><th>Item</th><th>Qty</th><th style="text-align:right;">Price</th></tr></thead>
-                <tbody>
-                  ${i.lineItems.map(li=>`<tr><td>${escapeHTML(li.name)}</td><td class="mono dim">${li.quantity}</td><td class="mono" style="text-align:right;">${fmtMoney(li.price)}</td></tr>`).join("")}
-                </tbody>
-              </table>
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
+              ${itemThumb(i,34)}
+              <div class="hint">${escapeHTML(i.category)} · ${escapeHTML(i.retailer||"Unknown retailer")}${linkedOrder && !cancelled ? ` · ${statusChip(linkedOrder.status)}` : ""}${i.sourceEmailDetected ? ` · <span class="status-chip chip-confirmed" style="vertical-align:middle;">Auto-detected</span>` : ""}</div>
             </div>
+
+            <div class="kv-card" style="border:1px solid var(--border-soft);border-radius:var(--radius-md);">
+              ${kvRow("Order #", i.orderNumber ? escapeHTML(i.orderNumber) : "—")}
+              ${kvRow("Ordered", formatDate(i.purchaseDate))}
+              ${kvRow("Expected arrival", i.expectedArrival ? formatDate(i.expectedArrival) : "—")}
+              ${linkedOrder && linkedOrder.trackingNumber ? kvRow("Tracking", `${linkedOrder.carrier ? escapeHTML(linkedOrder.carrier)+" · " : ""}${escapeHTML(linkedOrder.trackingNumber)}`) : ""}
+              ${kvRow("Order Total", fmtMoney(orderTotal))}
+              ${kvRow("Sent to", i.sentToEmail ? escapeHTML(i.sentToEmail) : "—")}
+              ${kvRow("Recipient name", i.recipientName ? escapeHTML(i.recipientName) : "—")}
+              ${kvRow("Delivery address", i.deliveryAddress ? escapeHTML(i.deliveryAddress) : "—")}
+            </div>
+
+            ${i.lineItems && i.lineItems.length>0 ? `
+              <div class="hint" style="margin:12px 0 6px;">Items detected in this order:</div>
+              <div class="card table-wrap" style="box-shadow:none;">
+                <table class="data-table">
+                  <thead><tr><th>Item</th><th>Qty</th><th style="text-align:right;">Price</th></tr></thead>
+                  <tbody>
+                    ${i.lineItems.map(li=>`<tr><td>${escapeHTML(li.name)}</td><td class="mono dim">${li.quantity}</td><td class="mono" style="text-align:right;">${fmtMoney(li.price)}</td></tr>`).join("")}
+                  </tbody>
+                </table>
+              </div>
+            ` : ""}
+
+            <div style="display:flex;gap:8px;margin-top:12px;">
+              <button class="btn-ghost" data-open="${i.id}">View full item ${ICONS.chev}</button>
+              ${cancelled ? "" : `<button class="btn-small" data-arrived="${i.id}" style="margin-left:auto;">${ICONS.check} Mark Arrived</button>`}
+            </div>
+          </div>
           ` : ""}
         </div>
         `;
@@ -1717,6 +1739,14 @@ function attachPreordersEvents(){
 }
 
 function bindPkcResultEvents(){
+  document.querySelectorAll("[data-toggle-pkc]").forEach(el=>{
+    el.addEventListener("click", ()=>{
+      const id = el.dataset.togglePkc;
+      if(pkcExpandedIds.has(id)) pkcExpandedIds.delete(id);
+      else pkcExpandedIds.add(id);
+      renderPkcResults();
+    });
+  });
   document.querySelectorAll("[data-open]").forEach(el=>{
     el.addEventListener("click", ()=>{ ui.detailItemId = el.dataset.open; render(); });
   });
