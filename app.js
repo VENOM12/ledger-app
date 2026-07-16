@@ -1587,8 +1587,7 @@ function pkcResultsHTML(){
             ${kvRow("Ordered", formatDate(i.purchaseDate))}
             ${kvRow("Expected arrival", i.expectedArrival ? formatDate(i.expectedArrival) : "—")}
             ${linkedOrder && linkedOrder.trackingNumber ? kvRow("Tracking", `${linkedOrder.carrier ? escapeHTML(linkedOrder.carrier)+" · " : ""}${escapeHTML(linkedOrder.trackingNumber)}`) : ""}
-            ${kvRow("Item Cost", fmtMoney(totalCost(i)))}
-            ${i.lineItems && i.lineItems.length>1 ? kvRow("Order Total", fmtMoney(i.lineItems.reduce((s,li)=>s+li.quantity*li.price,0))) : ""}
+            ${kvRow("Order Total", fmtMoney(i.lineItems && i.lineItems.length ? i.lineItems.reduce((s,li)=>s+li.quantity*li.price,0) : totalCost(i)))}
             ${kvRow("Sent to", i.sentToEmail ? escapeHTML(i.sentToEmail) : "—")}
             ${kvRow("Recipient name", i.recipientName ? escapeHTML(i.recipientName) : "—")}
             ${kvRow("Delivery address", i.deliveryAddress ? escapeHTML(i.deliveryAddress) : "—")}
@@ -1639,10 +1638,27 @@ function bindPkcResultEvents(){
     btn.addEventListener("click", ()=>{
       const item = state.items.find(i=>i.id===btn.dataset.arrived);
       if(!item) return;
-      item.isPreorder = false;
+      // A multi-product order has a separate card (and separate "Mark
+      // Arrived" button) per product now — clicking just one used to
+      // leave every other product from that same order stuck as "still
+      // on order" forever, which was very likely the real cause behind
+      // the quantity totals staying too high even after items had
+      // actually arrived. Pokémon Center ships an order's contents
+      // together, so marking one as arrived means the whole order did.
+      const relatedItems = item.orderNumber
+        ? state.items.filter(i=>i.orderNumber===item.orderNumber && i.isPreorder)
+        : [item];
+      relatedItems.forEach(i=>{ i.isPreorder = false; i.needsAttention = false; });
       saveState();
-      showToast(`${item.name} moved to Stock`);
-      renderPkcResults();
+      showToast(relatedItems.length>1 ? `${relatedItems.length} items from this order moved to Stock` : `${item.name} moved to Stock`);
+      // Full refresh, not just renderPkcResults() — this changes data
+      // that the aggregate boxes (Total To Pay, quantity summary) at the
+      // top of the page depend on, and those live in the outer page
+      // shell, not the results list below, so a surgical results-only
+      // update was leaving them stale (confirmed directly: items
+      // correctly stopped being preorders, but the totals above didn't
+      // move until a full re-render).
+      renderView();
     });
   });
 }
@@ -3046,7 +3062,14 @@ function openMatchSaleModal(pendingSaleId){
       document.getElementById("modalRoot").innerHTML = "";
       ui.detailItemId = itemId;
       render();
-      openSellSheet(itemId, { platform: sale.platform, price: sale.netAmount, date: sale.saleDate, quantity: sale.quantitySold || null });
+      // eBay's "Sold: £X" figure is the TOTAL for the whole sale, not a
+      // per-unit price — the sell sheet's price field expects per-unit,
+      // so this needs dividing by quantity first. Left as the raw total
+      // when quantity is missing/zero, since there's nothing to safely
+      // divide by in that case.
+      const qty = sale.quantitySold || 1;
+      const perUnitPrice = (sale.netAmount!=null && qty>0) ? sale.netAmount/qty : sale.netAmount;
+      openSellSheet(itemId, { platform: sale.platform, price: perUnitPrice, date: sale.saleDate, quantity: sale.quantitySold || null });
     });
   });
 }
