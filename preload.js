@@ -11,12 +11,11 @@ contextBridge.exposeInMainWorld('shellAPI', {
 });
 
 contextBridge.exposeInMainWorld('emailAPI', {
-  getAccountInfo: () => ipcRenderer.invoke('email:getAccountInfo'),
-  testAndSave: (config) => ipcRenderer.invoke('email:testAndSave', config),
-  updateCatchAll: (config) => ipcRenderer.invoke('email:updateCatchAll', config),
-  resetTracking: () => ipcRenderer.invoke('email:resetTracking'),
-  disconnect: () => ipcRenderer.invoke('email:disconnect'),
-  resetTracking: () => ipcRenderer.invoke('email:resetTracking'),
+  getAccounts: () => ipcRenderer.invoke('email:getAccounts'),
+  addAccount: (config) => ipcRenderer.invoke('email:addAccount', config),
+  updateAccountCatchAll: (id, catchAllDomains) => ipcRenderer.invoke('email:updateAccountCatchAll', { id, catchAllDomains }),
+  removeAccount: (id) => ipcRenderer.invoke('email:removeAccount', { id }),
+  resetTracking: (id) => ipcRenderer.invoke('email:resetTracking', { id }),
   sync: (opts) => ipcRenderer.invoke('email:sync', opts)
 });
 

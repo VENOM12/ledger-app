@@ -237,60 +237,99 @@ ipcMain.handle('shell:openExternal', (evt, url) => {
 });
 
 function accountFilePath() {
-  return path.join(app.getPath('userData'), 'email-account.json');
+  return path.join(app.getPath('userData'), 'email-account.json'); // old single-account format, read once for migration
+}
+function accountsFilePath() {
+  return path.join(app.getPath('userData'), 'email-accounts.json');
 }
 
-function loadAccount() {
+function loadAccounts() {
   try {
-    const raw = fs.readFileSync(accountFilePath(), 'utf-8');
+    const raw = fs.readFileSync(accountsFilePath(), 'utf-8');
     const data = JSON.parse(raw);
-    if (data.encryptedPassword && safeStorage.isEncryptionAvailable()) {
-      data.password = safeStorage.decryptString(Buffer.from(data.encryptedPassword, 'base64'));
-    }
-    // Migrate from the old single-value catchAllEmail field to a list.
-    if (!Array.isArray(data.catchAllDomains)) {
-      data.catchAllDomains = data.catchAllEmail ? [data.catchAllEmail] : [];
-    }
-    return data;
+    const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+    accounts.forEach(acc => {
+      if (acc.encryptedPassword && safeStorage.isEncryptionAvailable()) {
+        acc.password = safeStorage.decryptString(Buffer.from(acc.encryptedPassword, 'base64'));
+      }
+      if (!Array.isArray(acc.catchAllDomains)) acc.catchAllDomains = [];
+      if (!Array.isArray(acc.processedMessageIds)) acc.processedMessageIds = [];
+    });
+    return accounts;
   } catch (e) {
-    return null;
+    // No multi-account file yet — check for the old single-account format
+    // and migrate it in, so upgrading doesn't silently disconnect anyone's
+    // existing email connection.
+    try {
+      const raw = fs.readFileSync(accountFilePath(), 'utf-8');
+      const old = JSON.parse(raw);
+      const migrated = [{
+        id: 'acc_' + Date.now().toString(36),
+        email: old.email, host: old.host, port: old.port, secure: old.secure,
+        encryptedPassword: old.encryptedPassword, password: old.password, unencrypted: old.unencrypted,
+        catchAllDomains: Array.isArray(old.catchAllDomains) ? old.catchAllDomains : (old.catchAllEmail ? [old.catchAllEmail] : []),
+        processedMessageIds: Array.isArray(old.processedMessageIds) ? old.processedMessageIds : []
+      }];
+      saveAccounts(migrated);
+      if (migrated[0].encryptedPassword && safeStorage.isEncryptionAvailable()) {
+        migrated[0].password = safeStorage.decryptString(Buffer.from(migrated[0].encryptedPassword, 'base64'));
+      }
+      return migrated;
+    } catch (e2) {
+      return [];
+    }
   }
 }
 
-function saveAccount({ email, host, port, secure, password, catchAllDomains }) {
-  const data = { email, host, port, secure, catchAllDomains: catchAllDomains || [] };
+function saveAccounts(accounts) {
+  fs.writeFileSync(accountsFilePath(), JSON.stringify({ accounts }), 'utf-8');
+}
+
+function addAccount({ email, host, port, secure, password, catchAllDomains }) {
+  const accounts = loadAccounts();
+  const account = {
+    id: 'acc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    email, host, port, secure, catchAllDomains: catchAllDomains || [], processedMessageIds: []
+  };
   if (safeStorage.isEncryptionAvailable()) {
-    data.encryptedPassword = safeStorage.encryptString(password).toString('base64');
+    account.encryptedPassword = safeStorage.encryptString(password).toString('base64');
   } else {
-    data.password = password;
-    data.unencrypted = true;
+    account.password = password;
+    account.unencrypted = true;
   }
-  fs.writeFileSync(accountFilePath(), JSON.stringify(data), 'utf-8');
+  accounts.push(account);
+  saveAccounts(accounts.map(a => { const { password, ...rest } = a; return rest; })); // never persist decrypted password field
+  return account;
 }
 
-function patchAccount(patch) {
-  try {
-    const raw = fs.readFileSync(accountFilePath(), 'utf-8');
-    const data = JSON.parse(raw);
-    Object.assign(data, patch);
-    fs.writeFileSync(accountFilePath(), JSON.stringify(data), 'utf-8');
-    return true;
-  } catch (e) {
-    return false;
-  }
+function removeAccountById(id) {
+  const accounts = loadAccounts();
+  const filtered = accounts.filter(a => a.id !== id);
+  saveAccounts(filtered.map(a => { const { password, ...rest } = a; return rest; }));
+  return filtered.length !== accounts.length;
 }
 
-function clearAccount() {
-  try { fs.unlinkSync(accountFilePath()); } catch (e) { /* already gone */ }
+function patchAccountById(id, patch) {
+  const accounts = loadAccounts();
+  const account = accounts.find(a => a.id === id);
+  if (!account) return false;
+  Object.assign(account, patch);
+  saveAccounts(accounts.map(a => { const { password, ...rest } = a; return rest; }));
+  return true;
 }
 
-ipcMain.handle('email:getAccountInfo', () => {
-  const acc = loadAccount();
-  if (!acc) return null;
-  return { email: acc.email, host: acc.host, port: acc.port, secure: acc.secure, catchAllDomains: acc.catchAllDomains || [] };
+// Returns every connected account (never includes passwords — only what
+// the renderer needs to display and manage each connection).
+ipcMain.handle('email:getAccounts', () => {
+  return loadAccounts().map(a => ({
+    id: a.id, email: a.email, host: a.host, port: a.port, secure: a.secure,
+    catchAllDomains: a.catchAllDomains || [], lastSyncISO: a.lastSyncISO || null
+  }));
 });
 
-ipcMain.handle('email:testAndSave', async (evt, { email, password, host, port, secure, catchAllDomains }) => {
+// Adds a NEW account alongside any already connected — tests the
+// connection first, same as before, just appends rather than replacing.
+ipcMain.handle('email:addAccount', async (evt, { email, password, host, port, secure, catchAllDomains }) => {
   const client = new ImapFlow({
     host, port, secure,
     auth: { user: email, pass: password },
@@ -299,15 +338,20 @@ ipcMain.handle('email:testAndSave', async (evt, { email, password, host, port, s
   try {
     await client.connect();
     await client.logout();
-    saveAccount({ email, host, port, secure, password, catchAllDomains });
-    return { ok: true };
+    const account = addAccount({ email, host, port, secure, password, catchAllDomains });
+    return { ok: true, id: account.id };
   } catch (err) {
     return { ok: false, error: humanizeImapError(err) };
   }
 });
 
-ipcMain.handle('email:updateCatchAll', (evt, { catchAllDomains }) => {
-  const ok = patchAccount({ catchAllDomains: catchAllDomains || [] });
+ipcMain.handle('email:updateAccountCatchAll', (evt, { id, catchAllDomains }) => {
+  const ok = patchAccountById(id, { catchAllDomains: catchAllDomains || [] });
+  return { ok };
+});
+
+ipcMain.handle('email:removeAccount', (evt, { id }) => {
+  const ok = removeAccountById(id);
   return { ok };
 });
 
@@ -317,26 +361,16 @@ ipcMain.handle('email:updateCatchAll', (evt, { catchAllDomains }) => {
 // since-fixed classification bug had permanently blacklisted before the
 // fix existed. The 24-hour minimum lookback window means this only
 // re-examines roughly the last day's mail, not the whole inbox history.
-ipcMain.handle('email:disconnect', () => {
-  clearAccount();
-  return { ok: true };
-});
-
-ipcMain.handle('email:resetTracking', () => {
-  const ok = patchAccount({ processedMessageIds: [] });
+ipcMain.handle('email:resetTracking', (evt, { id }) => {
+  const ok = patchAccountById(id, { processedMessageIds: [] });
   return { ok };
 });
 
-ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSenders, expenseRules }) => {
-  const acc = loadAccount();
-  if (!acc || !acc.password) return { ok: false, error: 'No email account connected.' };
-  const excludeList = (excludedSenders || []).map(s => s.toLowerCase()).filter(Boolean);
-  const rules = (expenseRules || []).map(r => ({ senderPattern: (r.senderPattern || '').toLowerCase(), tag: r.tag }));
-  // IMAP's SINCE search only has day-level resolution (no time-of-day), so
-  // every sync re-scans the whole current day's mail, not just what's new
-  // since the last check. Message-ID tracking is what actually stops the
-  // same emails from being re-processed (and re-notified about) every
-  // 60 seconds — the date search is just how we find candidates cheaply.
+// Core per-account sync — unchanged logic from the single-account version,
+// just extracted so it can run once per connected account. Returns results
+// scoped to this one account; never throws, always resolves with an ok flag.
+async function syncOneAccount(acc, { blockPromotions, excludeList, rules }) {
+  if (!acc.password) return { ok: false, error: 'No password available for this account.', accountId: acc.id };
   const seenMessageIds = new Set(acc.processedMessageIds || []);
 
   const client = new ImapFlow({
@@ -359,7 +393,7 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
       // issue (or a classification bug that's since been fixed) doesn't
       // permanently miss something. Message-ID dedup still prevents this
       // from reprocessing anything already successfully handled.
-      const sinceFromLastSync = sinceISO ? new Date(sinceISO) : new Date(Date.now() - 90 * 86400000);
+      const sinceFromLastSync = acc.lastSyncISO ? new Date(acc.lastSyncISO) : new Date(Date.now() - 90 * 86400000);
       const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
       const since = sinceFromLastSync < twentyFourHoursAgo ? sinceFromLastSync : twentyFourHoursAgo;
 
@@ -495,15 +529,57 @@ ipcMain.handle('email:sync', async (evt, { sinceISO, blockPromotions, excludedSe
       // reseller's inbox won't realistically need more than the most
       // recent few hundred remembered at once.
       const trimmed = combined.slice(-500);
-      patchAccount({ processedMessageIds: trimmed });
+      patchAccountById(acc.id, { processedMessageIds: trimmed, lastSyncISO: new Date().toISOString() });
+    } else {
+      patchAccountById(acc.id, { lastSyncISO: new Date().toISOString() });
     }
 
-    return { ok: true, results, expenseResults };
+    return { ok: true, results, expenseResults, accountId: acc.id };
   } catch (err) {
     try { await client.logout(); } catch (e) { /* ignore */ }
-    return { ok: false, error: humanizeImapError(err) };
+    return { ok: false, error: humanizeImapError(err), accountId: acc.id };
   }
+}
+
+ipcMain.handle('email:sync', async (evt, { blockPromotions, excludedSenders, expenseRules }) => {
+  const accounts = loadAccounts();
+  if (!accounts.length) return { ok: false, error: 'No email account connected.' };
+  const excludeList = (excludedSenders || []).map(s => s.toLowerCase()).filter(Boolean);
+  const rules = (expenseRules || []).map(r => ({ senderPattern: (r.senderPattern || '').toLowerCase(), tag: r.tag }));
+
+  // Each account keeps its own since/lastSyncISO and processedMessageIds,
+  // so one account's sync history never affects another's — syncing them
+  // one at a time (not in parallel) keeps this simple and avoids opening
+  // many simultaneous IMAP connections at once, which some providers rate
+  // limit or reject.
+  const allResults = [];
+  const allExpenseResults = [];
+  const accountErrors = [];
+
+  for (const acc of accounts) {
+    const outcome = await syncOneAccount(acc, { blockPromotions, excludeList, rules });
+    if (outcome.ok) {
+      allResults.push(...outcome.results);
+      allExpenseResults.push(...outcome.expenseResults);
+    } else {
+      // One account having trouble (wrong password now, server down,
+      // etc.) shouldn't stop the others from syncing — collected and
+      // surfaced together so the renderer can show which one needs
+      // attention without losing results from accounts that worked fine.
+      accountErrors.push({ accountId: acc.id, email: acc.email, error: outcome.error });
+    }
+  }
+
+  if (allResults.length === 0 && allExpenseResults.length === 0 && accountErrors.length === accounts.length) {
+    // every single account failed — surface the first error directly
+    // rather than a generic message, most useful when there's only one
+    // account connected anyway.
+    return { ok: false, error: accountErrors[0].error, accountErrors };
+  }
+
+  return { ok: true, results: allResults, expenseResults: allExpenseResults, accountErrors };
 });
+
 
 // Lightweight fallback text extraction for when parsed.text isn't
 // available — strips <style>/<script> blocks entirely (their content is

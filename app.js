@@ -1156,17 +1156,22 @@ function stockListHTML(){
         ${ICONS.search}
         <input type="text" id="searchInput" placeholder="Search stock" value="${escapeAttr(ui.search)}">
       </div>
+      <button class="btn-small" id="exportStockCsvBtn" style="margin-left:auto;">${ICONS.download} Export CSV</button>
     </div>
     <div id="stockResultsContainer">${stockResultsHTML()}</div>
     <div style="height:20px;"></div>
   `;
 }
 
-function stockResultsHTML(){
-  const filtered = state.items.filter(i => !i.isPreorder)
+function filteredStock(){
+  return state.items.filter(i => !i.isPreorder)
     .filter(i => ui.stockFilter==="In Stock" ? !isSoldOut(i) : isSoldOut(i))
     .filter(i => ui.stockCategoryFilter==="All" || i.category===ui.stockCategoryFilter)
     .filter(i => !ui.search || i.name.toLowerCase().includes(ui.search.toLowerCase()));
+}
+
+function stockResultsHTML(){
+  const filtered = filteredStock();
 
   if(filtered.length===0){
     return `
@@ -1217,6 +1222,13 @@ function attachStockEvents(){
   });
   const search = document.getElementById("searchInput");
   search.addEventListener("input", e=>{ ui.search = e.target.value; renderStockResults(); });
+  document.getElementById("exportStockCsvBtn").addEventListener("click", ()=>{
+    const items = filteredStock();
+    downloadCSV(`stock-${todayISO()}.csv`,
+      ["Name","Category","Retailer","Quantity Purchased","Quantity Remaining","Purchase Price","Purchase Date","Order Number"],
+      items.map(i=>[i.name, i.category, i.retailer||"", i.quantityPurchased, qtyRemaining(i), i.purchasePricePerUnit, i.purchaseDate||"", i.orderNumber||""])
+    );
+  });
   document.querySelectorAll("tr[data-id]").forEach(row=>{
     row.addEventListener("click", ()=>{ ui.detailItemId = row.dataset.id; render(); });
   });
@@ -1226,7 +1238,7 @@ function attachStockEvents(){
    PREORDERS
    ============================================================ */
 
-let ordersUI = { subTab: "all", search: "", retailerFilter: "All" };
+let ordersUI = { subTab: "all", search: "", retailerFilter: "All", statusFilter: "All" };
 
 function ordersHTML(){
   const allCount = state.pendingOrders.filter(p=>!p.isPKCPreorder && p.status!=="cancelled").length;
@@ -1265,13 +1277,28 @@ function attachOrdersEvents(){
   }
 }
 
+// Groups the finer-grained underlying statuses into the four buckets
+// requested: a payment issue is still fundamentally a "not shipped yet"
+// order, and ready-for-collection/out-for-delivery are both "in transit"
+// the same way shipped is.
+const ORDER_STATUS_GROUPS = {
+  "Pre-order": ["confirmed", "action_required"],
+  "Shipped": ["shipped", "out_for_delivery", "ready_for_collection"],
+  "Complete": ["delivered"],
+  "Cancelled": ["cancelled"]
+};
+
 function allOrdersContentHTML(){
-  const orders = state.pendingOrders.filter(p=>!p.isPKCPreorder && p.status!=="cancelled");
+  const orders = state.pendingOrders;
   const retailers = Array.from(new Set(orders.map(p=>p.retailer).filter(Boolean))).sort();
 
   return `
     <div class="toolbar-row">
       <button class="btn-primary" id="addOrderBtn">${ICONS.plus} Add Order</button>
+      <select id="orderStatusFilterSelect" style="width:auto;padding:9px 30px 9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
+        <option ${ordersUI.statusFilter==="All"?"selected":""}>All</option>
+        ${Object.keys(ORDER_STATUS_GROUPS).map(s=>`<option ${ordersUI.statusFilter===s?"selected":""}>${s}</option>`).join("")}
+      </select>
       <select id="orderRetailerFilterSelect" style="width:auto;padding:9px 30px 9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
         <option ${ordersUI.retailerFilter==="All"?"selected":""}>All</option>
         ${retailers.map(r=>`<option ${ordersUI.retailerFilter===r?"selected":""}>${escapeHTML(r)}</option>`).join("")}
@@ -1280,17 +1307,24 @@ function allOrdersContentHTML(){
         ${ICONS.search}
         <input type="text" id="orderSearchInput" placeholder="Search orders" value="${escapeAttr(ordersUI.search)}">
       </div>
+      <button class="btn-small" id="exportOrdersCsvBtn" style="margin-left:auto;">${ICONS.download} Export CSV</button>
     </div>
     <div id="allOrdersResultsContainer">${allOrdersResultsHTML()}</div>
     <div style="height:20px;"></div>
   `;
 }
 
-function allOrdersResultsHTML(){
-  const orders = state.pendingOrders.filter(p=>!p.isPKCPreorder && p.status!=="cancelled")
+function filteredAllOrders(){
+  const statusGroup = ordersUI.statusFilter!=="All" ? ORDER_STATUS_GROUPS[ordersUI.statusFilter] : null;
+  return state.pendingOrders
+    .filter(p=> !statusGroup || statusGroup.includes(p.status))
     .filter(p=> ordersUI.retailerFilter==="All" || p.retailer===ordersUI.retailerFilter)
     .filter(p=> !ordersUI.search || (p.retailer||"").toLowerCase().includes(ordersUI.search.toLowerCase()) || (p.orderNumber||"").toLowerCase().includes(ordersUI.search.toLowerCase()))
     .sort((a,b)=> new Date(b.orderDate)-new Date(a.orderDate));
+}
+
+function allOrdersResultsHTML(){
+  const orders = filteredAllOrders();
 
   if(orders.length===0){
     return `
@@ -1495,11 +1529,21 @@ function orderDetailModal(orderId){
 
 function attachAllOrdersEvents(){
   document.getElementById("addOrderBtn").addEventListener("click", openAddOrderModal);
+  document.getElementById("orderStatusFilterSelect").addEventListener("change", e=>{
+    ordersUI.statusFilter = e.target.value; renderAllOrdersResults();
+  });
   document.getElementById("orderRetailerFilterSelect").addEventListener("change", e=>{
     ordersUI.retailerFilter = e.target.value; renderAllOrdersResults();
   });
   const search = document.getElementById("orderSearchInput");
   search.addEventListener("input", e=>{ ordersUI.search = e.target.value; renderAllOrdersResults(); });
+  document.getElementById("exportOrdersCsvBtn").addEventListener("click", ()=>{
+    const orders = filteredAllOrders();
+    downloadCSV(`orders-${todayISO()}.csv`,
+      ["Status","Retailer","Order Number","Order Date","Carrier","Tracking Number","Expected Delivery","Price"],
+      orders.map(p=>[p.status, p.retailer, p.orderNumber||"", p.orderDate||"", p.carrier||"", p.trackingNumber||"", p.expectedDelivery||"", p.price!=null?p.price:""])
+    );
+  });
   bindAllOrdersResultEvents();
 }
 
@@ -1951,21 +1995,24 @@ function soldHTML(){
         <input type="text" id="soldSearchInput" placeholder="Search sold items" value="${escapeAttr(soldUI.search)}">
       </div>
       <button class="btn-primary" id="markSoldBtn" style="flex-shrink:0;height:38px;padding:0 18px;font-size:13.5px;">${ICONS.check} Mark Item as Sold</button>
+      <button class="btn-small" id="exportSoldCsvBtn" style="height:38px;">${ICONS.download} Export CSV</button>
     </div>
     <div id="soldResultsContainer">${soldResultsHTML()}</div>
     <div style="height:20px;"></div>
   `;
 }
 
-function soldResultsHTML(){
+function filteredSales(){
   const allSales = [];
   state.items.forEach(item => item.sales.forEach(sale => allSales.push({item, sale})));
   allSales.sort((a,b)=> new Date(b.sale.saleDate) - new Date(a.sale.saleDate));
-
-  const filtered = allSales
+  return allSales
     .filter(p => soldUI.platformFilter==="All" || (p.sale.platform||"Other")===soldUI.platformFilter)
     .filter(p => !soldUI.search || p.item.name.toLowerCase().includes(soldUI.search.toLowerCase()));
+}
 
+function soldResultsHTML(){
+  const filtered = filteredSales();
   const totalNetAll = filtered.reduce((s,p)=>s+saleNet(p.sale),0);
 
   if(filtered.length===0){
@@ -2206,6 +2253,13 @@ function attachSoldEvents(){
   });
   const search = document.getElementById("soldSearchInput");
   search.addEventListener("input", e=>{ soldUI.search = e.target.value; renderSoldResults(); });
+  document.getElementById("exportSoldCsvBtn").addEventListener("click", ()=>{
+    const sales = filteredSales();
+    downloadCSV(`sold-${todayISO()}.csv`,
+      ["Item Name","Platform","Sale Date","Quantity Sold","Sale Price Per Unit","Fees","Net Amount"],
+      sales.map(({item,sale})=>[item.name, sale.platform||"", sale.saleDate||"", sale.quantitySold, sale.salePricePerUnit, sale.fees||0, saleNet(sale)])
+    );
+  });
   bindSoldResultEvents();
 }
 
@@ -2779,7 +2833,8 @@ function confirmSale(){
    ============================================================ */
 
 let emailUI = {
-  accountInfo: undefined, // undefined = not yet loaded, null = not connected
+  accounts: undefined, // undefined = not yet loaded, [] = none connected
+  showAddForm: false,
   provider: "gmail",
   formEmail: "",
   formPassword: "",
@@ -2791,27 +2846,30 @@ let emailUI = {
   connecting: false,
   error: null,
   syncing: false,
-  editingCatchAll: false,
+  editingCatchAllAccountId: null,
   editCatchAllList: [],
   editCatchAllInput: ""
 };
 
 async function refreshAccountInfo(){
   try{
-    emailUI.accountInfo = await window.emailAPI.getAccountInfo();
+    emailUI.accounts = await window.emailAPI.getAccounts();
   }catch(e){
-    emailUI.accountInfo = null;
+    emailUI.accounts = [];
   }
   if(ui.tab==="email") renderView();
   startAutoSync();
 }
 
 function emailSyncHTML(){
-  if(emailUI.accountInfo === undefined){
+  if(emailUI.accounts === undefined){
     return `<div class="hint">Loading account info…</div>`;
   }
-  if(!emailUI.accountInfo){
-    return emailConnectFormHTML();
+  if(emailUI.accounts.length === 0 || emailUI.showAddForm){
+    return `
+      ${emailUI.accounts.length > 0 ? `<button class="btn-ghost" id="cancelAddAccountBtn" style="margin-bottom:14px;">${ICONS.chev} Back to connected accounts</button>` : ""}
+      ${emailConnectFormHTML()}
+    `;
   }
   return emailConnectedHTML();
 }
@@ -2876,48 +2934,62 @@ function emailConnectFormHTML(){
   `;
 }
 
-function emailConnectedHTML(){
-  const acc = emailUI.accountInfo;
-
+function accountBannerHTML(acc){
+  const isEditingThis = emailUI.editingCatchAllAccountId === acc.id;
   return `
-    <div class="card account-banner">
-      <div class="who">
-        <div class="account-avatar">${ICONS.mail}</div>
-        <div>
-          <div style="font-weight:700;font-size:14px;">${escapeHTML(acc.email)}</div>
-          <div class="hint" style="margin:0;">${escapeHTML(acc.host)} · ${state.emailLastSync ? "Last synced " + new Date(state.emailLastSync).toLocaleTimeString() : "Never synced"} · auto-syncs every 60s</div>
-        </div>
-      </div>
-      <div style="display:flex;gap:8px;">
-        <button class="btn-secondary" id="syncNowBtn" ${emailUI.syncing?"disabled":""}>${ICONS.refresh} ${emailUI.syncing ? "Syncing…" : "Sync Now"}</button>
-        <button class="btn-small" id="resetTrackingBtn" title="Forces the next sync to look at every email again within the search window — useful after a detection fix, so an email that was previously missed gets a fresh look.">Re-scan Recent Mail</button>
-        <button class="btn-secondary" id="disconnectBtn" style="border-color:var(--red);color:var(--red);">Disconnect</button>
-      </div>
-    </div>
-
-    <div class="card panel" style="margin-bottom:20px;">
-      <div class="panel-title" style="margin-bottom:10px;">Catch-All Domains</div>
-      ${emailUI.editingCatchAll ? `
-        <div class="chip-list" id="editCatchAllChips" style="margin-bottom:10px;">
-          ${emailUI.editCatchAllList.length===0 ? `<span class="hint" style="margin:0;">None added yet.</span>` : emailUI.editCatchAllList.map(d=>`
-            <span class="excl-chip">${escapeHTML(d)}<button data-remove-edit-catchall="${escapeAttr(d)}">${ICONS.close}</button></span>
-          `).join("")}
-        </div>
-        <div class="add-exclusion-row" style="margin-bottom:10px;">
-          <input type="text" id="catchAllInput" value="${escapeAttr(emailUI.editCatchAllInput)}" placeholder="@yourdomain.com">
-          <button class="btn-small" id="addEditCatchAllBtn">${ICONS.plus} Add</button>
+    <div class="card" style="margin-bottom:14px;padding:18px 20px;">
+      <div class="account-banner" style="border:none;padding:0;">
+        <div class="who">
+          <div class="account-avatar">${ICONS.mail}</div>
+          <div>
+            <div style="font-weight:700;font-size:14px;">${escapeHTML(acc.email)}</div>
+            <div class="hint" style="margin:0;">${escapeHTML(acc.host)} · ${acc.lastSyncISO ? "Last synced " + new Date(acc.lastSyncISO).toLocaleTimeString() : "Never synced"}</div>
+          </div>
         </div>
         <div style="display:flex;gap:8px;">
-          <button class="btn-small" id="saveCatchAllBtn">Save</button>
-          <button class="btn-small" id="cancelCatchAllBtn">Cancel</button>
+          <button class="btn-small" data-reset-tracking="${acc.id}" title="Forces the next sync to look at every email again within the search window — useful after a detection fix, so an email that was previously missed gets a fresh look.">Re-scan Recent Mail</button>
+          <button class="btn-small" data-remove-account="${acc.id}" style="border-color:var(--red);color:var(--red);">Remove</button>
         </div>
-      ` : `
-        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
-          <div class="hint" style="margin:0;">${(acc.catchAllDomains && acc.catchAllDomains.length) ? `Routing: ${acc.catchAllDomains.map(d=>`<strong style="color:var(--text);">${escapeHTML(d)}</strong>`).join(", ")}` : "No catch-all domains set — using keyword detection on your inbox only."}</div>
-          <button class="btn-small" id="editCatchAllBtn" style="flex-shrink:0;">${(acc.catchAllDomains && acc.catchAllDomains.length) ? "Edit" : "Add"}</button>
-        </div>
-      `}
+      </div>
+
+      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border-soft);">
+        <div class="hint" style="font-weight:700;color:var(--text);margin-bottom:8px;">Catch-All Domains</div>
+        ${isEditingThis ? `
+          <div class="chip-list" id="editCatchAllChips" style="margin-bottom:10px;">
+            ${emailUI.editCatchAllList.length===0 ? `<span class="hint" style="margin:0;">None added yet.</span>` : emailUI.editCatchAllList.map(d=>`
+              <span class="excl-chip">${escapeHTML(d)}<button data-remove-edit-catchall="${escapeAttr(d)}">${ICONS.close}</button></span>
+            `).join("")}
+          </div>
+          <div class="add-exclusion-row" style="margin-bottom:10px;">
+            <input type="text" id="catchAllInput" value="${escapeAttr(emailUI.editCatchAllInput)}" placeholder="@yourdomain.com">
+            <button class="btn-small" id="addEditCatchAllBtn">${ICONS.plus} Add</button>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn-small" data-save-catchall="${acc.id}">Save</button>
+            <button class="btn-small" id="cancelCatchAllBtn">Cancel</button>
+          </div>
+        ` : `
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
+            <div class="hint" style="margin:0;">${(acc.catchAllDomains && acc.catchAllDomains.length) ? `Routing: ${acc.catchAllDomains.map(d=>`<strong style="color:var(--text);">${escapeHTML(d)}</strong>`).join(", ")}` : "No catch-all domains set — using keyword detection on this inbox only."}</div>
+            <button class="btn-small" data-edit-catchall="${acc.id}" style="flex-shrink:0;">${(acc.catchAllDomains && acc.catchAllDomains.length) ? "Edit" : "Add"}</button>
+          </div>
+        `}
+      </div>
     </div>
+  `;
+}
+
+function emailConnectedHTML(){
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <div class="hint" style="margin:0;">${emailUI.accounts.length} email account${emailUI.accounts.length===1?"":"s"} connected · auto-syncs every 60s</div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn-secondary" id="syncNowBtn" ${emailUI.syncing?"disabled":""}>${ICONS.refresh} ${emailUI.syncing ? "Syncing…" : "Sync Now"}</button>
+        <button class="btn-small" id="showAddAccountBtn">${ICONS.plus} Add Another Account</button>
+      </div>
+    </div>
+
+    ${emailUI.accounts.map(acc => accountBannerHTML(acc)).join("")}
 
     <div class="card panel" style="margin-bottom:20px;">
       <div class="panel-title" style="margin-bottom:6px;">Expense Email Rules</div>
@@ -3026,7 +3098,10 @@ function attachEmailEvents(){
     setTab("orders");
   });
 
-  if(!emailUI.accountInfo){
+  if(emailUI.accounts.length === 0 || emailUI.showAddForm){
+    const cancelAddBtn = document.getElementById("cancelAddAccountBtn");
+    if(cancelAddBtn) cancelAddBtn.addEventListener("click", ()=>{ emailUI.showAddForm = false; emailUI.error = null; refreshSettingsIfOpen(); });
+
     document.querySelectorAll("[data-provider]").forEach(btn=>{
       btn.addEventListener("click", ()=>{
         const key = btn.dataset.provider;
@@ -3067,16 +3142,31 @@ function attachEmailEvents(){
   } else {
     const syncBtn = document.getElementById("syncNowBtn");
     if(syncBtn) syncBtn.addEventListener("click", ()=>syncNow(false));
-    const resetTrackingBtn = document.getElementById("resetTrackingBtn");
-    if(resetTrackingBtn) resetTrackingBtn.addEventListener("click", async ()=>{
-      resetTrackingBtn.disabled = true;
-      resetTrackingBtn.textContent = "Resetting…";
-      await window.emailAPI.resetTracking();
-      showToast("Tracking reset — next sync will look at recent mail fresh");
-      await syncNow(false);
+    const showAddAccountBtn = document.getElementById("showAddAccountBtn");
+    if(showAddAccountBtn) showAddAccountBtn.addEventListener("click", ()=>{
+      emailUI.showAddForm = true;
+      emailUI.formEmail = ""; emailUI.formPassword = ""; emailUI.formCatchAllList = []; emailUI.error = null;
+      refreshSettingsIfOpen();
     });
-    const disconnectBtn = document.getElementById("disconnectBtn");
-    if(disconnectBtn) disconnectBtn.addEventListener("click", disconnectEmail);
+    document.querySelectorAll("[data-reset-tracking]").forEach(btn=>{
+      btn.addEventListener("click", async ()=>{
+        const id = btn.dataset.resetTracking;
+        btn.disabled = true;
+        btn.textContent = "Resetting…";
+        await window.emailAPI.resetTracking(id);
+        showToast("Tracking reset — next sync will look at recent mail fresh");
+        await syncNow(false);
+      });
+    });
+    document.querySelectorAll("[data-remove-account]").forEach(btn=>{
+      btn.addEventListener("click", async ()=>{
+        if(!confirm("Remove this email account? Restock will stop syncing it — this doesn't affect any orders or sales already recorded.")) return;
+        await window.emailAPI.removeAccount(btn.dataset.removeAccount);
+        showToast("Account removed");
+        await refreshAccountInfo();
+        refreshSettingsIfOpen();
+      });
+    });
     document.querySelectorAll("[data-view]").forEach(btn=>{
       btn.addEventListener("click", ()=>{ ui.detailItemId = btn.dataset.view; render(); });
     });
@@ -3087,15 +3177,18 @@ function attachEmailEvents(){
         refreshSettingsIfOpen();
       });
     });
-    const editCatchAllBtn = document.getElementById("editCatchAllBtn");
-    if(editCatchAllBtn) editCatchAllBtn.addEventListener("click", ()=>{
-      emailUI.editingCatchAll = true;
-      emailUI.editCatchAllList = (emailUI.accountInfo.catchAllDomains || []).slice();
-      emailUI.editCatchAllInput = "";
-      refreshSettingsIfOpen();
+    document.querySelectorAll("[data-edit-catchall]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const id = btn.dataset.editCatchall;
+        const acc = emailUI.accounts.find(a=>a.id===id);
+        emailUI.editingCatchAllAccountId = id;
+        emailUI.editCatchAllList = (acc && acc.catchAllDomains || []).slice();
+        emailUI.editCatchAllInput = "";
+        refreshSettingsIfOpen();
+      });
     });
     const cancelCatchAllBtn = document.getElementById("cancelCatchAllBtn");
-    if(cancelCatchAllBtn) cancelCatchAllBtn.addEventListener("click", ()=>{ emailUI.editingCatchAll = false; refreshSettingsIfOpen(); });
+    if(cancelCatchAllBtn) cancelCatchAllBtn.addEventListener("click", ()=>{ emailUI.editingCatchAllAccountId = null; refreshSettingsIfOpen(); });
     const catchAllEditInput = document.getElementById("catchAllInput");
     if(catchAllEditInput) catchAllEditInput.addEventListener("input", e=>{ emailUI.editCatchAllInput = e.target.value; });
     const addEditCatchAllBtn = document.getElementById("addEditCatchAllBtn");
@@ -3111,13 +3204,16 @@ function attachEmailEvents(){
         refreshSettingsIfOpen();
       });
     });
-    const saveCatchAllBtn = document.getElementById("saveCatchAllBtn");
-    if(saveCatchAllBtn) saveCatchAllBtn.addEventListener("click", async ()=>{
-      const list = emailUI.editCatchAllList;
-      await window.emailAPI.updateCatchAll({ catchAllDomains: list });
-      emailUI.editingCatchAll = false;
-      showToast(list.length ? `${list.length} catch-all domain${list.length===1?"":"s"} saved` : "Catch-all domains cleared");
-      await refreshAccountInfo();
+    document.querySelectorAll("[data-save-catchall]").forEach(btn=>{
+      btn.addEventListener("click", async ()=>{
+        const id = btn.dataset.saveCatchall;
+        const list = emailUI.editCatchAllList;
+        await window.emailAPI.updateAccountCatchAll(id, list);
+        emailUI.editingCatchAllAccountId = null;
+        showToast(list.length ? `${list.length} catch-all domain${list.length===1?"":"s"} saved` : "Catch-all domains cleared");
+        await refreshAccountInfo();
+        refreshSettingsIfOpen();
+      });
     });
 
     const addExpenseRuleBtn = document.getElementById("addExpenseRuleBtn");
@@ -3286,7 +3382,7 @@ async function connectEmailAccount(){
   refreshSettingsIfOpen();
 
   try{
-    const res = await window.emailAPI.testAndSave({
+    const res = await window.emailAPI.addAccount({
       email: f.formEmail.trim(),
       password: f.formPassword,
       host: f.formHost,
@@ -3297,7 +3393,8 @@ async function connectEmailAccount(){
     f.connecting = false;
     if(res.ok){
       f.formPassword = "";
-      showToast("Email connected");
+      f.showAddForm = false;
+      showToast("Email account added");
       await refreshAccountInfo();
       syncNow(true);
     } else {
@@ -3311,21 +3408,12 @@ async function connectEmailAccount(){
   }
 }
 
-async function disconnectEmail(){
-  if(!confirm("Disconnect this email account? Your existing stock and detected orders stay put — you just won't sync anymore until you reconnect.")) return;
-  await window.emailAPI.disconnect();
-  emailUI = { ...emailUI, accountInfo: null, formEmail:"", formPassword:"", formCatchAllList:[], formCatchAllInput:"" };
-  stopAutoSync();
-  refreshSettingsIfOpen();
-}
-
 async function syncNow(silent){
-  if(!emailUI.accountInfo || emailUI.syncing) return;
+  if(!emailUI.accounts || emailUI.accounts.length===0 || emailUI.syncing) return;
   emailUI.syncing = true;
   if(!silent) refreshSettingsIfOpen();
   try{
     const res = await window.emailAPI.sync({
-      sinceISO: state.emailLastSync,
       blockPromotions: state.emailFilters.blockPromotions,
       excludedSenders: state.emailFilters.excludedSenders,
       expenseRules: state.expenseRules || []
@@ -3366,9 +3454,9 @@ async function syncNow(silent){
 let autoSyncTimer = null;
 function startAutoSync(){
   stopAutoSync();
-  if(!emailUI.accountInfo) return;
+  if(!emailUI.accounts || emailUI.accounts.length===0) return;
   autoSyncTimer = setInterval(()=>{
-    if(emailUI.accountInfo && !emailUI.syncing) syncNow(true);
+    if(emailUI.accounts && emailUI.accounts.length>0 && !emailUI.syncing) syncNow(true);
   }, AUTO_SYNC_INTERVAL_MS);
 }
 function stopAutoSync(){
@@ -3961,6 +4049,25 @@ function exportData(){
   const a = document.createElement("a");
   a.href = url;
   a.download = `ledger-export-${todayISO()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function downloadCSV(filename, headers, rows){
+  const escapeCsv = v => {
+    const s = String(v==null ? "" : v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+  };
+  const lines = [headers.map(escapeCsv).join(",")];
+  rows.forEach(row => lines.push(row.map(escapeCsv).join(",")));
+  const csv = lines.join("\r\n");
+  const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
