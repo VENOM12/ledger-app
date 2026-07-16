@@ -388,7 +388,12 @@ function dashboardHTML(){
   const start = periodStart(ui.period);
   const inPeriod = d => !start || new Date(d) >= start;
 
-  const purchasesInPeriod = state.items.filter(i => inPeriod(i.purchaseDate));
+  // Preorders excluded here deliberately — no money has actually been
+  // charged for these yet (Pokémon Center's own emails say they charge
+  // once the order ships, not at confirmation), so counting them as
+  // "spent" would overstate real money out. They start counting the
+  // moment they're no longer a preorder (arrived/charged).
+  const purchasesInPeriod = state.items.filter(i => !i.isPreorder && inPeriod(i.purchaseDate));
   const salesInPeriod = [];
   state.items.forEach(item => item.sales.forEach(s => { if(inPeriod(s.saleDate)) salesInPeriod.push({sale:s, item}); }));
   const expensesInPeriod = (state.expenses||[]).filter(e => inPeriod(e.date));
@@ -1473,8 +1478,37 @@ function bindAllOrdersResultEvents(){
 
 let pkcUI = { search: "" };
 
+// Deliberately NOT scoped by the search box — this should always reflect
+// the true overall picture regardless of what's currently being searched
+// for, and excludes cancelled preorders since those won't actually be
+// fulfilled or charged.
+function activePkcPreorders(){
+  return state.items.filter(i=>i.isPreorder && i.retailer==="Pokemon Center" && !i.isCancelled);
+}
+function pkcTotalToPay(){
+  return activePkcPreorders().reduce((s,i)=>s+i.quantityPurchased*i.purchasePricePerUnit, 0);
+}
+function pkcQuantitySummary(){
+  const groups = {};
+  activePkcPreorders().forEach(i=>{
+    groups[i.name] = (groups[i.name]||0) + i.quantityPurchased;
+  });
+  return Object.entries(groups).sort((a,b)=>b[1]-a[1]);
+}
+
 function pkcOrdersContentHTML(){
+  const totalToPay = pkcTotalToPay();
+  const quantitySummary = pkcQuantitySummary();
+
   return `
+    <div class="stat-grid">
+      ${statCard("cash", "Total To Pay", fmtMoney(totalToPay), "var(--gold)", "var(--gold-bg)")}
+      ${quantitySummary.map(([name, qty])=>
+        statCard("stock", name.length>34 ? name.slice(0,32)+"…" : name, ""+qty, "var(--violet)", "var(--violet-bg)")
+      ).join("")}
+    </div>
+    <div class="hint" style="margin:8px 0 0;">Total To Pay is what Pokémon Center will actually charge once these ship — nothing here counts as a real expense until then. Quantity boxes add up how many of each product you have on order across every preorder.</div>
+    <div style="height:12px;"></div>
     <div class="toolbar-row">
       <button class="btn-primary" id="addPkcPreorderBtn">${ICONS.plus} Add Preorder</button>
       <div class="search-bar">
@@ -1488,7 +1522,10 @@ function pkcOrdersContentHTML(){
 }
 
 function pkcResultsHTML(){
-  const preorders = state.items.filter(i=>i.isPreorder)
+  // Only Pokémon Center specifically — a preorder manually added via Add
+  // Stock's checkbox for a different retailer was incorrectly showing up
+  // here before, since the filter only checked isPreorder.
+  const preorders = state.items.filter(i=>i.isPreorder && i.retailer==="Pokemon Center")
     .filter(i=> !pkcUI.search || i.name.toLowerCase().includes(pkcUI.search.toLowerCase()))
     .sort((a,b)=> new Date(a.expectedArrival||"9999-12-31") - new Date(b.expectedArrival||"9999-12-31"));
 
@@ -3170,6 +3207,33 @@ function mergeSyncResults(results){
       return;
     }
 
+    if(r.status==="cancelled"){
+      // Real cancellation emails share the retailer's own order template
+      // (same "Order Details/Summary" headers as a normal confirmation),
+      // which is exactly why this needed its own detection — without it,
+      // a cancellation was being misread as a brand new order. The email
+      // format also doesn't reliably show a price per cancelled item
+      // (nothing was actually charged), so there's no solid basis for
+      // matching only *some* products in a multi-item order — cancelling
+      // every item tied to this order number is the reliable behavior,
+      // even though a true partial cancellation (rare) would over-cancel
+      // rather than precisely match just the affected products.
+      if(r.orderNumber){
+        state.items.forEach(item=>{
+          if(item.orderNumber===r.orderNumber && item.isPreorder && !item.isCancelled){
+            item.isCancelled = true;
+          }
+        });
+        const linkedOrder = state.pendingOrders.find(p=>p.orderNumber===r.orderNumber);
+        if(linkedOrder && linkedOrder.status!=="delivered"){
+          linkedOrder.status = "cancelled";
+          linkedOrder.cancelReason = "Retailer cancelled this order.";
+        }
+        cancelledCount++;
+      }
+      return;
+    }
+
     if(r.status==="account_suspended"){
       // Real confirmation: "all pending orders and subscriptions have been
       // cancelled" when this happens. This is specific to Amazon — it only
@@ -3207,27 +3271,40 @@ function mergeSyncResults(results){
       // used its own alias/catch-all address. If that address matches
       // more than one tracked preorder, product name narrows down just
       // that subset. Name-only matching is a last resort, used only when
-      // there's no usable email match at all.
+      // there's no usable email match at all. Matching happens at the
+      // ORDER level (grouping items sharing an orderNumber together) since
+      // a multi-product order now has several stock items — a payment
+      // issue affects the whole order, not just whichever single product
+      // happened to be named in the email.
       const candidates = state.items.filter(i=>i.isPreorder && i.sourceEmailDetected);
-      let matchedItem = null;
+      const orderGroups = {};
+      candidates.forEach(i=>{
+        const key = i.orderNumber || i.id;
+        (orderGroups[key] = orderGroups[key] || []).push(i);
+      });
+      const orderKeys = Object.keys(orderGroups);
 
+      let matchedKey = null;
       if(r.toEmail){
-        const emailMatches = candidates.filter(i => i.sentToEmail && i.sentToEmail.toLowerCase()===r.toEmail.toLowerCase());
-        if(emailMatches.length === 1){
-          matchedItem = emailMatches[0];
-        } else if(emailMatches.length > 1 && r.productNameHint){
-          matchedItem = emailMatches.find(i => namesLikelyMatch(i.name, r.productNameHint)) || null;
+        const emailMatchKeys = orderKeys.filter(k => orderGroups[k].some(i => i.sentToEmail && i.sentToEmail.toLowerCase()===r.toEmail.toLowerCase()));
+        if(emailMatchKeys.length === 1){
+          matchedKey = emailMatchKeys[0];
+        } else if(emailMatchKeys.length > 1 && r.productNameHint){
+          matchedKey = emailMatchKeys.find(k => orderGroups[k].some(i => namesLikelyMatch(i.name, r.productNameHint))) || null;
         }
       }
-      if(!matchedItem && r.productNameHint){
-        matchedItem = candidates.find(i => namesLikelyMatch(i.name, r.productNameHint)) || null;
+      if(!matchedKey && r.productNameHint){
+        matchedKey = orderKeys.find(k => orderGroups[k].some(i => namesLikelyMatch(i.name, r.productNameHint))) || null;
       }
 
-      if(matchedItem){
-        matchedItem.needsAttention = true;
-        matchedItem.attentionDeadline = r.deadlineDate || null;
-        matchedItem.attentionDeadlineTime = r.deadlineTime || null;
-        const linkedOrder = state.pendingOrders.find(p=>p.addedToStockId===matchedItem.id);
+      if(matchedKey){
+        const itemsInOrder = orderGroups[matchedKey];
+        itemsInOrder.forEach(item=>{
+          item.needsAttention = true;
+          item.attentionDeadline = r.deadlineDate || null;
+          item.attentionDeadlineTime = r.deadlineTime || null;
+        });
+        const linkedOrder = state.pendingOrders.find(p=>p.addedToStockId===itemsInOrder[0].id);
         if(linkedOrder){
           linkedOrder.status = "action_required";
           linkedOrder.actionDeadline = r.deadlineDate || null;
@@ -3302,13 +3379,18 @@ function mergeSyncResults(results){
         } else {
           // Already-tracked item (e.g. a PKC preorder that was confirmed
           // earlier) — a delivered email for it means it's arrived, so
-          // do automatically what the "Mark Arrived" button does.
-          const linkedItem = state.items.find(i=>i.id===existing.addedToStockId);
-          if(linkedItem && linkedItem.isPreorder){
+          // do automatically what the "Mark Arrived" button does. A
+          // multi-product order has several stock items sharing this
+          // same order number, not just the one addedToStockId points
+          // to — all of them need to arrive together, not just the first.
+          const relatedItems = existing.orderNumber
+            ? state.items.filter(i=>i.orderNumber===existing.orderNumber && i.isPreorder)
+            : [state.items.find(i=>i.id===existing.addedToStockId)].filter(Boolean);
+          relatedItems.forEach(linkedItem=>{
             linkedItem.isPreorder = false;
             linkedItem.needsAttention = false;
-            addedCount++;
-          }
+          });
+          if(relatedItems.length) addedCount++;
         }
       } else if(!existing){
         const orderDate = (r.date||new Date().toISOString()).slice(0,10);
@@ -3349,27 +3431,23 @@ function namesLikelyMatch(a, b){
 }
 
 function createPKCPreorderItem(order){
-  // Best-effort: if we found itemized line items in the email, use the
-  // first one as the primary item name/price (most PKC preorder emails
-  // are for a single product anyway); otherwise fall back to a generic
-  // "tap to edit" placeholder like other auto-added items.
-  const firstLine = (order.lineItems && order.lineItems[0]) || null;
-  const item = {
-    id: uid(),
-    name: firstLine ? firstLine.name : "Pokémon Center Preorder — tap to edit",
+  // A single PKC order can contain several different products — the old
+  // version only ever used the first line item's name/price/quantity and
+  // silently discarded the rest, which is exactly the reported "total
+  // cost shows the value of 1 item" bug. Now creates one stock item per
+  // actual product, all sharing the same order-level details (address,
+  // recipient, order number), so each item's own cost is accurate and
+  // costs can be aggregated correctly by product across separate orders.
+  const shared = {
     category: "Pokemon",
-    quantityPurchased: firstLine ? firstLine.quantity : 1,
-    purchasePricePerUnit: firstLine ? firstLine.price : (order.price || 0),
     retailer: "Pokemon Center",
     purchaseDate: order.date ? order.date.slice(0,10) : todayISO(),
-    notes: "Auto-detected Pokémon Center preorder from email sync — please verify item name, quantity, and price.",
     isPreorder: true,
     expectedArrival: order.expectedDelivery || null,
     orderNumber: order.orderNumber || null,
     deliveryAddress: order.deliveryAddress || null,
     recipientName: order.recipientName || null,
     sentToEmail: order.toEmail || null,
-    lineItems: order.lineItems || [],
     sourceEmailDetected: true,
     needsAttention: false,
     attentionDeadline: null,
@@ -3378,8 +3456,41 @@ function createPKCPreorderItem(order){
     image: null,
     sales: []
   };
-  state.items.unshift(item);
-  return item;
+
+  const lines = (order.lineItems && order.lineItems.length) ? order.lineItems : null;
+  const createdItems = [];
+
+  if(lines){
+    lines.forEach(line=>{
+      const item = {
+        id: uid(),
+        name: line.name,
+        quantityPurchased: line.quantity || 1,
+        purchasePricePerUnit: line.price || 0,
+        notes: "Auto-detected Pokémon Center preorder from email sync — please verify item name, quantity, and price.",
+        lineItems: order.lineItems || [],
+        ...shared
+      };
+      state.items.unshift(item);
+      createdItems.push(item);
+    });
+  } else {
+    // No parseable line items — best-effort single placeholder, same as
+    // before, using the order's total as that one item's price.
+    const item = {
+      id: uid(),
+      name: "Pokémon Center Preorder — tap to edit",
+      quantityPurchased: 1,
+      purchasePricePerUnit: order.price || 0,
+      notes: "Auto-detected Pokémon Center preorder from email sync — please verify item name, quantity, and price.",
+      lineItems: [],
+      ...shared
+    };
+    state.items.unshift(item);
+    createdItems.push(item);
+  }
+
+  return createdItems[0];
 }
 
 function createStockItemFromOrder(order){

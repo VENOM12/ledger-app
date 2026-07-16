@@ -537,6 +537,14 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
 
   let status = null;
   if (/(you sold|item sold|has sold|your listing sold|congratulations.*sold|payment received|you.ve been paid|payout (of|is|available)|funds available)/i.test(hay)) status = 'sold';
+  // A cancellation email shares the exact same "Order Details / Order
+  // Summary" template as a normal confirmation — without checking for
+  // this first, a real cancellation was being misclassified as a brand
+  // new 'confirmed' order below, which would have created a phantom
+  // duplicate order instead of actually cancelling anything. Checked
+  // early, ahead of the broad 'confirmed' pattern, since this is a
+  // definitive terminal state.
+  else if (/(?:order|item)s?\s+(?:has|have)\s+been\s+cancell?ed|will\s+be\s+cancell?ed/i.test(hay)) status = 'cancelled';
   // Account-level suspension/hold notices cascade to cancel every pending
   // (non-delivered) order under that account — a real example explicitly
   // said "all pending orders and subscriptions have been cancelled." The
