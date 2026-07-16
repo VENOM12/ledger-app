@@ -57,11 +57,55 @@ function loadState(){
       if(!Array.isArray(parsed.expenses)) parsed.expenses = [];
       if(!Array.isArray(parsed.expenseRules)) parsed.expenseRules = [];
       if(!parsed.colorScheme || !THEMES[parsed.colorScheme]) parsed.colorScheme = "violet";
+      migratePkcMultiItemOrders(parsed);
       return parsed;
     }
   }catch(e){ console.warn("Could not read saved data", e); }
   return { displayCurrency: "USD", items: [], pendingOrders: [], pendingSales: [], expenses: [], expenseRules: [], colorScheme: "violet", emailLastSync: null, emailFilters: { blockPromotions: true, excludedSenders: [] } };
 }
+
+// One-time backfill for PKC preorders created before multi-item orders
+// were tracked correctly — each affected order only ever got ONE stock
+// item, discarding every other product in that order, even though the
+// full line-item breakdown was still being stored (and shown in the
+// order card's "Items detected" table) the whole time. Confirmed
+// directly against a real export: 17 real orders, each with exactly one
+// stock item, each storing a lineItems array showing 3-4 products that
+// were never turned into their own tracked items. Since the full data is
+// already there, this creates the missing items directly from it — no
+// re-sync from email needed. Runs on every load but is a no-op once
+// everything's already backfilled, since it only adds items that don't
+// already exist for that order.
+function migratePkcMultiItemOrders(parsed){
+  if(!Array.isArray(parsed.items)) return;
+  const seenOrderNumbers = new Set();
+  const toAdd = [];
+  parsed.items.filter(i=>i.isPreorder && i.retailer==="Pokemon Center" && i.orderNumber && Array.isArray(i.lineItems) && i.lineItems.length>1)
+    .forEach(i=>{
+      if(seenOrderNumbers.has(i.orderNumber)) return;
+      seenOrderNumbers.add(i.orderNumber);
+      const existingForOrder = parsed.items.filter(x=>x.orderNumber===i.orderNumber && x.retailer==="Pokemon Center");
+      const existingNames = existingForOrder.map(x=>normalizeForMatch(x.name));
+      i.lineItems.forEach(li=>{
+        if(existingNames.includes(normalizeForMatch(li.name))) return;
+        toAdd.push({
+          id: uid(), name: li.name, category: i.category, quantityPurchased: li.quantity || 1,
+          purchasePricePerUnit: li.price || 0, retailer: i.retailer, purchaseDate: i.purchaseDate,
+          notes: "Backfilled from this order's stored details — was already part of the order but hadn't been added as its own tracked item yet.",
+          isPreorder: true, expectedArrival: i.expectedArrival || null, orderNumber: i.orderNumber,
+          deliveryAddress: i.deliveryAddress || null, recipientName: i.recipientName || null, sentToEmail: i.sentToEmail || null,
+          lineItems: i.lineItems, sourceEmailDetected: !!i.sourceEmailDetected,
+          needsAttention: false, attentionDeadline: null, attentionDeadlineTime: null,
+          isCancelled: !!i.isCancelled, image: null, sales: []
+        });
+      });
+    });
+  if(toAdd.length){
+    parsed.items.push(...toAdd);
+    parsed.__pkcBackfillCount = (parsed.__pkcBackfillCount || 0) + toAdd.length;
+  }
+}
+
 function saveState(){
   try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
   catch(e){ console.warn("Could not save data", e); }
@@ -3920,6 +3964,13 @@ function bootApp(){
   render();
   initUpdater();
   refreshAccountInfo(); // loads email account status regardless of active tab, so auto-sync can start
+  if(state.__pkcBackfillCount){
+    const n = state.__pkcBackfillCount;
+    delete state.__pkcBackfillCount;
+    saveState();
+    showToast(`Added ${n} product${n===1?"":"s"} that were missing from your PKC orders — the full details were already there, just hadn't been tracked as their own items yet.`);
+    if(ui.tab==="orders") renderView();
+  }
 }
 
 async function bootWithLicenseGate(){
