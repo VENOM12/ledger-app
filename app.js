@@ -62,6 +62,7 @@ function loadState(){
       migratePkcOrderToEmail(parsed);
       migrateManualOrderMatchKeys(parsed);
       migratePkcPhantomOrders(parsed);
+      migrateGenericPlaceholderStockItems(parsed);
       return parsed;
     }
   }catch(e){ console.warn("Could not read saved data", e); }
@@ -174,6 +175,40 @@ function migratePkcPhantomOrders(parsed){
       other!==p && other.retailer==="Pokemon Center" && other.orderNumber && other.toEmail===p.toEmail
     );
     return !hasRealMatch; // keep (return true) unless it's a confirmed phantom
+  });
+}
+
+// Same underlying gap as the earlier PKC multi-item migration, but for
+// delivered orders specifically: createStockItemFromOrder only ever ran
+// once per order (right when it first became "delivered"), creating one
+// generic "Order from X — tap to edit" placeholder using just the order
+// total — even on orders whose real line-item breakdown was already
+// available. Fixed at the source for anything delivered from now on;
+// this repairs whatever's already sitting as an unfixed placeholder.
+// Repurposes the existing item as the first line item (preserving its id
+// and any sales already recorded against it) and creates new items for
+// the rest, rather than deleting and recreating everything.
+function migrateGenericPlaceholderStockItems(parsed){
+  if(!Array.isArray(parsed.pendingOrders) || !Array.isArray(parsed.items)) return;
+  const placeholderPattern = /^Order from .+ — tap to edit$/;
+  parsed.pendingOrders.forEach(p=>{
+    if(!p.addedToStockId || !Array.isArray(p.lineItems) || p.lineItems.length<2) return;
+    const item = parsed.items.find(i=>i.id===p.addedToStockId);
+    if(!item || !placeholderPattern.test(item.name)) return;
+    const [first, ...rest] = p.lineItems;
+    item.name = first.name;
+    item.quantityPurchased = first.quantity || 1;
+    item.purchasePricePerUnit = first.price || 0;
+    rest.forEach(line=>{
+      parsed.items.push({
+        id: 'bf_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8),
+        name: line.name, category: item.category || "Other",
+        quantityPurchased: line.quantity || 1, purchasePricePerUnit: line.price || 0,
+        retailer: item.retailer, purchaseDate: item.purchaseDate,
+        notes: item.notes || "Auto-added from email sync — please verify item name, quantity, and price.",
+        isPreorder: false, expectedArrival: null, isCancelled: false, image: null, sales: []
+      });
+    });
   });
 }
 
