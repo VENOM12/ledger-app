@@ -1797,7 +1797,7 @@ function pkcResultsHTML(){
               ${kvRow("Order #", rep.orderNumber ? escapeHTML(rep.orderNumber) : "—")}
               ${kvRow("Ordered", formatDate(rep.purchaseDate))}
               ${kvRow("Expected arrival", rep.expectedArrival ? formatDate(rep.expectedArrival) : "—")}
-              ${linkedOrder && linkedOrder.trackingNumber ? kvRow("Tracking", `${linkedOrder.carrier ? escapeHTML(linkedOrder.carrier)+" · " : ""}${escapeHTML(linkedOrder.trackingNumber)}`) : ""}
+              ${linkedOrder && linkedOrder.trackingNumber ? kvRow("Tracking", `${linkedOrder.carrier ? escapeHTML(linkedOrder.carrier)+" · " : ""}<a href="#" data-track-royalmail="${escapeAttr(linkedOrder.trackingNumber)}" style="color:var(--violet);text-decoration:underline;">${escapeHTML(linkedOrder.trackingNumber)}</a>`) : ""}
               ${kvRow("Order Total", fmtMoney(orderTotal))}
               ${kvRow("Sent to", rep.sentToEmail ? escapeHTML(rep.sentToEmail) : "—")}
               ${kvRow("Recipient name", rep.recipientName ? escapeHTML(rep.recipientName) : "—")}
@@ -1850,6 +1850,13 @@ function bindPkcResultEvents(){
       if(pkcExpandedIds.has(id)) pkcExpandedIds.delete(id);
       else pkcExpandedIds.add(id);
       renderPkcResults();
+    });
+  });
+  document.querySelectorAll("[data-track-royalmail]").forEach(el=>{
+    el.addEventListener("click", (e)=>{
+      e.preventDefault();
+      const trackingNumber = el.dataset.trackRoyalmail;
+      if(window.shellAPI) window.shellAPI.openExternal(`https://www.royalmail.com/track-your-item#/${encodeURIComponent(trackingNumber)}`);
     });
   });
   document.querySelectorAll("[data-open]").forEach(el=>{
@@ -2682,7 +2689,8 @@ function openSellSheet(itemId, prefill){
     fees: "",
     platform: (prefill && prefill.platform) || "eBay",
     date: (prefill && prefill.date) || todayISO(),
-    prefillNote: prefill ? true : false
+    prefillNote: prefill ? true : false,
+    pendingSaleId: (prefill && prefill.pendingSaleId) || null
   };
   renderSellSheet();
 }
@@ -2822,6 +2830,14 @@ function confirmSale(){
     platform: f.platform,
     saleDate: f.date
   });
+  // Only clears the detected sale now that it's actually been recorded —
+  // this used to happen the moment a candidate item was picked, before
+  // the sale was ever confirmed, which meant cancelling the sell sheet
+  // afterward silently lost track of a real sale with nothing recorded
+  // for it anywhere.
+  if(f.pendingSaleId){
+    state.pendingSales = state.pendingSales.filter(p=>p.id!==f.pendingSaleId);
+  }
   saveState();
   closeSellSheet();
   showToast("Sale recorded");
@@ -3300,7 +3316,7 @@ function openMatchSaleModal(pendingSaleId){
         <div class="modal-body">
           <div class="hint" style="margin-bottom:14px;">${escapeHTML(sale.platform||"Unknown")} · ${formatDate(sale.saleDate)} · ${sale.netAmount!=null?fmtMoney(sale.netAmount):"amount unknown"}${sale.productNameHint ? ` · likely "${escapeHTML(sale.productNameHint)}"` : ""}</div>
           ${candidates.length===0 ? `
-            <div class="pending-empty">No in-stock items to match against. Add stock first, or dismiss this detected sale.</div>
+            <div class="pending-empty">No in-stock items to match against.</div>
           ` : `
             <div class="card table-wrap">
               <table class="data-table">
@@ -3319,16 +3335,16 @@ function openMatchSaleModal(pendingSaleId){
               </table>
             </div>
           `}
+          <button class="btn-secondary block" id="createItemFromSaleBtn" style="margin-top:14px;">${ICONS.plus} None of these — create a new item</button>
         </div>
       </div>
     </div>
   `;
   document.getElementById("closeMatch").addEventListener("click", ()=>{ openSettings(); });
+  document.getElementById("createItemFromSaleBtn").addEventListener("click", ()=>{ openCreateItemFromSaleModal(sale); });
   document.querySelectorAll("[data-pick]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
       const itemId = btn.dataset.pick;
-      state.pendingSales = state.pendingSales.filter(p=>p.id!==pendingSaleId);
-      saveState();
       document.getElementById("modalRoot").innerHTML = "";
       ui.detailItemId = itemId;
       render();
@@ -3339,8 +3355,121 @@ function openMatchSaleModal(pendingSaleId){
       // divide by in that case.
       const qty = sale.quantitySold || 1;
       const perUnitPrice = (sale.netAmount!=null && qty>0) ? sale.netAmount/qty : sale.netAmount;
-      openSellSheet(itemId, { platform: sale.platform, price: perUnitPrice, date: sale.saleDate, quantity: sale.quantitySold || null });
+      openSellSheet(itemId, { platform: sale.platform, price: perUnitPrice, date: sale.saleDate, quantity: sale.quantitySold || null, pendingSaleId: sale.id });
     });
+  });
+}
+
+let createFromSaleState = null;
+
+function openCreateItemFromSaleModal(sale){
+  const qty = sale.quantitySold || 1;
+  const perUnitPrice = (sale.netAmount!=null && qty>0) ? sale.netAmount/qty : (sale.netAmount || 0);
+  createFromSaleState = {
+    pendingSaleId: sale.id,
+    name: sale.productNameHint || "",
+    category: CATEGORIES[0],
+    cost: "",
+    quantity: qty,
+    salePrice: String(perUnitPrice.toFixed(2)),
+    fees: "",
+    platform: sale.platform || "eBay",
+    date: sale.saleDate || todayISO()
+  };
+  renderCreateItemFromSaleModal();
+}
+
+function renderCreateItemFromSaleModal(){
+  const f = createFromSaleState;
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open" id="createFromSaleBackdrop">
+      <div class="modal" style="width:460px;">
+        <div class="modal-header">
+          <h2>Create Item &amp; Record Sale</h2>
+          <button class="icon-btn" id="closeCreateFromSale">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          <div class="hint" style="margin-bottom:14px;">This creates the item and marks it sold in one step, since it's already gone — enter what you originally paid for it below.</div>
+          <div class="field">
+            <label>Item name</label>
+            <input type="text" id="cfs-name" value="${escapeAttr(f.name)}" placeholder="e.g. Charizard VMAX Booster Box">
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>Category</label>
+              <select id="cfs-category">
+                ${CATEGORIES.map(c=>`<option ${f.category===c?"selected":""}>${c}</option>`).join("")}
+              </select>
+            </div>
+            <div class="field">
+              <label>Quantity sold</label>
+              <input type="number" id="cfs-quantity" value="${f.quantity}" min="1" step="1">
+            </div>
+            <div class="field">
+              <label>What you paid (per unit)</label>
+              <input type="number" id="cfs-cost" value="${escapeAttr(f.cost)}" placeholder="0.00" step="0.01" min="0">
+            </div>
+            <div class="field">
+              <label>Sale price (per unit)</label>
+              <input type="number" id="cfs-saleprice" value="${escapeAttr(f.salePrice)}" step="0.01" min="0">
+            </div>
+            <div class="field">
+              <label>Fees (total)</label>
+              <input type="number" id="cfs-fees" value="${escapeAttr(f.fees)}" placeholder="0.00" step="0.01" min="0">
+            </div>
+            <div class="field">
+              <label>Platform</label>
+              <select id="cfs-platform">
+                ${PLATFORMS.map(p=>`<option ${f.platform===p?"selected":""}>${p}</option>`).join("")}
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label>Sale date</label>
+            <input type="date" id="cfs-date" value="${f.date}">
+          </div>
+          <div style="height:6px;"></div>
+          <button class="btn-primary block" id="saveCreateFromSaleBtn">Create Item &amp; Record Sale</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("closeCreateFromSale").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
+  document.getElementById("cfs-name").addEventListener("input", e=>{ f.name = e.target.value; });
+  document.getElementById("cfs-category").addEventListener("change", e=>{ f.category = e.target.value; });
+  document.getElementById("cfs-quantity").addEventListener("input", e=>{ f.quantity = e.target.value; });
+  document.getElementById("cfs-cost").addEventListener("input", e=>{ f.cost = e.target.value; });
+  document.getElementById("cfs-saleprice").addEventListener("input", e=>{ f.salePrice = e.target.value; });
+  document.getElementById("cfs-fees").addEventListener("input", e=>{ f.fees = e.target.value; });
+  document.getElementById("cfs-platform").addEventListener("change", e=>{ f.platform = e.target.value; });
+  document.getElementById("cfs-date").addEventListener("change", e=>{ f.date = e.target.value; });
+
+  document.getElementById("saveCreateFromSaleBtn").addEventListener("click", ()=>{
+    const name = f.name.trim();
+    const qty = parseInt(f.quantity, 10);
+    const cost = parseFloat(f.cost);
+    const salePrice = parseFloat(f.salePrice);
+    if(!name){ showToast("Enter an item name", "close"); return; }
+    if(isNaN(qty) || qty<1){ showToast("Enter a valid quantity", "close"); return; }
+    if(isNaN(cost) || cost<0){ showToast("Enter what you paid for this item", "close"); return; }
+    if(isNaN(salePrice) || salePrice<0){ showToast("Enter a valid sale price", "close"); return; }
+
+    const item = {
+      id: uid(), name, category: f.category, quantityPurchased: qty, purchasePricePerUnit: cost,
+      retailer: "", purchaseDate: f.date, notes: "Created from a detected sale — purchase details are a best guess, please double check.",
+      isPreorder: false, expectedArrival: null, isCancelled: false, image: null,
+      sales: [{
+        id: uid(), quantitySold: qty, salePricePerUnit: salePrice,
+        fees: parseFloat(f.fees)||0, platform: f.platform, saleDate: f.date
+      }]
+    };
+    state.items.unshift(item);
+    state.pendingSales = state.pendingSales.filter(p=>p.id!==f.pendingSaleId);
+    saveState();
+    document.getElementById("modalRoot").innerHTML = "";
+    showToast(`${name} created and marked sold`);
+    render();
   });
 }
 
