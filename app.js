@@ -3939,7 +3939,8 @@ function mergeSyncResults(results){
           expectedDelivery:r.expectedDelivery, expectedDeliveryTime:r.expectedDeliveryTime||null,
           carrier:r.carrier||null, trackingNumber:r.trackingNumber||null, pickupCode:r.pickupCode||null,
           toEmail:r.toEmail||null, deliveryAddress:r.deliveryAddress||null, recipientName:r.recipientName||null, lineItems:r.lineItems||[],
-          orderNumber:r.orderNumber, status:r.status, addedToStockId:null, isPKCPreorder:false
+          orderNumber:r.orderNumber, status:r.status, addedToStockId:null, isPKCPreorder:false,
+          debugBodyTextSnippet: r.debugBodyTextSnippet || null
         });
       }
     } else if(r.status==="delivered"){

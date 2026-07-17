@@ -834,6 +834,18 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
 
   const result = { status, retailer, price, orderNumber, expectedDelivery, expectedDeliveryTime, carrier, trackingNumber, subject, date, fromEmail };
 
+  // Temporary diagnostic: when order-number extraction fails for what
+  // looks like a Pokémon Center email, attach a snippet of the ACTUAL
+  // bodyText this specific run processed — real data from the live
+  // pipeline, not a reconstruction of it. Every real email tested so far
+  // extracts correctly in isolation, so if this keeps happening, seeing
+  // the exact text that failed (rather than guessing what it might look
+  // like) is the fastest way to find whatever's actually different about
+  // it. Safe to remove once this is resolved.
+  if (!orderNumber && /pok[eé]mon\s*center|pokemoncenter/i.test(fromName + ' ' + fromEmail)) {
+    result.debugBodyTextSnippet = bodyText.slice(0, 600);
+  }
+
   if (status === 'ready_for_collection') {
     const codeMatch = bodyText.match(/\bcode\s*:?[\s\S]{0,10}?(\d{3,8})/i);
     result.pickupCode = codeMatch ? codeMatch[1] : null;
