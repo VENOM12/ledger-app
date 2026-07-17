@@ -1752,7 +1752,9 @@ function pkcResultsHTML(){
     <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px;">
       ${orderGroups.map(([orderKey, group])=>{
         const rep = group[0]; // representative item for order-level shared fields
-        const linkedOrder = state.pendingOrders.find(p=>group.some(g=>g.id===p.addedToStockId));
+        const linkedOrder = rep.orderNumber
+          ? state.pendingOrders.find(p=>p.orderNumber===rep.orderNumber)
+          : state.pendingOrders.find(p=>group.some(g=>g.id===p.addedToStockId));
         const cancelled = group.every(g=>g.isCancelled);
         const needsAttention = group.some(g=>g.needsAttention);
         const expanded = pkcExpandedIds.has(orderKey);
@@ -3074,7 +3076,7 @@ function emailConnectedHTML(){
                 <td class="mono">${p.netAmount!=null ? fmtMoney(p.netAmount) : "—"}</td>
                 <td style="text-align:right;display:flex;gap:6px;justify-content:flex-end;">
                   <button class="btn-small" data-match-sale="${p.id}">Match to Item</button>
-                  <button class="icon-btn" data-remove-sale="${p.id}">${ICONS.close}</button>
+                  <button class="icon-btn" data-remove-sale="${p.id}" title="Delete this detected sale — use this for duplicates or anything detected by mistake">${ICONS.trash}</button>
                 </td>
               </tr>
             `).join("")}
