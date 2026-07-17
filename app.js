@@ -4029,6 +4029,16 @@ function mergeSyncResults(results){
           });
           if(relatedItems.length) addedCount++;
         }
+      } else if(existing && existing.status==="delivered" && (!existing.addedToStockId || !state.items.find(i=>i.id===existing.addedToStockId))){
+        // Already delivered, but its stock link is missing or broken —
+        // most likely the linked stock item was deleted directly (e.g.
+        // during cleanup) without also clearing this reference, silently
+        // orphaning the order from ever having stock again, since the
+        // status-transition check above only fires once, on the initial
+        // delivered transition, not on every re-sync afterward.
+        const item = createStockItemFromOrder(existing);
+        existing.addedToStockId = item.id;
+        addedCount++;
       } else if(!existing){
         const orderDate = (r.date||new Date().toISOString()).slice(0,10);
         const stub = { retailer:r.retailer, price:r.price, orderDate };
