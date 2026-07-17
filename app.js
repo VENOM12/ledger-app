@@ -3865,7 +3865,17 @@ function mergeSyncResults(results){
       return;
     }
 
-    const key = r.orderNumber ? ("num:"+r.orderNumber) : ("guess:"+r.retailer.toLowerCase()+"|"+(r.price||0));
+    // Confirmed directly against a real case: when order-number
+    // extraction genuinely fails, this fallback key was retailer+price
+    // alone — meaning any two emails from the same retailer that BOTH
+    // lack a price too (common for shipping-stage notifications, which
+    // don't usually restate the price) would collide into the exact same
+    // key and silently overwrite each other instead of getting their own
+    // entries. Adding the email's own date narrows this significantly —
+    // still not a perfect guarantee, but a real reduction, and this path
+    // should be rare now that order-number extraction handles every
+    // wording tested against real emails so far.
+    const key = r.orderNumber ? ("num:"+r.orderNumber) : ("guess:"+r.retailer.toLowerCase()+"|"+(r.price||0)+"|"+(r.date||"").slice(0,10));
     let existing = state.pendingOrders.find(p=>p.matchKey===key);
 
     // Pokémon Center preorder confirmations get pulled out of the regular
