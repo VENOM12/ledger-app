@@ -355,14 +355,18 @@ ipcMain.handle('email:removeAccount', (evt, { id }) => {
   return { ok };
 });
 
-// Clears the "already looked at this" tracking without touching anything
-// else (password, catch-all domains, etc.) — lets a previously-missed
-// email get a genuine second chance on the next sync, e.g. one that a
-// since-fixed classification bug had permanently blacklisted before the
-// fix existed. The 24-hour minimum lookback window means this only
-// re-examines roughly the last day's mail, not the whole inbox history.
+// Clears the "already looked at this" tracking AND the last-synced
+// timestamp — not just dedup, but also the search window itself. Dedup
+// alone only re-examines the rolling 24-hour minimum window, which won't
+// reach an email that arrived longer ago than that and was missed by a
+// since-fixed bug (e.g. a "shipped" email that got misclassified weeks
+// ago, before a detection fix existed). Resetting lastSyncISO too makes
+// the next sync fall back to the full 90-day default search instead,
+// giving genuinely old, previously-missed mail a real chance — this is
+// the same button every user already has, not a one-off fix for any
+// single account.
 ipcMain.handle('email:resetTracking', (evt, { id }) => {
-  const ok = patchAccountById(id, { processedMessageIds: [] });
+  const ok = patchAccountById(id, { processedMessageIds: [], lastSyncISO: null });
   return { ok };
 });
 
@@ -382,7 +386,7 @@ async function syncOneAccount(acc, { blockPromotions, excludeList, rules }) {
   const results = [];
   const expenseResults = [];
   const newlySeenIds = [];
-  const KEYWORDS = /(order|shipped|shipment|delivered|delivery|tracking|confirmation|receipt|out for delivery|sold|sale|payout|paid|payment received)/i;
+  const KEYWORDS = /(order|shipped|shipment|delivered|delivery|arriv|tracking|confirmation|receipt|out for delivery|sold|sale|payout|paid|payment received)/i;
 
   try {
     await client.connect();
@@ -696,7 +700,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // Same tracker-widget issue as delivered above — Amazon's confirmation
   // emails include a static "Out for delivery" stage label regardless of
   // the order's real status, so this needs fuller phrasing to trigger.
-  else if (/(?:is out for delivery|out for delivery today|now out for delivery)/i.test(hay)) status = 'out_for_delivery';
+  else if (/(?:is out for delivery|out for delivery today|now out for delivery|will arrive soon|package will arrive|arriving today|arrives today)/i.test(hay)) status = 'out_for_delivery';
   else if (/shipped|on its way|tracking number|has shipped/.test(hay)) status = 'shipped';
   // Real order confirmations often say "Thanks for your order" rather than
   // the "Thank you for your order" this used to require exactly.

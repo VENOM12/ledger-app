@@ -59,6 +59,8 @@ function loadState(){
       if(!parsed.colorScheme || !THEMES[parsed.colorScheme]) parsed.colorScheme = "violet";
       migratePkcMultiItemOrders(parsed);
       migratePkcRetailerNaming(parsed);
+      migratePkcOrderToEmail(parsed);
+      migrateManualOrderMatchKeys(parsed);
       return parsed;
     }
   }catch(e){ console.warn("Could not read saved data", e); }
@@ -133,6 +135,43 @@ function migratePkcRetailerNaming(parsed){
       }
     });
   }
+}
+
+// Manually-added orders with an order number were being given a random
+// matchKey instead of the same "num:<orderNumber>" format email
+// detection uses — meaning a later status-update email for that exact
+// order (shipped, out for delivery, etc.) could never find it, and would
+// create a duplicate entry instead of updating the existing one. Fixed at
+// the source for new manual entries; this repairs anyone's existing ones.
+function migrateManualOrderMatchKeys(parsed){
+  if(!Array.isArray(parsed.pendingOrders)) return;
+  parsed.pendingOrders.forEach(p=>{
+    if(p.matchKey && p.matchKey.indexOf("manual:")===0 && p.orderNumber){
+      p.matchKey = "num:"+p.orderNumber;
+    }
+  });
+}
+
+// A PKC order's pendingOrders entry never stored the "sent to" address
+// until now — needed so a shipped/delivered email that uses a different
+// order-number format than the original confirmation (a different email
+// template for that stage) can still be matched back to the right order
+// by recipient address instead of silently creating a disconnected new
+// entry. Confirmed directly against a real export: all 17 PKC orders
+// were permanently stuck on "confirmed" despite genuinely having
+// shipped. Without this backfill, that fallback would only help orders
+// confirmed after upgrading — existing ones already have the address
+// stored on their linked stock item's sentToEmail, just not copied over
+// to the order record itself, so this recovers it from there.
+function migratePkcOrderToEmail(parsed){
+  if(!Array.isArray(parsed.pendingOrders) || !Array.isArray(parsed.items)) return;
+  parsed.pendingOrders.forEach(p=>{
+    if(p.isPKCPreorder && !p.toEmail){
+      const linkedItem = parsed.items.find(i=>i.id===p.addedToStockId) ||
+        (p.orderNumber ? parsed.items.find(i=>i.orderNumber===p.orderNumber && i.sentToEmail) : null);
+      if(linkedItem && linkedItem.sentToEmail) p.toEmail = linkedItem.sentToEmail;
+    }
+  });
 }
 
 function saveState(){
@@ -1479,15 +1518,21 @@ function renderAddOrderModal(){
   document.getElementById("saveAddOrderBtn").addEventListener("click", ()=>{
     const retailer = f.retailer.trim();
     const price = f.price.trim() ? parseFloat(f.price) : null;
+    const orderNumber = f.orderNumber.trim() || null;
     if(!retailer){ showToast("Enter a retailer", "close"); return; }
     if(f.price.trim() && (isNaN(price) || price<0)){ showToast("Enter a valid price", "close"); return; }
 
+    // Matches the same key format email-detected orders use whenever an
+    // order number is given — otherwise a manually-added order can never
+    // be found and updated by a later status-change email for that same
+    // order (shipped, out for delivery, etc.), and would end up creating
+    // a duplicate entry instead of updating this one.
     const order = {
-      id: uid(), matchKey: "manual:"+uid(), retailer, price,
+      id: uid(), matchKey: orderNumber ? ("num:"+orderNumber) : ("manual:"+uid()), retailer, price,
       fromEmail: null, orderDate: f.orderDate || todayISO(),
       expectedDelivery: f.expectedDelivery || null, expectedDeliveryTime: null,
       carrier: f.carrier.trim() || null, trackingNumber: f.trackingNumber.trim() || null,
-      orderNumber: f.orderNumber.trim() || null, status: f.status, addedToStockId: null, isPKCPreorder: false
+      orderNumber, status: f.status, addedToStockId: null, isPKCPreorder: false
     };
 
     if(f.status==="delivered"){
@@ -1588,7 +1633,7 @@ function bindAllOrdersResultEvents(){
       e.preventDefault();
       e.stopPropagation();
       const trackingNumber = el.dataset.trackRoyalmail;
-      if(window.shellAPI) window.shellAPI.openExternal(`https://www.royalmail.com/track-your-item#/${encodeURIComponent(trackingNumber)}`);
+      if(window.shellAPI) window.shellAPI.openExternal(`https://www3.royalmail.com/track-your-item#/tracking-results/${encodeURIComponent(trackingNumber)}`);
     });
   });
   document.querySelectorAll("[data-block]").forEach(btn=>{
@@ -1895,7 +1940,7 @@ function bindPkcResultEvents(){
     el.addEventListener("click", (e)=>{
       e.preventDefault();
       const trackingNumber = el.dataset.trackRoyalmail;
-      if(window.shellAPI) window.shellAPI.openExternal(`https://www.royalmail.com/track-your-item#/${encodeURIComponent(trackingNumber)}`);
+      if(window.shellAPI) window.shellAPI.openExternal(`https://www3.royalmail.com/track-your-item#/tracking-results/${encodeURIComponent(trackingNumber)}`);
     });
   });
   document.querySelectorAll("[data-open]").forEach(el=>{
@@ -2007,11 +2052,17 @@ function renderAddPkcPreorderModal(){
       isCancelled: false, image: null, sales: []
     };
     state.items.unshift(item);
+    // Same fix as manually-added regular orders — matches the same key
+    // format email detection uses whenever an order number is given, so a
+    // later status-change email for this order (shipped, out for
+    // delivery, cancelled) finds and updates this entry instead of
+    // creating a duplicate.
+    const orderNumber = f.orderNumber.trim() || null;
     state.pendingOrders.unshift({
-      id: uid(), matchKey: "manual:"+item.id, retailer: "Pokemon Center", price,
+      id: uid(), matchKey: orderNumber ? ("num:"+orderNumber) : ("manual:"+item.id), retailer: "Pokemon Center", price,
       fromEmail: null, orderDate: f.orderDate || todayISO(),
       expectedDelivery: f.expectedArrival || null, expectedDeliveryTime: null,
-      carrier: null, trackingNumber: null, orderNumber: f.orderNumber.trim() || null,
+      carrier: null, trackingNumber: null, orderNumber,
       status: "confirmed", addedToStockId: item.id, isPKCPreorder: true
     });
     saveState();
@@ -2992,7 +3043,7 @@ function emailConnectFormHTML(){
 function accountBannerHTML(acc){
   const isEditingThis = emailUI.editingCatchAllAccountId === acc.id;
   return `
-    <div class="card" style="margin-bottom:14px;padding:18px 20px;">
+    <div class="card" style="margin-bottom:10px;padding:14px 16px;">
       <div class="account-banner" style="border:none;padding:0;">
         <div class="who">
           <div class="account-avatar">${ICONS.mail}</div>
@@ -3002,12 +3053,12 @@ function accountBannerHTML(acc){
           </div>
         </div>
         <div style="display:flex;gap:8px;">
-          <button class="btn-small" data-reset-tracking="${acc.id}" title="Forces the next sync to look at every email again within the search window — useful after a detection fix, so an email that was previously missed gets a fresh look.">Re-scan Recent Mail</button>
+          <button class="btn-small" data-reset-tracking="${acc.id}" title="Does a full re-scan of the last 90 days, not just recent mail — useful after a detection fix, so an older email that was previously missed gets a genuine fresh look. Can take a bit longer than a normal sync.">Full Re-scan</button>
           <button class="btn-small" data-remove-account="${acc.id}" style="border-color:var(--red);color:var(--red);">Remove</button>
         </div>
       </div>
 
-      <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border-soft);">
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border-soft);">
         <div class="hint" style="font-weight:700;color:var(--text);margin-bottom:8px;">Catch-All Domains</div>
         ${isEditingThis ? `
           <div class="chip-list" id="editCatchAllChips" style="margin-bottom:10px;">
@@ -3203,7 +3254,7 @@ function attachEmailEvents(){
         btn.disabled = true;
         btn.textContent = "Resetting…";
         await window.emailAPI.resetTracking(id);
-        showToast("Tracking reset — next sync will look at recent mail fresh");
+        showToast("Running a full 90-day re-scan — this can take a little longer than usual");
         await syncNow(false);
       });
     });
@@ -3785,6 +3836,7 @@ function mergeSyncResults(results){
           orderDate:(r.date||new Date().toISOString()).slice(0,10),
           expectedDelivery:r.expectedDelivery, expectedDeliveryTime:r.expectedDeliveryTime||null,
           carrier:r.carrier||null, trackingNumber:r.trackingNumber||null,
+          toEmail:r.toEmail||null,
           orderNumber:r.orderNumber, status:"confirmed", addedToStockId:item.id, isPKCPreorder:true
         });
         addedCount++;
@@ -3804,6 +3856,22 @@ function mergeSyncResults(results){
         });
       }
     } else if(r.status==="shipped" || r.status==="out_for_delivery" || r.status==="ready_for_collection"){
+      // A PKC shipped/dispatch email can use a different template than
+      // the original confirmation — if it doesn't format the order number
+      // the same way (or omits it), matching by orderNumber alone fails
+      // and this used to fall straight through to creating a disconnected
+      // new entry, orphaned from the original PKC order and its stock
+      // items entirely. Confirmed directly against a real export: all 17
+      // PKC orders were stuck on "confirmed" status despite genuinely
+      // having shipped, while regular (non-PKC) orders matched fine —
+      // pointing at exactly this gap. The "sent to" address is a reliable
+      // fallback specifically for PKC orders, which typically use a
+      // unique per-order alias, so it stays consistent across that
+      // order's whole email thread even when the order-number text
+      // doesn't.
+      if(!existing && r.toEmail){
+        existing = state.pendingOrders.find(p=>p.isPKCPreorder && p.toEmail && p.toEmail.toLowerCase()===r.toEmail.toLowerCase() && p.status!=="delivered" && p.status!=="cancelled");
+      }
       if(existing && existing.status!=="delivered" && existing.status!=="cancelled" && statusRank(r.status) > statusRank(existing.status)){
         existing.status = r.status;
         if(r.expectedDelivery) existing.expectedDelivery = r.expectedDelivery;
@@ -3825,6 +3893,9 @@ function mergeSyncResults(results){
         });
       }
     } else if(r.status==="delivered"){
+      if(!existing && r.toEmail){
+        existing = state.pendingOrders.find(p=>p.isPKCPreorder && p.toEmail && p.toEmail.toLowerCase()===r.toEmail.toLowerCase() && p.status!=="delivered" && p.status!=="cancelled");
+      }
       if(existing && existing.status!=="delivered" && existing.status!=="cancelled"){
         existing.status = "delivered";
         existing.actionDeadline = null;
@@ -4119,9 +4190,9 @@ function openSettings(){
           </div>
           <div class="hint">This only changes how numbers are formatted — enter all your prices in this same currency; Restock doesn't convert between currencies.</div>
 
-          <div style="height:24px;"></div>
-          <div class="panel-title" style="margin-bottom:10px;">Color Theme</div>
-          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <div style="height:14px;"></div>
+          <div class="panel-title" style="margin-bottom:8px;">Color Theme</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;">
             ${Object.entries(THEMES).map(([key,t])=>`
               <button class="theme-swatch-btn ${state.colorScheme===key?'active':''}" data-theme="${key}" title="${t.name}">
                 <span class="theme-swatch" style="background:linear-gradient(135deg,${t.violet},${t.magenta});"></span>
@@ -4130,12 +4201,12 @@ function openSettings(){
             `).join("")}
           </div>
 
-          <div style="height:20px;"></div>
-          <div class="panel-title" style="margin-bottom:10px;">Email Sync</div>
+          <div style="height:14px;"></div>
+          <div class="panel-title" style="margin-bottom:8px;">Email Sync</div>
           ${emailSyncHTML()}
 
-          <div style="height:20px;"></div>
-          <div class="panel-title" style="margin-bottom:10px;">Updates</div>
+          <div style="height:14px;"></div>
+          <div class="panel-title" style="margin-bottom:8px;">Updates</div>
           <div class="hint" id="updateStatusText" style="margin-bottom:10px;">${updateStatusMessage()}</div>
           <div class="settings-row">
             <button class="btn-small" id="checkUpdateBtn">${ICONS.refresh} Check for Updates</button>
