@@ -58,6 +58,7 @@ function loadState(){
       if(!Array.isArray(parsed.expenseRules)) parsed.expenseRules = [];
       if(!parsed.colorScheme || !THEMES[parsed.colorScheme]) parsed.colorScheme = "violet";
       migratePkcMultiItemOrders(parsed);
+      migratePkcRetailerNaming(parsed);
       return parsed;
     }
   }catch(e){ console.warn("Could not read saved data", e); }
@@ -103,6 +104,34 @@ function migratePkcMultiItemOrders(parsed){
   if(toAdd.length){
     parsed.items.push(...toAdd);
     parsed.__pkcBackfillCount = (parsed.__pkcBackfillCount || 0) + toAdd.length;
+  }
+}
+
+// Same underlying issue as the multi-item migration above, but for a
+// different bug: orders' retailer name came directly from the email's own
+// "From" name verbatim (e.g. "Pokémon Center" with the accent, exactly
+// how their emails write it), while stock items always used a hardcoded,
+// consistent "Pokemon Center" — so the two could never match each other
+// by retailer name, breaking anything that needed to look up an order's
+// details from its linked stock item (like the tracking number link).
+// This is now fixed at the source for anything detected going forward;
+// this migration repairs whatever's already stored, for every user who
+// has this installed, not just one export — matches by pattern (any
+// accent, any capitalization) rather than a specific known-bad string.
+function migratePkcRetailerNaming(parsed){
+  if(!Array.isArray(parsed.pendingOrders)) return;
+  const pokemonCenterPattern = /^pok[eé]mon\s*center$/i;
+  parsed.pendingOrders.forEach(p=>{
+    if(p.retailer && pokemonCenterPattern.test(p.retailer) && p.retailer !== "Pokemon Center"){
+      p.retailer = "Pokemon Center";
+    }
+  });
+  if(Array.isArray(parsed.items)){
+    parsed.items.forEach(i=>{
+      if(i.retailer && pokemonCenterPattern.test(i.retailer) && i.retailer !== "Pokemon Center"){
+        i.retailer = "Pokemon Center";
+      }
+    });
   }
 }
 
@@ -1350,7 +1379,7 @@ function allOrdersResultsHTML(){
               </td>
               <td class="mono dim">${p.orderNumber ? escapeHTML(p.orderNumber) : "—"}</td>
               <td class="mono dim">${p.orderDate ? formatDate(p.orderDate) : "—"}</td>
-              <td class="dim" style="font-size:12px;">${p.carrier || p.trackingNumber ? `${p.carrier?escapeHTML(p.carrier):"Carrier unknown"}${p.trackingNumber?" · "+escapeHTML(p.trackingNumber):""}` : "—"}</td>
+              <td class="dim" style="font-size:12px;">${p.carrier || p.trackingNumber ? `${p.carrier?escapeHTML(p.carrier):"Carrier unknown"}${p.trackingNumber ? " · " + (p.retailer==="Pokemon Center" ? `<a href="#" data-track-royalmail="${escapeAttr(p.trackingNumber)}" style="color:var(--violet);text-decoration:underline;">${escapeHTML(p.trackingNumber)}</a>` : escapeHTML(p.trackingNumber)) : ""}` : "—"}</td>
               <td class="mono dim" style="font-size:12px;">${p.expectedDelivery ? formatDate(p.expectedDelivery) : "—"}${p.expectedDeliveryTime ? `<br>${escapeHTML(p.expectedDeliveryTime)}` : ""}</td>
               <td class="mono">${p.price!==null && p.price!==undefined ? fmtMoney(p.price) : "—"}</td>
               <td style="text-align:right;">
@@ -1550,8 +1579,16 @@ function attachAllOrdersEvents(){
 function bindAllOrdersResultEvents(){
   document.querySelectorAll("[data-open-order]").forEach(row=>{
     row.addEventListener("click", (e)=>{
-      if(e.target.closest("button")) return; // let the row's own buttons handle their own clicks
+      if(e.target.closest("button, a")) return; // let the row's own buttons/links handle their own clicks
       orderDetailModal(row.dataset.openOrder);
+    });
+  });
+  document.querySelectorAll("[data-track-royalmail]").forEach(el=>{
+    el.addEventListener("click", (e)=>{
+      e.preventDefault();
+      e.stopPropagation();
+      const trackingNumber = el.dataset.trackRoyalmail;
+      if(window.shellAPI) window.shellAPI.openExternal(`https://www.royalmail.com/track-your-item#/${encodeURIComponent(trackingNumber)}`);
     });
   });
   document.querySelectorAll("[data-block]").forEach(btn=>{
@@ -3009,6 +3046,31 @@ function emailConnectedHTML(){
 
     ${emailUI.accounts.map(acc => accountBannerHTML(acc)).join("")}
 
+    <div class="section-title" style="margin-top:4px;">Detected Sales</div>
+    ${state.pendingSales.length===0 ? `
+      <div class="card pending-empty">No sale emails detected yet (eBay "item sold" / payout notifications, etc.).</div>
+    ` : `
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        ${state.pendingSales.slice().sort((a,b)=>new Date(b.saleDate)-new Date(a.saleDate)).map(p=>`
+          <div class="card" style="padding:8px 10px 8px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
+            <div style="min-width:0;flex:1;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+              <span style="font-weight:600;">${escapeHTML(p.platform||"Unknown")}</span>
+              <span class="mono dim">${p.netAmount!=null ? fmtMoney(p.netAmount) : "—"}</span>
+              <span class="hint" style="margin:0;">· ${formatDate(p.saleDate)} · Qty ${p.quantitySold || "—"}${p.productNameHint ? ` · ${escapeHTML(p.productNameHint)}` : ""}</span>
+            </div>
+            <div style="display:flex;gap:4px;flex-shrink:0;">
+              <button class="btn-small" data-match-sale="${p.id}" style="padding:5px 10px;font-size:12px;">Match to Item</button>
+              <button class="icon-btn" data-remove-sale="${p.id}" title="Delete this detected sale — use this for duplicates or anything detected by mistake">${ICONS.trash}</button>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+      <div class="hint" style="margin-top:8px;">
+        Click "Match to Item" to pick which of your items it was — when a likely name was found in the email, it's suggested first.
+      </div>
+    `}
+    <div style="height:20px;"></div>
+
     <div class="card panel" style="margin-bottom:20px;">
       <div class="panel-title" style="margin-bottom:6px;">Expense Email Rules</div>
       <div class="hint" style="margin-bottom:12px;">Emails from these senders are tracked as expenses (proxies, bots, shipping supplies, etc.) — never as orders. Add the sender's email or domain and pick which tag it should get.</div>
@@ -3058,37 +3120,6 @@ function emailConnectedHTML(){
       <span>Detected orders live in the <strong style="color:var(--text);">Confirmed Orders</strong> tab (Pokémon Center preorders under its "PKC Preorders" sub-tab), tracked from placed through delivery.</span>
       <button class="btn-small" id="goToOrdersFromSettings">Go to Orders ${ICONS.chev}</button>
     </div>
-
-    <div class="section-title">Detected Sales</div>
-    ${state.pendingSales.length===0 ? `
-      <div class="card pending-empty">No sale emails detected yet (eBay "item sold" / payout notifications, etc.).</div>
-    ` : `
-      <div class="card table-wrap">
-        <table class="data-table">
-          <thead><tr><th>Platform</th><th>Likely Item</th><th>Date</th><th>Qty</th><th>Amount</th><th></th></tr></thead>
-          <tbody>
-            ${state.pendingSales.slice().sort((a,b)=>new Date(b.saleDate)-new Date(a.saleDate)).map(p=>`
-              <tr>
-                <td style="font-weight:600;">${escapeHTML(p.platform||"Unknown")}</td>
-                <td class="dim" style="font-size:12.5px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.productNameHint ? escapeHTML(p.productNameHint) : "—"}</td>
-                <td class="mono dim">${formatDate(p.saleDate)}</td>
-                <td class="mono dim">${p.quantitySold || "—"}</td>
-                <td class="mono">${p.netAmount!=null ? fmtMoney(p.netAmount) : "—"}</td>
-                <td style="text-align:right;display:flex;gap:6px;justify-content:flex-end;">
-                  <button class="btn-small" data-match-sale="${p.id}">Match to Item</button>
-                  <button class="icon-btn" data-remove-sale="${p.id}" title="Delete this detected sale — use this for duplicates or anything detected by mistake">${ICONS.trash}</button>
-                </td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      </div>
-      <div class="hint" style="margin-top:10px;">
-        Restock can tell a sale happened and roughly for how much, but can't tell which of your items
-        it was — click "Match to Item" to pick the right one and finish recording the sale. When a
-        likely item name was found in the email, it's suggested first.
-      </div>
-    `}
     <div style="height:20px;"></div>
   `;
 }

@@ -931,6 +931,20 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // them into PKC Orders instead of the regular Orders list.
   const isPokemonCenter = /pokemoncenter/i.test(fromEmail) || /pok[eé]mon\s*center/i.test(fromName);
   const isPreorderMention = /pre-?order/i.test(hay);
+  if (isPokemonCenter) {
+    // Normalized here regardless of status (confirmed, shipped, delivered,
+    // cancelled all reach this same point) — otherwise the retailer name
+    // stored on the order is whatever the email's own "From" name happens
+    // to say verbatim (e.g. "Pokémon Center" with the accent, exactly as
+    // Pokémon Center's own emails write it), while stock items always use
+    // a hardcoded, consistent "Pokemon Center" — meaning the two could
+    // never match each other by retailer name, for every single user,
+    // regardless of when their data was created. Confirmed directly
+    // against a real export: 27 real orders, all stored as "Pokémon
+    // Center" with the accent, none of them ever matching the unaccented
+    // string used everywhere else.
+    result.retailer = "Pokemon Center";
+  }
   if (isPokemonCenter && isPreorderMention && status === 'confirmed') {
     result.isPKCPreorder = true;
   }
