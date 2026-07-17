@@ -4096,23 +4096,74 @@ function createPKCPreorderItem(order){
 }
 
 function createStockItemFromOrder(order){
-  const item = {
-    id: uid(),
-    name: `Order from ${order.retailer} — tap to edit`,
-    category: "Other",
-    quantityPurchased: 1,
-    purchasePricePerUnit: order.price || 0,
-    retailer: order.retailer,
-    purchaseDate: order.orderDate || todayISO(),
-    notes: "Auto-added from email sync — please verify item name, quantity, and price.",
-    isPreorder: false,
-    expectedArrival: null,
-    isCancelled: false,
-    image: null,
-    sales: []
-  };
-  state.items.unshift(item);
-  return item;
+  const lines = (order.lineItems && order.lineItems.length) ? order.lineItems : null;
+
+  if(!lines){
+    // No itemized breakdown available (e.g. a retailer whose emails don't
+    // include one, or a manually-added order) — same placeholder fallback
+    // as before, just needs manual editing afterward.
+    const item = {
+      id: uid(),
+      name: `Order from ${order.retailer} — tap to edit`,
+      category: "Other",
+      quantityPurchased: 1,
+      purchasePricePerUnit: order.price || 0,
+      retailer: order.retailer,
+      purchaseDate: order.orderDate || todayISO(),
+      notes: "Auto-added from email sync — please verify item name, quantity, and price.",
+      isPreorder: false,
+      expectedArrival: null,
+      isCancelled: false,
+      image: null,
+      sales: []
+    };
+    state.items.unshift(item);
+    return item;
+  }
+
+  // One stock item per actual product — the order's own line items are
+  // already sitting right there with real names, quantities, and prices,
+  // so there's no reason to fall back to one generic "tap to edit"
+  // placeholder using just the order total, the same core issue behind
+  // the original PKC multi-item cost bug. Different orders can easily
+  // contain the same product though — reselling the same restock item
+  // multiple times over is completely normal — so this checks for an
+  // existing, not-yet-a-preorder stock item with the same name (exact
+  // match after normalizing case/whitespace/punctuation, not fuzzy —
+  // fuzzy matching here previously caused genuinely different products to
+  // silently merge) and retailer, and adds to it with a proper
+  // weighted-average cost instead of creating a duplicate every time.
+  const createdItems = [];
+  lines.forEach(line=>{
+    const normalizedName = normalizeForMatch(line.name);
+    const existingStock = state.items.find(i=>
+      !i.isPreorder && i.retailer===order.retailer && normalizeForMatch(i.name)===normalizedName
+    );
+    if(existingStock){
+      const oldQty = existingStock.quantityPurchased;
+      const oldPrice = existingStock.purchasePricePerUnit;
+      const newQty = line.quantity || 1;
+      const newPrice = line.price || 0;
+      const combinedQty = oldQty + newQty;
+      existingStock.quantityPurchased = combinedQty;
+      // Weighted average, not a straight overwrite — buying the same
+      // product again at a different price shouldn't blow away what the
+      // earlier units actually cost, which matters for accurate profit
+      // figures on whichever units end up sold.
+      existingStock.purchasePricePerUnit = combinedQty>0 ? ((oldQty*oldPrice)+(newQty*newPrice))/combinedQty : newPrice;
+      createdItems.push(existingStock);
+    } else {
+      const item = {
+        id: uid(), name: line.name, category: "Other", quantityPurchased: line.quantity || 1,
+        purchasePricePerUnit: line.price || 0, retailer: order.retailer, purchaseDate: order.orderDate || todayISO(),
+        notes: "Auto-added from email sync — please verify item name, quantity, and price.",
+        isPreorder: false, expectedArrival: null, isCancelled: false, image: null, sales: []
+      };
+      state.items.unshift(item);
+      createdItems.push(item);
+    }
+  });
+  return createdItems[0];
 }
 
 /* ============================================================
