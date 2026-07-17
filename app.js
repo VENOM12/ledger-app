@@ -3626,6 +3626,7 @@ async function connectEmailAccount(){
 async function syncNow(silent){
   if(!emailUI.accounts || emailUI.accounts.length===0 || emailUI.syncing) return;
   emailUI.syncing = true;
+  const syncStartedAt = Date.now();
   if(!silent) refreshSettingsIfOpen();
   try{
     const res = await window.emailAPI.sync({
@@ -3633,6 +3634,7 @@ async function syncNow(silent){
       excludedSenders: state.emailFilters.excludedSenders,
       expenseRules: state.expenseRules || []
     });
+    const elapsedSec = ((Date.now() - syncStartedAt) / 1000).toFixed(1);
     emailUI.syncing = false;
     if(!res.ok){
       if(!silent) showToast(res.error || "Sync failed", "close");
@@ -3656,7 +3658,7 @@ async function syncNow(silent){
       if(addedCount) extras.push(`${addedCount} added to stock`);
       if(cancelledCount) extras.push(`${cancelledCount} order${cancelledCount===1?"":"s"} cancelled`);
       if(newExpenseCount) extras.push(`${newExpenseCount} expense${newExpenseCount===1?"":"s"} tracked`);
-      showToast(`Synced — ${totalFound} email(s) found${extras.length ? `, ${extras.join(", ")}` : ""}`, cancelledCount ? "close" : "check");
+      showToast(`Synced in ${elapsedSec}s — ${totalFound} email(s) found${extras.length ? `, ${extras.join(", ")}` : ""}`, cancelledCount ? "close" : "check");
     }
   }catch(e){
     emailUI.syncing = false;
