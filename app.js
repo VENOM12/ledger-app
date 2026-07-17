@@ -1549,9 +1549,14 @@ function renderAddOrderModal(){
   });
 }
 
+let orderStatusEditing = null;
+
+const ALL_ORDER_STATUSES = ["confirmed", "action_required", "shipped", "out_for_delivery", "ready_for_collection", "delivered", "cancelled"];
+
 function orderDetailModal(orderId){
   const p = state.pendingOrders.find(o=>o.id===orderId);
   if(!p) return;
+  const editingStatus = orderStatusEditing === orderId;
   const root = document.getElementById("modalRoot");
   root.innerHTML = `
     <div class="modal-backdrop open" id="orderDetailBackdrop">
@@ -1561,7 +1566,18 @@ function orderDetailModal(orderId){
           <button class="icon-btn" id="closeOrderDetail">${ICONS.close}</button>
         </div>
         <div class="modal-body">
-          <div style="margin-bottom:14px;">${statusChip(p.status)}</div>
+          <div style="margin-bottom:14px;display:flex;align-items:center;gap:10px;">
+            ${editingStatus ? `
+              <select id="orderStatusEditSelect" style="width:auto;">
+                ${ALL_ORDER_STATUSES.map(s=>`<option value="${s}" ${p.status===s?"selected":""}>${statusLabel(s)}</option>`).join("")}
+              </select>
+              <button class="btn-small" id="saveOrderStatusBtn">Save</button>
+              <button class="btn-small" id="cancelOrderStatusBtn">Cancel</button>
+            ` : `
+              ${statusChip(p.status)}
+              <button class="btn-small" id="editOrderStatusBtn" title="Correct this manually if a detection issue set it wrong — for example, a bug (since fixed) that could apply one order's status update to a different order by mistake">Change Status</button>
+            `}
+          </div>
           <div class="card kv-card">
             ${kvRow("Order #", p.orderNumber ? escapeHTML(p.orderNumber) : "—")}
             ${kvRow("Order date", p.orderDate ? formatDate(p.orderDate) : "—")}
@@ -1594,13 +1610,36 @@ function orderDetailModal(orderId){
       </div>
     </div>
   `;
-  document.getElementById("closeOrderDetail").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
+  document.getElementById("closeOrderDetail").addEventListener("click", ()=>{ orderStatusEditing = null; document.getElementById("modalRoot").innerHTML=""; });
   const viewStockBtn = document.getElementById("orderDetailViewStock");
   if(viewStockBtn) viewStockBtn.addEventListener("click", ()=>{
     document.getElementById("modalRoot").innerHTML = "";
     ui.detailItemId = p.addedToStockId;
     render();
   });
+  const editBtn = document.getElementById("editOrderStatusBtn");
+  if(editBtn) editBtn.addEventListener("click", ()=>{ orderStatusEditing = orderId; orderDetailModal(orderId); });
+  const cancelBtn = document.getElementById("cancelOrderStatusBtn");
+  if(cancelBtn) cancelBtn.addEventListener("click", ()=>{ orderStatusEditing = null; orderDetailModal(orderId); });
+  const saveBtn = document.getElementById("saveOrderStatusBtn");
+  if(saveBtn) saveBtn.addEventListener("click", ()=>{
+    const newStatus = document.getElementById("orderStatusEditSelect").value;
+    p.status = newStatus;
+    orderStatusEditing = null;
+    saveState();
+    showToast(`Status updated to ${statusLabel(newStatus)}`);
+    orderDetailModal(orderId);
+    if(ui.tab==="orders") renderView();
+  });
+}
+
+function statusLabel(status){
+  const map = {
+    confirmed: "Order Placed", shipped: "Shipped", out_for_delivery: "Out for Delivery",
+    ready_for_collection: "Ready for Collection", delivered: "Delivered",
+    action_required: "Requires Attention", cancelled: "Cancelled"
+  };
+  return map[status] || status;
 }
 
 function attachAllOrdersEvents(){
@@ -3860,22 +3899,19 @@ function mergeSyncResults(results){
         });
       }
     } else if(r.status==="shipped" || r.status==="out_for_delivery" || r.status==="ready_for_collection"){
-      // A PKC shipped/dispatch email can use a different template than
-      // the original confirmation — if it doesn't format the order number
-      // the same way (or omits it), matching by orderNumber alone fails
-      // and this used to fall straight through to creating a disconnected
-      // new entry, orphaned from the original PKC order and its stock
-      // items entirely. Confirmed directly against a real export: all 17
-      // PKC orders were stuck on "confirmed" status despite genuinely
-      // having shipped, while regular (non-PKC) orders matched fine —
-      // pointing at exactly this gap. The "sent to" address is a reliable
-      // fallback specifically for PKC orders, which typically use a
-      // unique per-order alias, so it stays consistent across that
-      // order's whole email thread even when the order-number text
-      // doesn't.
-      if(!existing && r.toEmail){
-        existing = state.pendingOrders.find(p=>p.isPKCPreorder && p.toEmail && p.toEmail.toLowerCase()===r.toEmail.toLowerCase() && p.status!=="delivered" && p.status!=="cancelled");
-      }
+      // A fallback here that matched by "sent to" address alone (removed)
+      // turned out to be actively unsafe: its justification assumed PKC
+      // orders use a unique per-order alias, but confirmed directly
+      // against real data that's false — someone can easily have several
+      // simultaneous PKC preorders all sent to the exact same address,
+      // and matching by address alone means a status update for ONE of
+      // those orders can silently get applied to a completely different
+      // one instead. Order number matching alone has been reliable across
+      // every real email tested in this app, including confirmation and
+      // shipping-stage emails using the identical order-number format —
+      // so this only matches by order number now, same as everything
+      // else. A genuine mismatch falls through to creating a new entry
+      // below, which is far safer than corrupting the wrong order.
       if(existing && existing.status!=="delivered" && existing.status!=="cancelled" && statusRank(r.status) > statusRank(existing.status)){
         existing.status = r.status;
         if(r.expectedDelivery) existing.expectedDelivery = r.expectedDelivery;
@@ -3897,9 +3933,8 @@ function mergeSyncResults(results){
         });
       }
     } else if(r.status==="delivered"){
-      if(!existing && r.toEmail){
-        existing = state.pendingOrders.find(p=>p.isPKCPreorder && p.toEmail && p.toEmail.toLowerCase()===r.toEmail.toLowerCase() && p.status!=="delivered" && p.status!=="cancelled");
-      }
+      // Same removal as the shipped/out-for-delivery branch above — an
+      // address-only fallback here is equally unsafe for the same reason.
       if(existing && existing.status!=="delivered" && existing.status!=="cancelled"){
         existing.status = "delivered";
         existing.actionDeadline = null;
