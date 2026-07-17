@@ -356,17 +356,21 @@ ipcMain.handle('email:removeAccount', (evt, { id }) => {
 });
 
 // Clears the "already looked at this" tracking AND the last-synced
-// timestamp — not just dedup, but also the search window itself. Dedup
-// alone only re-examines the rolling 24-hour minimum window, which won't
-// reach an email that arrived longer ago than that and was missed by a
-// since-fixed bug (e.g. a "shipped" email that got misclassified weeks
-// ago, before a detection fix existed). Resetting lastSyncISO too makes
-// the next sync fall back to the full 90-day default search instead,
-// giving genuinely old, previously-missed mail a real chance — this is
-// the same button every user already has, not a one-off fix for any
-// single account.
+// timestamp, forcing the next sync to look back 48 hours regardless of
+// whether messages in that window were already marked seen — not just
+// new mail. A 90-day fallback (the previous behavior) is thorough but
+// slow; 48 hours is enough to catch a recent status-update email (shipped
+// → out for delivery → delivered) that arrived after a detection fix,
+// without re-scanning months of already-settled history every time. This
+// is the same button every user already has, not a one-off fix for any
+// single account. Re-processing an email that was already correctly
+// merged in is safe and won't create duplicates or extra sales — the
+// merge logic itself (matching by order number for orders, and by
+// sender+date+amount for sales) is what actually prevents duplicates, not
+// the "already seen" tracking this clears.
 ipcMain.handle('email:resetTracking', (evt, { id }) => {
-  const ok = patchAccountById(id, { processedMessageIds: [], lastSyncISO: null });
+  const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
+  const ok = patchAccountById(id, { processedMessageIds: [], lastSyncISO: fortyEightHoursAgo });
   return { ok };
 });
 
