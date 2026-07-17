@@ -1345,13 +1345,15 @@ function attachOrdersEvents(){
   }
 }
 
-// Groups the finer-grained underlying statuses into the four buckets
-// requested: a payment issue is still fundamentally a "not shipped yet"
-// order, and ready-for-collection/out-for-delivery are both "in transit"
-// the same way shipped is.
+// Groups the finer-grained underlying statuses into filter buckets: a
+// payment issue is still fundamentally a "not shipped yet" order, and
+// ready-for-collection stays grouped with Shipped as "in transit" — but
+// Out for Delivery gets its own distinct option, since it's a specific,
+// actionable stage someone would want to filter to directly.
 const ORDER_STATUS_GROUPS = {
   "Order Placed": ["confirmed", "action_required"],
-  "Shipped": ["shipped", "out_for_delivery", "ready_for_collection"],
+  "Shipped": ["shipped", "ready_for_collection"],
+  "Out for Delivery": ["out_for_delivery"],
   "Complete": ["delivered"],
   "Cancelled": ["cancelled"]
 };
@@ -3053,7 +3055,7 @@ function accountBannerHTML(acc){
           </div>
         </div>
         <div style="display:flex;gap:8px;">
-          <button class="btn-small" data-reset-tracking="${acc.id}" title="Does a full re-scan of the last 90 days, not just recent mail — useful after a detection fix, so an older email that was previously missed gets a genuine fresh look. Can take a bit longer than a normal sync.">Full Re-scan</button>
+          <button class="btn-small" data-reset-tracking="${acc.id}" title="Does a full re-scan of the last 48 hours, not just recent mail — useful after a detection fix, so an older email that was previously missed gets a genuine fresh look.">Full Re-scan</button>
           <button class="btn-small" data-remove-account="${acc.id}" style="border-color:var(--red);color:var(--red);">Remove</button>
         </div>
       </div>
@@ -3254,7 +3256,7 @@ function attachEmailEvents(){
         btn.disabled = true;
         btn.textContent = "Resetting…";
         await window.emailAPI.resetTracking(id);
-        showToast("Running a full 90-day re-scan — this can take a little longer than usual");
+        showToast("Running a full re-scan of the last 48 hours");
         await syncNow(false);
       });
     });

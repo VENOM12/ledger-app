@@ -437,24 +437,49 @@ async function syncOneAccount(acc, { blockPromotions, excludeList, rules }) {
       const capped = baseUids.slice(-300);
       const uidsToInspect = new Set([...capped, ...forceProcess]);
 
+      // Bulk-fetch envelopes for every candidate UID in one IMAP
+      // operation instead of one individual round-trip per email — with
+      // a lot of mail in the sync window (confirmed directly: an account
+      // with ~700 emails in a 48-hour window), doing this one at a time
+      // was the actual bottleneck behind "syncing takes a long time",
+      // since each individual fetchOne() is a full network round-trip on
+      // its own. client.fetch() streams results back over a single
+      // connection instead.
+      const envelopeByUid = new Map();
+      try {
+        for await (const msg of client.fetch(uidsToInspect, { envelope: true })) {
+          if (msg && msg.envelope) envelopeByUid.set(msg.uid, msg.envelope);
+        }
+      } catch (e) {
+        // Fall back to nothing fetched rather than crash the whole sync —
+        // envelopeByUid staying empty just means this pass finds nothing,
+        // same as before, not a hard failure.
+      }
+
+      // Same filtering logic as before (seen-check, subject keywords),
+      // just applied to the bulk-fetched envelopes instead of one fetched
+      // at a time — determines which UIDs are actually worth fetching the
+      // full body for.
+      const uidsNeedingFullFetch = [];
       for (const uid of uidsToInspect) {
-        let envMsg;
-        try { envMsg = await client.fetchOne(uid, { envelope: true }); } catch (e) { continue; }
-        if (!envMsg || !envMsg.envelope) continue;
-
-        // Cheapest possible skip: the envelope fetch alone tells us the
-        // message's stable, globally-unique Message-ID — no need to fetch
-        // and parse the full body again for something we've already seen.
-        const messageId = envMsg.envelope.messageId || null;
+        const envelope = envelopeByUid.get(uid);
+        if (!envelope) continue;
+        const messageId = envelope.messageId || null;
         if (messageId && seenMessageIds.has(messageId)) continue;
-
-        const subject = envMsg.envelope.subject || '';
+        const subject = envelope.subject || '';
         const subjectMatches = KEYWORDS.test(subject);
         if (!subjectMatches && !forceProcess.has(uid)) continue;
+        uidsNeedingFullFetch.push(uid);
+      }
 
-        let full;
-        try { full = await client.fetchOne(uid, { source: true }); } catch (e) { continue; }
+      if (uidsNeedingFullFetch.length) {
+      for await (const full of client.fetch(uidsNeedingFullFetch, { source: true })) {
         if (!full || !full.source) continue;
+        const uid = full.uid;
+        const envMsg = { envelope: envelopeByUid.get(uid) };
+        if (!envMsg.envelope) continue;
+        const messageId = envMsg.envelope.messageId || null;
+        const subject = envMsg.envelope.subject || '';
 
         let parsed;
         try { parsed = await simpleParser(full.source); } catch (e) { continue; }
@@ -525,6 +550,7 @@ async function syncOneAccount(acc, { blockPromotions, excludeList, rules }) {
         // the moment it was parsed, regardless of whether classification
         // actually succeeded, so a since-fixed bug in classifyEmail could
         // never get a second chance at the same email.
+      }
       }
     } finally {
       lock.release();
