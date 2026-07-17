@@ -477,7 +477,15 @@ async function syncOneAccount(acc, { blockPromotions, excludeList, rules }) {
         // both matched the promotional-content filter, despite the
         // visible email having nothing promotional in it at all. Stripped
         // here as a safety net specifically for the html fallback path.
-        const bodyText = parsed.text ? parsed.text.toString() : stripHtmlToText(parsed.html || '');
+        // Confirmed directly against real data: a real Pokémon Center
+        // email's text/plain part parsed to just "\n" — whitespace, but
+        // still truthy in JavaScript, so `parsed.text ? ... : ...` was
+        // using that near-empty text directly and never falling back to
+        // the HTML at all, silently losing every bit of actual content
+        // (including the order number) despite the HTML being perfectly
+        // parseable. Checking for meaningfully non-empty text instead of
+        // just truthy fixes this.
+        const bodyText = (parsed.text && parsed.text.toString().trim().length > 0) ? parsed.text.toString() : stripHtmlToText(parsed.html || '');
 
         // Expense-rule match takes priority over everything else — these
         // are never orders, only expenses, regardless of what the email
@@ -833,18 +841,6 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   const trackingNumber = trackingMatch ? trackingMatch[1] : null;
 
   const result = { status, retailer, price, orderNumber, expectedDelivery, expectedDeliveryTime, carrier, trackingNumber, subject, date, fromEmail };
-
-  // Temporary diagnostic: when order-number extraction fails for what
-  // looks like a Pokémon Center email, attach a snippet of the ACTUAL
-  // bodyText this specific run processed — real data from the live
-  // pipeline, not a reconstruction of it. Every real email tested so far
-  // extracts correctly in isolation, so if this keeps happening, seeing
-  // the exact text that failed (rather than guessing what it might look
-  // like) is the fastest way to find whatever's actually different about
-  // it. Safe to remove once this is resolved.
-  if (!orderNumber && /pok[eé]mon\s*center|pokemoncenter/i.test(fromName + ' ' + fromEmail)) {
-    result.debugBodyTextSnippet = bodyText.slice(0, 600);
-  }
 
   if (status === 'ready_for_collection') {
     const codeMatch = bodyText.match(/\bcode\s*:?[\s\S]{0,10}?(\d{3,8})/i);

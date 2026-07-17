@@ -61,6 +61,7 @@ function loadState(){
       migratePkcRetailerNaming(parsed);
       migratePkcOrderToEmail(parsed);
       migrateManualOrderMatchKeys(parsed);
+      migratePkcPhantomOrders(parsed);
       return parsed;
     }
   }catch(e){ console.warn("Could not read saved data", e); }
@@ -149,6 +150,30 @@ function migrateManualOrderMatchKeys(parsed){
     if(p.matchKey && p.matchKey.indexOf("manual:")===0 && p.orderNumber){
       p.matchKey = "num:"+p.orderNumber;
     }
+  });
+}
+
+// Root cause found and fixed: mailparser's parsed.text came back as
+// whitespace-only (confirmed directly: a real one was literally just a
+// newline character) for these emails, not truly empty — which is
+// truthy in JavaScript, so the code was using that near-blank text
+// directly and never falling back to the HTML content, silently losing
+// the order number despite the email having one. This created a
+// "guess:"-keyed phantom order instead of matching the real one. Now
+// that the actual cause is confirmed, this cleans up any phantoms it
+// already created — a Pokémon Center order with no order number is
+// removed if another entry shares its exact "sent to" address and does
+// have a real order number, since that combination reliably identifies
+// this specific bug's leftover artifact rather than a legitimate order.
+function migratePkcPhantomOrders(parsed){
+  if(!Array.isArray(parsed.pendingOrders)) return;
+  parsed.pendingOrders = parsed.pendingOrders.filter(p=>{
+    const isPhantom = p.retailer==="Pokemon Center" && !p.orderNumber && p.matchKey && p.matchKey.indexOf("guess:")===0;
+    if(!isPhantom) return true;
+    const hasRealMatch = p.toEmail && parsed.pendingOrders.some(other=>
+      other!==p && other.retailer==="Pokemon Center" && other.orderNumber && other.toEmail===p.toEmail
+    );
+    return !hasRealMatch; // keep (return true) unless it's a confirmed phantom
   });
 }
 
@@ -3939,8 +3964,7 @@ function mergeSyncResults(results){
           expectedDelivery:r.expectedDelivery, expectedDeliveryTime:r.expectedDeliveryTime||null,
           carrier:r.carrier||null, trackingNumber:r.trackingNumber||null, pickupCode:r.pickupCode||null,
           toEmail:r.toEmail||null, deliveryAddress:r.deliveryAddress||null, recipientName:r.recipientName||null, lineItems:r.lineItems||[],
-          orderNumber:r.orderNumber, status:r.status, addedToStockId:null, isPKCPreorder:false,
-          debugBodyTextSnippet: r.debugBodyTextSnippet || null
+          orderNumber:r.orderNumber, status:r.status, addedToStockId:null, isPKCPreorder:false
         });
       }
     } else if(r.status==="delivered"){
