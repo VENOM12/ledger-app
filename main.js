@@ -638,13 +638,19 @@ ipcMain.handle('invoice:exportPdf', async (evt, { html, suggestedName }) => {
   });
   if (canceled || !filePath) return { ok: false, cancelled: true };
 
-  const pdfWindow = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
+  // Deliberately NOT offscreen — that combination has known
+  // compatibility problems with printToPDF specifically (well-documented
+  // in the Electron community: blank or failed PDFs). A plain hidden
+  // window works reliably for this. Margins are handled by the
+  // template's own CSS padding instead of the printToPDF margins option,
+  // since that option's exact expected format has changed across
+  // Electron versions and getting it wrong risks the whole call failing.
+  const pdfWindow = new BrowserWindow({ show: false });
   try {
     await pdfWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
     const pdfBuffer = await pdfWindow.webContents.printToPDF({
       printBackground: true,
-      pageSize: 'A4',
-      margins: { top: 0, bottom: 0, left: 0, right: 0 }
+      pageSize: 'A4'
     });
     fs.writeFileSync(filePath, pdfBuffer);
     return { ok: true, filePath };
@@ -659,13 +665,12 @@ ipcMain.handle('invoice:exportPdf', async (evt, { html, suggestedName }) => {
 // attach directly to an outgoing email instead of writing it to a
 // user-chosen location — used by the "send by email" flow.
 async function renderInvoicePdfBuffer(html) {
-  const pdfWindow = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
+  const pdfWindow = new BrowserWindow({ show: false });
   try {
     await pdfWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
     return await pdfWindow.webContents.printToPDF({
       printBackground: true,
-      pageSize: 'A4',
-      margins: { top: 0, bottom: 0, left: 0, right: 0 }
+      pageSize: 'A4'
     });
   } finally {
     pdfWindow.destroy();

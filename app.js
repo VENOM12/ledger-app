@@ -3102,6 +3102,18 @@ function invoiceCreateHTML(){
         <label>Your business or personal name</label>
         <input type="text" id="inv-fromname" value="${escapeAttr(d.fromName)}" placeholder="e.g. Restock Reselling, or your name">
       </div>
+      <div style="height:14px;"></div>
+      <div style="font-size:12.5px;font-weight:700;color:var(--text-dim);margin-bottom:8px;">Logo</div>
+      <div style="display:flex;align-items:center;gap:14px;">
+        ${d.logo ? `<img src="${d.logo}" style="height:56px;max-width:160px;object-fit:contain;border-radius:6px;background:#fff;padding:4px;">` : `<div class="hint" style="margin:0;">No logo set — it'll appear on every invoice once added, no need to add it again.</div>`}
+        <div style="display:flex;gap:8px;flex-shrink:0;">
+          <label class="btn-small" style="cursor:pointer;margin:0;">
+            ${ICONS.plus} ${d.logo ? "Replace" : "Add Logo"}
+            <input type="file" id="inv-logo-upload" accept="image/*" style="display:none;">
+          </label>
+          ${d.logo ? `<button class="btn-small" id="inv-logo-remove" style="border-color:var(--red);color:var(--red);">Remove</button>` : ""}
+        </div>
+      </div>
     </div>
 
     <div class="card panel" style="margin-bottom:16px;">
@@ -3186,6 +3198,22 @@ function invoiceCreateHTML(){
 // The actual printable document — deliberately plain inline-styled HTML
 // (no external stylesheet or JS) so it renders identically whether it's
 // exported straight to PDF or emailed as an attachment.
+function formatAddressHTML(address){
+  if(!address) return "";
+  // Handles however it was actually typed — one line per line already
+  // (from pressing enter in the textarea), one long comma-separated
+  // line, or a mix of both — and renders it as a clean, properly spaced
+  // address block either way, rather than relying on the raw text's own
+  // whitespace to look right.
+  const lines = address
+    .replace(/\r\n/g, "\n").replace(/\r/g, "\n")
+    .split("\n")
+    .flatMap(line => line.split(","))
+    .map(line => line.trim())
+    .filter(Boolean);
+  return lines.map(line => `<div>${escapeHTML(line)}</div>`).join("");
+}
+
 function buildInvoiceHTML(invoice){
   const totals = invoiceTotals(invoice);
   return `
@@ -3205,6 +3233,7 @@ function buildInvoiceHTML(invoice){
     </style></head><body>
       <div class="row">
         <div class="box">
+          ${invoice.logo ? `<img src="${invoice.logo}" style="max-height:60px;max-width:220px;object-fit:contain;margin-bottom:10px;display:block;">` : ""}
           <h1>${escapeHTML(invoice.fromName||"")}</h1>
         </div>
         <div class="box" style="text-align:right;">
@@ -3217,7 +3246,7 @@ function buildInvoiceHTML(invoice){
         <div class="box">
           <div class="label">Bill To</div>
           <div style="font-weight:bold;">${escapeHTML(invoice.buyer.name||"")}</div>
-          <div class="muted" style="white-space:pre-line;">${escapeHTML(invoice.buyer.address||"")}</div>
+          <div class="muted" style="line-height:1.5;margin-top:2px;">${formatAddressHTML(invoice.buyer.address)}</div>
           <div class="muted">${escapeHTML(invoice.buyer.email||"")}</div>
         </div>
       </div>
@@ -3299,8 +3328,9 @@ function invoicesListHTML(){
               <td class="mono dim">${formatDate(inv.date)}</td>
               <td class="mono">${fmtMoney(totals.total)}</td>
               <td><span class="status-chip" style="background:${statusColor[inv.status]}22;color:${statusColor[inv.status]};">${statusLbl[inv.status]}</span></td>
-              <td style="text-align:right;">
-                ${inv.status!=="paid" ? `<button class="btn-small" data-mark-paid="${inv.id}">Mark Paid</button>` : ""}
+              <td style="text-align:right;white-space:nowrap;">
+                ${inv.status!=="paid" ? `<button class="btn-small" data-mark-paid="${inv.id}" style="margin-right:6px;">Mark Paid</button>` : ""}
+                <button class="icon-btn" data-delete-invoice="${inv.id}" title="Delete this invoice">${ICONS.trash}</button>
               </td>
             </tr>
           `;}).join("")}
@@ -3314,11 +3344,14 @@ function loadInvoiceIntoDraft(invoice){
   invoiceDraft = {
     editingId: invoice.id,
     fromName: invoice.fromName,
+    logo: invoice.logo || null,
     buyerName: invoice.buyer.name, buyerAddress: invoice.buyer.address, buyerEmail: invoice.buyer.email,
     lineItems: invoice.lineItems.map(li=>({...li})),
     vatEnabled: invoice.vatEnabled,
     vatRate: invoice.vatRate,
     shippingCost: String(invoice.shippingCost),
+    paymentDeadline: invoice.paymentDeadline || "",
+    bankDetails: invoice.bankDetails || "",
     notes: invoice.notes,
     itemPickerSearch: ""
   };
@@ -3333,6 +3366,28 @@ function attachInvoiceGeneratorEvents(){
   if(invoiceUI.subTab==="create"){
     const d = invoiceDraft;
     document.getElementById("inv-fromname").addEventListener("input", e=>{ d.fromName = e.target.value; });
+    document.getElementById("inv-logo-upload").addEventListener("change", e=>{
+      const file = e.target.files[0];
+      if(!file) return;
+      if(file.size > 2*1024*1024){ showToast("Logo image is too large — please use something under 2MB", "close"); return; }
+      const reader = new FileReader();
+      reader.onload = ()=>{
+        d.logo = reader.result;
+        state.invoiceSettings.defaultLogo = reader.result; // saved once, defaults from here on
+        saveState();
+        renderView();
+        showToast("Logo saved — it'll be used on every invoice from now on");
+      };
+      reader.readAsDataURL(file);
+    });
+    const removeLogoBtn = document.getElementById("inv-logo-remove");
+    if(removeLogoBtn) removeLogoBtn.addEventListener("click", ()=>{
+      d.logo = null;
+      state.invoiceSettings.defaultLogo = null;
+      saveState();
+      renderView();
+      showToast("Logo removed");
+    });
     document.getElementById("inv-buyername").addEventListener("input", e=>{ d.buyerName = e.target.value; });
     document.getElementById("inv-buyeremail").addEventListener("input", e=>{ d.buyerEmail = e.target.value; });
     document.getElementById("inv-buyeraddress").addEventListener("input", e=>{ d.buyerAddress = e.target.value; });
@@ -3416,6 +3471,18 @@ function attachInvoiceGeneratorEvents(){
         e.stopPropagation();
         const invoice = state.invoices.find(i=>i.id===btn.dataset.markPaid);
         if(invoice){ invoice.status = "paid"; saveState(); renderView(); showToast("Marked as paid"); }
+      });
+    });
+    document.querySelectorAll("[data-delete-invoice]").forEach(btn=>{
+      btn.addEventListener("click", (e)=>{
+        e.stopPropagation();
+        const invoice = state.invoices.find(i=>i.id===btn.dataset.deleteInvoice);
+        if(!invoice) return;
+        if(!confirm(`Delete invoice ${invoice.invoiceNumber}? This can't be undone.`)) return;
+        state.invoices = state.invoices.filter(i=>i.id!==invoice.id);
+        saveState();
+        renderView();
+        showToast("Invoice deleted");
       });
     });
   }
