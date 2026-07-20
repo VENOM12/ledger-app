@@ -245,6 +245,8 @@ if(!state.pendingSales) state.pendingSales = [];
 if(!state.displayCurrency) state.displayCurrency = "USD";
 if(!state.emailFilters) state.emailFilters = { blockPromotions: true, excludedSenders: [] };
 if(!Array.isArray(state.vccs)) state.vccs = [];
+if(!Array.isArray(state.generatedProfiles)) state.generatedProfiles = [];
+if(!state.profileBuilderSettings) state.profileBuilderSettings = { emailMode: "catchall", catchallDomain: "", emailList: [] };
 
 let ui = { tab: "dashboard", period: "Month", stockFilter: "In Stock", stockCategoryFilter: "All", search: "", detailItemId: null };
 let licenseExpiresAt = null; // shown next to "Saved locally" in the sidebar once known
@@ -459,6 +461,7 @@ function render(){
       <div class="navlabel">Tools</div>
       <div class="nav">
         ${navBtn("vcc-tracker","card","VCC Tracker")}
+        ${navBtn("profile-builder","tools","Profile Builder")}
       </div>
       <div class="sidebar-footer">
         <div class="status-row"><span class="pulse"></span><span>Saved locally${licenseExpiresAt ? ` · Renews ${formatDate(licenseExpiresAt)}` : ""}</span></div>
@@ -506,7 +509,7 @@ function setTab(tab){
 function renderTopbar(){
   const bar = document.getElementById("topbar");
   if(!bar) return;
-  const titles = { dashboard: "Dashboard", stock: "Stock", add: "Add Stock", sold: "Sold", orders: "Confirmed Orders", expenses: "Expenses", "vcc-tracker": "VCC Tracker" };
+  const titles = { dashboard: "Dashboard", stock: "Stock", add: "Add Stock", sold: "Sold", orders: "Confirmed Orders", expenses: "Expenses", "vcc-tracker": "VCC Tracker", "profile-builder": "Profile Builder" };
   let heading;
   if(ui.detailItemId){
     const item = state.items.find(i=>i.id===ui.detailItemId);
@@ -559,6 +562,7 @@ function renderView(){
   else if(ui.tab==="sold"){ view.innerHTML = soldHTML(); attachSoldEvents(); }
   else if(ui.tab==="expenses"){ view.innerHTML = expensesHTML(); attachExpensesEvents(); }
   else if(ui.tab==="vcc-tracker"){ view.innerHTML = vccTrackerHTML(); attachVccTrackerEvents(); }
+  else if(ui.tab==="profile-builder"){ view.innerHTML = profileBuilderHTML(); attachProfileBuilderEvents(); }
 }
 
 /* ============================================================
@@ -2537,26 +2541,40 @@ function attachSoldEvents(){
 
 let vccUI = { statusFilter: "All", search: "" };
 
-function vccTrackerHTML(){
-  const cards = state.vccs
-    .filter(c => vccUI.statusFilter==="All" || c.status===vccUI.statusFilter)
-    .filter(c => !vccUI.search || c.nickname.toLowerCase().includes(vccUI.search.toLowerCase()) || (c.last4||"").includes(vccUI.search));
+// Status is computed from the expiry date, not stored/set manually —
+// matches how a real card actually works (it just stops being valid
+// after its printed date, nothing to track separately).
+function vccStatus(card){
+  if(!card.expiry) return "active";
+  const [mm, yy] = card.expiry.split("/").map(s=>s.trim());
+  if(!mm || !yy) return "active";
+  const expiryEnd = new Date(2000+parseInt(yy,10), parseInt(mm,10), 0, 23, 59, 59); // last day of expiry month
+  return new Date() > expiryEnd ? "expired" : "active";
+}
 
-  const activeTotal = state.vccs.filter(c=>c.status==="active").reduce((s,c)=>s+(c.balance||0),0);
+function maskCardNumber(number){
+  const digits = (number||"").replace(/\s/g,"");
+  if(digits.length<=4) return digits;
+  return "•••• ".repeat(Math.max(0,Math.ceil(digits.length/4)-1)).trim() + " " + digits.slice(-4);
+}
+
+function vccTrackerHTML(){
+  const cardsWithStatus = state.vccs.map(c=>({...c, computedStatus: vccStatus(c)}));
+  const cards = cardsWithStatus
+    .filter(c => vccUI.statusFilter==="All" || c.computedStatus===vccUI.statusFilter)
+    .filter(c => !vccUI.search || c.nickname.toLowerCase().includes(vccUI.search.toLowerCase()) || (c.number||"").replace(/\s/g,"").endsWith(vccUI.search.replace(/\s/g,"")));
 
   return `
     <div class="stat-grid" style="margin-bottom:16px;">
-      ${statCard("card", "Total Balance (Active)", fmtMoney(activeTotal), "var(--violet)", "var(--violet-bg)")}
       ${statCard("card", "Total Cards", ""+state.vccs.length, "var(--blue)", "var(--blue-bg)")}
-      ${statCard("card", "Active", ""+state.vccs.filter(c=>c.status==="active").length, "var(--green)", "var(--green-bg)")}
-      ${statCard("card", "Frozen / Expired", ""+state.vccs.filter(c=>c.status!=="active").length, "var(--text-mute)", "var(--card-2)")}
+      ${statCard("card", "Active", ""+cardsWithStatus.filter(c=>c.computedStatus==="active").length, "var(--green)", "var(--green-bg)")}
+      ${statCard("card", "Expired", ""+cardsWithStatus.filter(c=>c.computedStatus==="expired").length, "var(--text-mute)", "var(--card-2)")}
     </div>
     <div class="toolbar-row">
       <button class="btn-primary" id="addVccBtn">${ICONS.plus} Add Card</button>
       <select id="vccStatusFilterSelect" style="width:auto;padding:9px 30px 9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
         <option ${vccUI.statusFilter==="All"?"selected":""}>All</option>
         <option ${vccUI.statusFilter==="active"?"selected":""}>active</option>
-        <option ${vccUI.statusFilter==="frozen"?"selected":""}>frozen</option>
         <option ${vccUI.statusFilter==="expired"?"selected":""}>expired</option>
       </select>
       <div class="search-bar">
@@ -2565,6 +2583,11 @@ function vccTrackerHTML(){
       </div>
     </div>
     <div id="vccResultsContainer">${vccResultsHTML(cards)}</div>
+    <div class="hint" style="margin-top:14px;">
+      CVV is never asked for or stored — you'll always type it fresh at checkout, the same way any
+      legitimate saved-card feature works. Card status is worked out automatically from the expiry
+      date, not something you set by hand.
+    </div>
     <div style="height:20px;"></div>
   `;
 }
@@ -2575,11 +2598,11 @@ function vccResultsHTML(cards){
       <div class="empty-state">
         ${ICONS.card}
         <div class="t">No cards yet</div>
-        <div class="d">Add the virtual cards your business uses, so you can see balances and limits in one place instead of hunting through a banking app.</div>
+        <div class="d">Add the virtual cards your business uses, so you can see them all in one place instead of hunting through a banking app.</div>
       </div>
     `;
   }
-  const statusColor = { active: "var(--green)", frozen: "var(--blue)", expired: "var(--text-mute)" };
+  const statusColor = { active: "var(--green)", expired: "var(--text-mute)" };
   return `
     <div class="stat-grid">
       ${cards.map(c => `
@@ -2587,16 +2610,12 @@ function vccResultsHTML(cards){
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
             <div style="min-width:0;">
               <div style="font-weight:700;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(c.nickname)}</div>
-              <div class="hint mono" style="margin:2px 0 0;">${c.network ? escapeHTML(c.network)+" · " : ""}${c.last4 ? "•••• "+escapeHTML(c.last4) : "No card number saved"}</div>
+              <div class="hint mono" style="margin:2px 0 0;">${c.network ? escapeHTML(c.network)+" · " : ""}${c.number ? maskCardNumber(c.number) : "No card number saved"}</div>
             </div>
-            <span class="status-chip" style="background:${statusColor[c.status]||"var(--card-2)"}22;color:${statusColor[c.status]||"var(--text-mute)"};flex-shrink:0;">${c.status}</span>
+            <span class="status-chip" style="background:${statusColor[c.computedStatus]||"var(--card-2)"}22;color:${statusColor[c.computedStatus]||"var(--text-mute)"};flex-shrink:0;">${c.computedStatus}</span>
           </div>
-          <div style="margin-top:14px;display:flex;justify-content:space-between;align-items:baseline;">
-            <div>
-              <div class="stat-value" style="font-size:19px;">${fmtMoney(c.balance||0)}</div>
-              <div class="hint" style="margin:0;">Balance</div>
-            </div>
-            ${c.limit ? `<div style="text-align:right;"><div class="mono" style="font-size:13px;color:var(--text-dim);">${fmtMoney(c.limit)}</div><div class="hint" style="margin:0;">Limit</div></div>` : ""}
+          <div style="margin-top:12px;">
+            <div class="hint mono" style="margin:0;">Expires ${c.expiry ? escapeHTML(c.expiry) : "—"}</div>
           </div>
           ${c.notes ? `<div class="hint" style="margin-top:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(c.notes)}</div>` : ""}
         </div>
@@ -2608,9 +2627,10 @@ function vccResultsHTML(cards){
 function renderVccResults(){
   const container = document.getElementById("vccResultsContainer");
   if(!container) return;
-  const cards = state.vccs
-    .filter(c => vccUI.statusFilter==="All" || c.status===vccUI.statusFilter)
-    .filter(c => !vccUI.search || c.nickname.toLowerCase().includes(vccUI.search.toLowerCase()) || (c.last4||"").includes(vccUI.search));
+  const cardsWithStatus = state.vccs.map(c=>({...c, computedStatus: vccStatus(c)}));
+  const cards = cardsWithStatus
+    .filter(c => vccUI.statusFilter==="All" || c.computedStatus===vccUI.statusFilter)
+    .filter(c => !vccUI.search || c.nickname.toLowerCase().includes(vccUI.search.toLowerCase()) || (c.number||"").replace(/\s/g,"").endsWith(vccUI.search.replace(/\s/g,"")));
   container.innerHTML = vccResultsHTML(cards);
   bindVccResultEvents();
 }
@@ -2638,11 +2658,9 @@ function openVccModal(vccId){
   vccFormState = {
     id: existing ? existing.id : null,
     nickname: existing ? existing.nickname : "",
-    last4: existing ? existing.last4 || "" : "",
+    number: existing ? existing.number || "" : "",
+    expiry: existing ? existing.expiry || "" : "",
     network: existing ? existing.network || "" : "",
-    balance: existing ? String(existing.balance||0) : "",
-    limit: existing ? String(existing.limit||"") : "",
-    status: existing ? existing.status : "active",
     notes: existing ? existing.notes || "" : ""
   };
   renderVccModal();
@@ -2664,36 +2682,25 @@ function renderVccModal(){
             <label>Nickname</label>
             <input type="text" id="vcc-nickname" value="${escapeAttr(f.nickname)}" placeholder="e.g. Marketing Card 3">
           </div>
+          <div class="field">
+            <label>Card number</label>
+            <input type="text" id="vcc-number" value="${escapeAttr(f.number)}" inputmode="numeric" placeholder="0000 0000 0000 0000">
+          </div>
           <div class="form-grid">
             <div class="field">
-              <label>Last 4 digits</label>
-              <input type="text" id="vcc-last4" value="${escapeAttr(f.last4)}" maxlength="4" placeholder="4242">
+              <label>Expiry (MM/YY)</label>
+              <input type="text" id="vcc-expiry" value="${escapeAttr(f.expiry)}" maxlength="5" placeholder="MM/YY">
             </div>
             <div class="field">
               <label>Network (optional)</label>
               <input type="text" id="vcc-network" value="${escapeAttr(f.network)}" placeholder="Visa, Mastercard...">
-            </div>
-            <div class="field">
-              <label>Balance</label>
-              <input type="number" id="vcc-balance" value="${escapeAttr(f.balance)}" step="0.01" placeholder="0.00">
-            </div>
-            <div class="field">
-              <label>Limit (optional)</label>
-              <input type="number" id="vcc-limit" value="${escapeAttr(f.limit)}" step="0.01" placeholder="0.00">
-            </div>
-            <div class="field">
-              <label>Status</label>
-              <select id="vcc-status">
-                <option value="active" ${f.status==="active"?"selected":""}>active</option>
-                <option value="frozen" ${f.status==="frozen"?"selected":""}>frozen</option>
-                <option value="expired" ${f.status==="expired"?"selected":""}>expired</option>
-              </select>
             </div>
           </div>
           <div class="field">
             <label>Notes</label>
             <input type="text" id="vcc-notes" value="${escapeAttr(f.notes)}" placeholder="What this card is usually used for">
           </div>
+          <div class="hint" style="margin-top:2px;">CVV is never stored here — you'll enter it directly at checkout, same as any legitimate saved-card feature.</div>
           <div style="height:6px;"></div>
           <button class="btn-primary block" id="saveVccBtn">${isEdit ? "Save Changes" : "Add Card"}</button>
           ${isEdit ? `<button class="btn-secondary block" id="deleteVccBtn" style="margin-top:10px;border-color:var(--red);color:var(--red);">${ICONS.trash} Delete Card</button>` : ""}
@@ -2703,23 +2710,30 @@ function renderVccModal(){
   `;
   document.getElementById("closeVccModal").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
   document.getElementById("vcc-nickname").addEventListener("input", e=>{ f.nickname = e.target.value; });
-  document.getElementById("vcc-last4").addEventListener("input", e=>{ f.last4 = e.target.value.replace(/\D/g,"").slice(0,4); });
+  document.getElementById("vcc-number").addEventListener("input", e=>{
+    const digits = e.target.value.replace(/\D/g,"").slice(0,19);
+    f.number = digits.replace(/(.{4})/g,"$1 ").trim();
+    e.target.value = f.number;
+  });
+  document.getElementById("vcc-expiry").addEventListener("input", e=>{
+    let v = e.target.value.replace(/\D/g,"").slice(0,4);
+    if(v.length>=3) v = v.slice(0,2)+"/"+v.slice(2);
+    f.expiry = v;
+    e.target.value = v;
+  });
   document.getElementById("vcc-network").addEventListener("input", e=>{ f.network = e.target.value; });
-  document.getElementById("vcc-balance").addEventListener("input", e=>{ f.balance = e.target.value; });
-  document.getElementById("vcc-limit").addEventListener("input", e=>{ f.limit = e.target.value; });
-  document.getElementById("vcc-status").addEventListener("change", e=>{ f.status = e.target.value; });
   document.getElementById("vcc-notes").addEventListener("input", e=>{ f.notes = e.target.value; });
 
   document.getElementById("saveVccBtn").addEventListener("click", ()=>{
     const nickname = f.nickname.trim();
     if(!nickname){ showToast("Enter a nickname for this card", "close"); return; }
-    const balance = parseFloat(f.balance)||0;
-    const limit = f.limit.trim() ? parseFloat(f.limit) : null;
+    if(f.expiry && !/^\d{2}\/\d{2}$/.test(f.expiry)){ showToast("Expiry should be in MM/YY format", "close"); return; }
+    const payload = { nickname, number: f.number.trim(), expiry: f.expiry.trim(), network: f.network.trim(), notes: f.notes.trim() };
     if(f.id){
       const card = state.vccs.find(c=>c.id===f.id);
-      Object.assign(card, { nickname, last4: f.last4, network: f.network.trim(), balance, limit, status: f.status, notes: f.notes.trim() });
+      Object.assign(card, payload);
     } else {
-      state.vccs.unshift({ id: uid(), nickname, last4: f.last4, network: f.network.trim(), balance, limit, status: f.status, notes: f.notes.trim() });
+      state.vccs.unshift({ id: uid(), ...payload });
     }
     saveState();
     document.getElementById("modalRoot").innerHTML = "";
@@ -2735,6 +2749,161 @@ function renderVccModal(){
     document.getElementById("modalRoot").innerHTML = "";
     showToast("Card deleted");
     if(ui.tab==="vcc-tracker") renderView();
+  });
+}
+
+/* ---------------- Profile Builder ---------------- */
+// Generates a random name, phone number, and email only — deliberately
+// no address generation and no automatic card attachment. See the app's
+// notes on this: varying a delivery address while preserving its actual
+// routing information is a different thing from not sharing your real
+// name with a site, and attaching a real payment card to a randomly
+// generated identity is a different thing again. This tool sticks to
+// the part that's genuinely just "don't hand my real contact details to
+// somewhere I don't trust."
+
+const PROFILE_FIRST_NAMES = ["James","Emma","Oliver","Amelia","Liam","Isla","Noah","Ava","Ethan","Mia","Lucas","Sophie","Jack","Grace","Harry","Ruby","George","Chloe","Charlie","Freya","Thomas","Lily","Oscar","Ella","Henry","Poppy","Leo","Evie","Jacob","Alice"];
+const PROFILE_LAST_NAMES = ["Smith","Jones","Taylor","Williams","Brown","Davies","Evans","Wilson","Thomas","Roberts","Johnson","Walker","Wright","Robinson","Thompson","White","Edwards","Hughes","Green","Hall","Wood","Harris","Clarke","Patel","Turner","Cooper","Ward","Morris","Bell","Kelly"];
+
+function randomFrom(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+
+function generatePhoneNumber(){
+  // Standard UK mobile format — 07 followed by 9 digits.
+  let digits = "";
+  for(let i=0;i<9;i++) digits += Math.floor(Math.random()*10);
+  return "07"+digits;
+}
+
+function generateEmail(){
+  const s = state.profileBuilderSettings;
+  if(s.emailMode==="list" && s.emailList.length){
+    return randomFrom(s.emailList);
+  }
+  if(s.emailMode==="catchall" && s.catchallDomain){
+    const localPart = Math.random().toString(36).slice(2,10);
+    return `${localPart}@${s.catchallDomain.replace(/^@/,"")}`;
+  }
+  return null;
+}
+
+function profileBuilderHTML(){
+  const s = state.profileBuilderSettings;
+  return `
+    <div class="card panel" style="margin-bottom:20px;">
+      <div class="panel-title" style="margin-bottom:6px;">Email Source</div>
+      <div class="hint" style="margin-bottom:12px;">Choose how generated profiles get an email address.</div>
+      <div class="segmented" style="margin-bottom:14px;max-width:360px;">
+        <button class="${s.emailMode==='catchall'?'active':''}" data-email-mode="catchall">Catch-all domain</button>
+        <button class="${s.emailMode==='list'?'active':''}" data-email-mode="list">My own addresses</button>
+      </div>
+      ${s.emailMode==='catchall' ? `
+        <div class="field" style="max-width:360px;">
+          <label>Your catch-all domain</label>
+          <input type="text" id="pb-catchall" value="${escapeAttr(s.catchallDomain)}" placeholder="yourdomain.com">
+        </div>
+      ` : `
+        <div class="field">
+          <label>Email addresses you own (one per line)</label>
+          <textarea id="pb-emaillist" rows="4" placeholder="you@example.com&#10;you2@example.com">${escapeHTML(s.emailList.join("\n"))}</textarea>
+        </div>
+      `}
+      <button class="btn-small" id="saveEmailSettingsBtn" style="margin-top:10px;">Save</button>
+    </div>
+
+    <div class="toolbar-row">
+      <button class="btn-primary" id="generateProfileBtn">${ICONS.plus} Generate New Profile</button>
+    </div>
+    <div id="profilesResultsContainer">${profilesResultsHTML()}</div>
+    <div style="height:20px;"></div>
+  `;
+}
+
+function profilesResultsHTML(){
+  if(state.generatedProfiles.length===0){
+    return `
+      <div class="empty-state">
+        ${ICONS.tools}
+        <div class="t">No profiles yet</div>
+        <div class="d">Generate a name, phone number, and email for sites you don't want to hand your real details to.</div>
+      </div>
+    `;
+  }
+  return `
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px;">
+      ${state.generatedProfiles.map(p=>`
+        <div class="card" style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
+          <div style="min-width:0;">
+            <div style="font-weight:700;font-size:14px;">${escapeHTML(p.firstName)} ${escapeHTML(p.lastName)}</div>
+            <div class="hint mono" style="margin:3px 0 0;">${escapeHTML(p.phone)}${p.email ? " · "+escapeHTML(p.email) : ""}</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0;">
+            <button class="btn-small" data-copy-profile="${p.id}">Copy</button>
+            <button class="icon-btn" data-delete-profile="${p.id}">${ICONS.trash}</button>
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderProfilesResults(){
+  const container = document.getElementById("profilesResultsContainer");
+  if(!container) return;
+  container.innerHTML = profilesResultsHTML();
+  bindProfilesResultEvents();
+}
+
+function attachProfileBuilderEvents(){
+  document.querySelectorAll("[data-email-mode]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      state.profileBuilderSettings.emailMode = btn.dataset.emailMode;
+      saveState();
+      renderView();
+    });
+  });
+  document.getElementById("saveEmailSettingsBtn").addEventListener("click", ()=>{
+    const s = state.profileBuilderSettings;
+    if(s.emailMode==="catchall"){
+      const input = document.getElementById("pb-catchall");
+      s.catchallDomain = input.value.trim().replace(/^@/,"");
+    } else {
+      const textarea = document.getElementById("pb-emaillist");
+      s.emailList = textarea.value.split("\n").map(e=>e.trim()).filter(Boolean);
+    }
+    saveState();
+    showToast("Email settings saved");
+  });
+  document.getElementById("generateProfileBtn").addEventListener("click", ()=>{
+    const profile = {
+      id: uid(),
+      firstName: randomFrom(PROFILE_FIRST_NAMES),
+      lastName: randomFrom(PROFILE_LAST_NAMES),
+      phone: generatePhoneNumber(),
+      email: generateEmail()
+    };
+    state.generatedProfiles.unshift(profile);
+    saveState();
+    renderProfilesResults();
+    showToast("Profile generated");
+  });
+  bindProfilesResultEvents();
+}
+
+function bindProfilesResultEvents(){
+  document.querySelectorAll("[data-copy-profile]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const p = state.generatedProfiles.find(x=>x.id===btn.dataset.copyProfile);
+      if(!p) return;
+      const text = `${p.firstName} ${p.lastName}\n${p.phone}${p.email ? "\n"+p.email : ""}`;
+      navigator.clipboard.writeText(text).then(()=>showToast("Copied to clipboard"));
+    });
+  });
+  document.querySelectorAll("[data-delete-profile]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      state.generatedProfiles = state.generatedProfiles.filter(p=>p.id!==btn.dataset.deleteProfile);
+      saveState();
+      renderProfilesResults();
+    });
   });
 }
 
