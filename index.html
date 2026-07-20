@@ -114,15 +114,17 @@ input,select,textarea{font-size:14px;color:var(--text);}
 .nav button:hover{background:var(--card);color:var(--text);}
 .nav button.active{background:var(--violet-bg);color:var(--violet);}
 .nav button .dot{margin-left:auto;width:6px;height:6px;border-radius:50%;background:var(--violet);}
+.nav button .nav-badge{margin-left:auto;flex-shrink:0;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--red);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;}
 
 .shell.collapsed .brand{padding:4px 0 22px;justify-content:center;align-items:center;flex-direction:column;gap:10px;}
 .shell.collapsed .brand .info,
 .shell.collapsed .navlabel,
-.shell.collapsed .nav button span,
+.shell.collapsed .nav button span:not(.nav-badge),
 .shell.collapsed .status-row span:not(.pulse),
 .shell.collapsed .ghost-btn span{display:none;}
 .shell.collapsed .collapse-toggle{margin-left:0;}
-.shell.collapsed .nav button{justify-content:center;padding:10px;}
+.shell.collapsed .nav button{justify-content:center;padding:10px;position:relative;}
+.shell.collapsed .nav button .nav-badge{position:absolute;top:4px;right:4px;min-width:15px;height:15px;font-size:9.5px;padding:0 3px;}
 .shell.collapsed .status-row{justify-content:center;padding:6px 0;}
 .shell.collapsed .ghost-btn{justify-content:center;}
 

@@ -449,7 +449,7 @@ function render(){
         ${navBtn("dashboard","dashboard","Dashboard")}
         ${navBtn("stock","stock","Stock")}
         ${navBtn("orders","cart","Confirmed Orders")}
-        ${navBtn("sold","tag","Sold")}
+        ${navBtn("sold","tag","Sold", state.pendingSales.length)}
         ${navBtn("add","plus","Add Stock")}
         ${navBtn("expenses","cash","Expenses")}
       </div>
@@ -484,9 +484,10 @@ function render(){
   renderUpdateBanner();
 }
 
-function navBtn(id, iconKey, label){
+function navBtn(id, iconKey, label, badgeCount){
   const active = ui.tab===id ? "active" : "";
-  return `<button class="${active}" data-nav="${id}">${ICONS[iconKey]}<span>${label}</span></button>`;
+  const badge = badgeCount ? `<span class="nav-badge">${badgeCount}</span>` : "";
+  return `<button class="${active}" data-nav="${id}">${ICONS[iconKey]}<span>${label}</span>${badge}</button>`;
 }
 
 function setTab(tab){
@@ -2179,9 +2180,19 @@ function renderAddPkcPreorderModal(){
 
 const PLATFORMS = ["eBay", "Facebook Marketplace", "Mercari", "Local / Cash", "Other"];
 
-let soldUI = { platformFilter: "All", search: "" };
+let soldUI = { subTab: "items", platformFilter: "All", search: "" };
 
 function soldHTML(){
+  return `
+    <div class="segmented" style="margin-bottom:14px;">
+      <button class="${soldUI.subTab==='items'?'active':''}" data-sold-subtab="items">Sold Items</button>
+      <button class="${soldUI.subTab==='detected'?'active':''}" data-sold-subtab="detected">Detected Sales${state.pendingSales.length ? ` (${state.pendingSales.length})` : ""}</button>
+    </div>
+    ${soldUI.subTab==='items' ? soldItemsContentHTML() : detectedSalesContentHTML()}
+  `;
+}
+
+function soldItemsContentHTML(){
   return `
     <div class="toolbar-row">
       <select id="platformFilterSelect" style="width:auto;padding:9px 30px 9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
@@ -2196,6 +2207,39 @@ function soldHTML(){
       <button class="btn-small" id="exportSoldCsvBtn" style="height:38px;">${ICONS.download} Export CSV</button>
     </div>
     <div id="soldResultsContainer">${soldResultsHTML()}</div>
+    <div style="height:20px;"></div>
+  `;
+}
+
+function detectedSalesContentHTML(){
+  return `
+    ${state.pendingSales.length===0 ? `
+      <div class="empty-state">
+        ${ICONS.empty}
+        <div class="t">No sale emails detected yet</div>
+        <div class="d">eBay "item sold" notifications, payout emails, and similar get picked up here automatically via Email Sync.</div>
+      </div>
+    ` : `
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        ${state.pendingSales.slice().sort((a,b)=>new Date(b.saleDate)-new Date(a.saleDate)).map(p=>`
+          <div class="card" style="padding:12px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
+            <div style="min-width:0;flex:1;">
+              <div style="font-weight:700;font-size:13.5px;">${escapeHTML(p.platform||"Unknown")} <span class="mono dim" style="font-weight:500;">${p.netAmount!=null ? fmtMoney(p.netAmount) : "—"}</span></div>
+              <div class="hint" style="margin:2px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${formatDate(p.saleDate)} · Qty ${p.quantitySold || "—"}${p.productNameHint ? ` · ${escapeHTML(p.productNameHint)}` : ""}</div>
+            </div>
+            <div style="display:flex;gap:6px;flex-shrink:0;">
+              <button class="btn-small" data-match-sale="${p.id}">Match to Item</button>
+              <button class="icon-btn" data-remove-sale="${p.id}" title="Delete this detected sale — use this for duplicates or anything detected by mistake">${ICONS.trash}</button>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+      <div class="hint" style="margin-top:10px;">
+        Restock can tell a sale happened and roughly for how much, but can't tell which of your items
+        it was — click "Match to Item" to pick the right one and finish recording the sale. When a
+        likely item name was found in the email, it's suggested first.
+      </div>
+    `}
     <div style="height:20px;"></div>
   `;
 }
@@ -2445,20 +2489,40 @@ function bindPickSellSelectButtons(){
 }
 
 function attachSoldEvents(){
-  document.getElementById("markSoldBtn").addEventListener("click", openPickItemToSellModal);
-  document.getElementById("platformFilterSelect").addEventListener("change", e=>{
-    soldUI.platformFilter = e.target.value; renderSoldResults();
+  document.querySelectorAll("[data-sold-subtab]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      soldUI.subTab = btn.dataset.soldSubtab;
+      renderView();
+    });
   });
-  const search = document.getElementById("soldSearchInput");
-  search.addEventListener("input", e=>{ soldUI.search = e.target.value; renderSoldResults(); });
-  document.getElementById("exportSoldCsvBtn").addEventListener("click", ()=>{
-    const sales = filteredSales();
-    downloadCSV(`sold-${todayISO()}.csv`,
-      ["Item Name","Platform","Sale Date","Quantity Sold","Sale Price Per Unit","Fees","Net Amount"],
-      sales.map(({item,sale})=>[item.name, sale.platform||"", sale.saleDate||"", sale.quantitySold, sale.salePricePerUnit, sale.fees||0, saleNet(sale)])
-    );
-  });
-  bindSoldResultEvents();
+
+  if(soldUI.subTab==='items'){
+    document.getElementById("markSoldBtn").addEventListener("click", openPickItemToSellModal);
+    document.getElementById("platformFilterSelect").addEventListener("change", e=>{
+      soldUI.platformFilter = e.target.value; renderSoldResults();
+    });
+    const search = document.getElementById("soldSearchInput");
+    search.addEventListener("input", e=>{ soldUI.search = e.target.value; renderSoldResults(); });
+    document.getElementById("exportSoldCsvBtn").addEventListener("click", ()=>{
+      const sales = filteredSales();
+      downloadCSV(`sold-${todayISO()}.csv`,
+        ["Item Name","Platform","Sale Date","Quantity Sold","Sale Price Per Unit","Fees","Net Amount"],
+        sales.map(({item,sale})=>[item.name, sale.platform||"", sale.saleDate||"", sale.quantitySold, sale.salePricePerUnit, sale.fees||0, saleNet(sale)])
+      );
+    });
+    bindSoldResultEvents();
+  } else {
+    document.querySelectorAll("[data-match-sale]").forEach(btn=>{
+      btn.addEventListener("click", ()=> openMatchSaleModal(btn.dataset.matchSale));
+    });
+    document.querySelectorAll("[data-remove-sale]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        state.pendingSales = state.pendingSales.filter(p=>p.id!==btn.dataset.removeSale);
+        saveState();
+        renderView();
+      });
+    });
+  }
 }
 
 /* ---------------- Expenses ---------------- */
@@ -3198,30 +3262,10 @@ function emailConnectedHTML(){
 
     ${emailUI.accounts.map(acc => accountBannerHTML(acc)).join("")}
 
-    <div class="section-title" style="margin-top:4px;">Detected Sales</div>
-    ${state.pendingSales.length===0 ? `
-      <div class="card pending-empty">No sale emails detected yet (eBay "item sold" / payout notifications, etc.).</div>
-    ` : `
-      <div style="display:flex;flex-direction:column;gap:6px;">
-        ${state.pendingSales.slice().sort((a,b)=>new Date(b.saleDate)-new Date(a.saleDate)).map(p=>`
-          <div class="card" style="padding:8px 10px 8px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
-            <div style="min-width:0;flex:1;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-              <span style="font-weight:600;">${escapeHTML(p.platform||"Unknown")}</span>
-              <span class="mono dim">${p.netAmount!=null ? fmtMoney(p.netAmount) : "—"}</span>
-              <span class="hint" style="margin:0;">· ${formatDate(p.saleDate)} · Qty ${p.quantitySold || "—"}${p.productNameHint ? ` · ${escapeHTML(p.productNameHint)}` : ""}</span>
-            </div>
-            <div style="display:flex;gap:4px;flex-shrink:0;">
-              <button class="btn-small" data-match-sale="${p.id}" style="padding:5px 10px;font-size:12px;">Match to Item</button>
-              <button class="icon-btn" data-remove-sale="${p.id}" title="Delete this detected sale — use this for duplicates or anything detected by mistake">${ICONS.trash}</button>
-            </div>
-          </div>
-        `).join("")}
-      </div>
-      <div class="hint" style="margin-top:8px;">
-        Click "Match to Item" to pick which of your items it was — when a likely name was found in the email, it's suggested first.
-      </div>
-    `}
-    <div style="height:20px;"></div>
+    <div class="hint" style="margin:6px 0 20px;display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border-soft);border-radius:var(--radius-md);padding:14px 16px;">
+      <span>Detected sales${state.pendingSales.length ? ` (${state.pendingSales.length} waiting)` : ""} now live on the <strong style="color:var(--text);">Sold</strong> tab, under its own "Detected Sales" sub-tab.</span>
+      <button class="btn-small" id="goToSoldFromSettings">Go to Sold ${ICONS.chev}</button>
+    </div>
 
     <div class="card panel" style="margin-bottom:20px;">
       <div class="panel-title" style="margin-bottom:6px;">Expense Email Rules</div>
@@ -3297,6 +3341,13 @@ function attachEmailEvents(){
     if(modalRoot) modalRoot.innerHTML = "";
     ordersUI.subTab = "all";
     setTab("orders");
+  });
+  const goToSoldBtn = document.getElementById("goToSoldFromSettings");
+  if(goToSoldBtn) goToSoldBtn.addEventListener("click", ()=>{
+    const modalRoot = document.getElementById("modalRoot");
+    if(modalRoot) modalRoot.innerHTML = "";
+    soldUI.subTab = "detected";
+    setTab("sold");
   });
 
   if(emailUI.accounts.length === 0 || emailUI.showAddForm){
@@ -3464,16 +3515,6 @@ function attachEmailEvents(){
         addExclusion(domain, true);
       });
     });
-    document.querySelectorAll("[data-match-sale]").forEach(btn=>{
-      btn.addEventListener("click", ()=> openMatchSaleModal(btn.dataset.matchSale));
-    });
-    document.querySelectorAll("[data-remove-sale]").forEach(btn=>{
-      btn.addEventListener("click", ()=>{
-        state.pendingSales = state.pendingSales.filter(p=>p.id!==btn.dataset.removeSale);
-        saveState();
-        refreshSettingsIfOpen();
-      });
-    });
   }
 }
 
@@ -3525,7 +3566,7 @@ function openMatchSaleModal(pendingSaleId){
       </div>
     </div>
   `;
-  document.getElementById("closeMatch").addEventListener("click", ()=>{ openSettings(); });
+  document.getElementById("closeMatch").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML = ""; });
   document.getElementById("createItemFromSaleBtn").addEventListener("click", ()=>{ openCreateItemFromSaleModal(sale); });
   document.querySelectorAll("[data-pick]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
