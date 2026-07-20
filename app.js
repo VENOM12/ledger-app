@@ -2617,7 +2617,7 @@ function vccResultsHTML(cards){
           <div style="margin-top:12px;">
             <div class="hint mono" style="margin:0;">Expires ${c.expiry ? escapeHTML(c.expiry) : "—"}</div>
           </div>
-          ${c.notes ? `<div class="hint" style="margin-top:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(c.notes)}</div>` : ""}
+          ${c.cvv ? `<div class="hint" style="margin-top:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(c.cvv)}</div>` : ""}
         </div>
       `).join("")}
     </div>
@@ -2661,7 +2661,7 @@ function openVccModal(vccId){
     number: existing ? existing.number || "" : "",
     expiry: existing ? existing.expiry || "" : "",
     network: existing ? existing.network || "" : "",
-    notes: existing ? existing.notes || "" : ""
+    cvv: existing ? existing.ccv || "" : ""
   };
   renderVccModal();
 }
@@ -2697,8 +2697,8 @@ function renderVccModal(){
             </div>
           </div>
           <div class="field">
-            <label>Notes</label>
-            <input type="text" id="vcc-notes" value="${escapeAttr(f.notes)}" placeholder="What this card is usually used for">
+            <label>Cvv</label>
+            <input type="text" id="vcc-cvv" value="${escapeAttr(f.cvv)}" placeholder="What this card is usually used for">
           </div>
           <div class="hint" style="margin-top:2px;">CVV is never stored here — you'll enter it directly at checkout, same as any legitimate saved-card feature.</div>
           <div style="height:6px;"></div>
@@ -2722,13 +2722,13 @@ function renderVccModal(){
     e.target.value = v;
   });
   document.getElementById("vcc-network").addEventListener("input", e=>{ f.network = e.target.value; });
-  document.getElementById("vcc-notes").addEventListener("input", e=>{ f.notes = e.target.value; });
+  document.getElementById("vcc-cvv").addEventListener("input", e=>{ f.cvv = e.target.value; });
 
   document.getElementById("saveVccBtn").addEventListener("click", ()=>{
     const nickname = f.nickname.trim();
     if(!nickname){ showToast("Enter a nickname for this card", "close"); return; }
     if(f.expiry && !/^\d{2}\/\d{2}$/.test(f.expiry)){ showToast("Expiry should be in MM/YY format", "close"); return; }
-    const payload = { nickname, number: f.number.trim(), expiry: f.expiry.trim(), network: f.network.trim(), notes: f.notes.trim() };
+    const payload = { nickname, number: f.number.trim(), expiry: f.expiry.trim(), network: f.network.trim(), cvv: f.cvv.trim() };
     if(f.id){
       const card = state.vccs.find(c=>c.id===f.id);
       Object.assign(card, payload);
