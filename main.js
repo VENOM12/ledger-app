@@ -1,10 +1,11 @@
-const { app, BrowserWindow, Menu, ipcMain, safeStorage, shell } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, safeStorage, shell, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const { autoUpdater } = require('electron-updater');
+const nodemailer = require('nodemailer');
 
 let mainWindow = null;
 
@@ -285,11 +286,12 @@ function saveAccounts(accounts) {
   fs.writeFileSync(accountsFilePath(), JSON.stringify({ accounts }), 'utf-8');
 }
 
-function addAccount({ email, host, port, secure, password, catchAllDomains }) {
+function addAccount({ email, host, port, secure, password, catchAllDomains, smtpHost, smtpPort, smtpSecure }) {
   const accounts = loadAccounts();
   const account = {
     id: 'acc_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-    email, host, port, secure, catchAllDomains: catchAllDomains || [], processedMessageIds: []
+    email, host, port, secure, catchAllDomains: catchAllDomains || [], processedMessageIds: [],
+    smtpHost: smtpHost || '', smtpPort: smtpPort || 587, smtpSecure: !!smtpSecure
   };
   if (safeStorage.isEncryptionAvailable()) {
     account.encryptedPassword = safeStorage.encryptString(password).toString('base64');
@@ -323,13 +325,14 @@ function patchAccountById(id, patch) {
 ipcMain.handle('email:getAccounts', () => {
   return loadAccounts().map(a => ({
     id: a.id, email: a.email, host: a.host, port: a.port, secure: a.secure,
-    catchAllDomains: a.catchAllDomains || [], lastSyncISO: a.lastSyncISO || null
+    catchAllDomains: a.catchAllDomains || [], lastSyncISO: a.lastSyncISO || null,
+    smtpHost: a.smtpHost || '', smtpPort: a.smtpPort || 587, smtpSecure: !!a.smtpSecure
   }));
 });
 
 // Adds a NEW account alongside any already connected — tests the
 // connection first, same as before, just appends rather than replacing.
-ipcMain.handle('email:addAccount', async (evt, { email, password, host, port, secure, catchAllDomains }) => {
+ipcMain.handle('email:addAccount', async (evt, { email, password, host, port, secure, catchAllDomains, smtpHost, smtpPort, smtpSecure }) => {
   const client = new ImapFlow({
     host, port, secure,
     auth: { user: email, pass: password },
@@ -338,7 +341,7 @@ ipcMain.handle('email:addAccount', async (evt, { email, password, host, port, se
   try {
     await client.connect();
     await client.logout();
-    const account = addAccount({ email, host, port, secure, password, catchAllDomains });
+    const account = addAccount({ email, host, port, secure, password, catchAllDomains, smtpHost, smtpPort, smtpSecure });
     return { ok: true, id: account.id };
   } catch (err) {
     return { ok: false, error: humanizeImapError(err) };
@@ -594,6 +597,86 @@ ipcMain.handle('email:sync', async (evt, { blockPromotions, excludedSenders, exp
   }
 
   return { ok: true, results: allResults, expenseResults: allExpenseResults, accountErrors };
+});
+
+// Renders an HTML invoice to a real PDF using Electron's own built-in
+// Chromium engine — no separate PDF library needed. Loads the HTML into
+// a hidden, offscreen window, waits for it to finish rendering, then
+// asks Chromium's own print pipeline for a PDF of the page. Lets the
+// user pick where to save via a native save dialog, standard for a
+// desktop app's "export" action.
+ipcMain.handle('invoice:exportPdf', async (evt, { html, suggestedName }) => {
+  const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save Invoice PDF',
+    defaultPath: suggestedName || 'invoice.pdf',
+    filters: [{ name: 'PDF', extensions: ['pdf'] }]
+  });
+  if (canceled || !filePath) return { ok: false, cancelled: true };
+
+  const pdfWindow = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
+  try {
+    await pdfWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    const pdfBuffer = await pdfWindow.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      margins: { top: 0, bottom: 0, left: 0, right: 0 }
+    });
+    fs.writeFileSync(filePath, pdfBuffer);
+    return { ok: true, filePath };
+  } catch (err) {
+    return { ok: false, error: err.message || 'Could not generate PDF' };
+  } finally {
+    pdfWindow.destroy();
+  }
+});
+
+// Generates the PDF the same way as export, but keeps it as a Buffer to
+// attach directly to an outgoing email instead of writing it to a
+// user-chosen location — used by the "send by email" flow.
+async function renderInvoicePdfBuffer(html) {
+  const pdfWindow = new BrowserWindow({ show: false, webPreferences: { offscreen: true } });
+  try {
+    await pdfWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    return await pdfWindow.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      margins: { top: 0, bottom: 0, left: 0, right: 0 }
+    });
+  } finally {
+    pdfWindow.destroy();
+  }
+}
+
+// Sends an invoice PDF by email using the same account credentials
+// already stored for IMAP, just pointed at that provider's SMTP server
+// instead — most providers use the same login for both. Needs an app
+// password with SMTP permission enabled, same as IMAP sync does.
+ipcMain.handle('invoice:sendEmail', async (evt, { accountId, toEmail, subject, bodyText, invoiceHtml, pdfFileName }) => {
+  const accounts = loadAccounts();
+  const account = accounts.find(a => a.id === accountId);
+  if (!account) return { ok: false, error: 'That email account is no longer connected.' };
+  if (!account.smtpHost) return { ok: false, error: 'This account has no SMTP server configured — try reconnecting it, or use a different account.' };
+  if (!account.password) return { ok: false, error: 'No password available for this account.' };
+
+  try {
+    const pdfBuffer = await renderInvoicePdfBuffer(invoiceHtml);
+    const transporter = nodemailer.createTransport({
+      host: account.smtpHost,
+      port: account.smtpPort || 587,
+      secure: !!account.smtpSecure,
+      auth: { user: account.email, pass: account.password }
+    });
+    await transporter.sendMail({
+      from: account.email,
+      to: toEmail,
+      subject,
+      text: bodyText,
+      attachments: [{ filename: pdfFileName || 'invoice.pdf', content: pdfBuffer }]
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message || 'Could not send the email.' };
+  }
 });
 
 

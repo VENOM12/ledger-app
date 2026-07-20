@@ -35,11 +35,11 @@ const CAT_STYLES = {
 };
 
 const PROVIDER_PRESETS = {
-  gmail:   { label:"Gmail",    host:"imap.gmail.com",         port:993, secure:true },
-  outlook: { label:"Outlook",  host:"outlook.office365.com",  port:993, secure:true },
-  yahoo:   { label:"Yahoo",    host:"imap.mail.yahoo.com",    port:993, secure:true },
-  icloud:  { label:"iCloud",   host:"imap.mail.me.com",       port:993, secure:true },
-  custom:  { label:"Custom",   host:"",                        port:993, secure:true }
+  gmail:   { label:"Gmail",    host:"imap.gmail.com",         port:993, secure:true, smtpHost:"smtp.gmail.com",        smtpPort:587, smtpSecure:false },
+  outlook: { label:"Outlook",  host:"outlook.office365.com",  port:993, secure:true, smtpHost:"smtp.office365.com",    smtpPort:587, smtpSecure:false },
+  yahoo:   { label:"Yahoo",    host:"imap.mail.yahoo.com",    port:993, secure:true, smtpHost:"smtp.mail.yahoo.com",   smtpPort:587, smtpSecure:false },
+  icloud:  { label:"iCloud",   host:"imap.mail.me.com",       port:993, secure:true, smtpHost:"smtp.mail.me.com",      smtpPort:587, smtpSecure:false },
+  custom:  { label:"Custom",   host:"",                        port:993, secure:true, smtpHost:"",                     smtpPort:587, smtpSecure:false }
 };
 
 const AUTO_SYNC_INTERVAL_MS = 60 * 1000;
@@ -249,6 +249,8 @@ if(!Array.isArray(state.generatedProfiles)) state.generatedProfiles = [];
 if(!state.profileBuilderSettings) state.profileBuilderSettings = { catchallDomains: [], emailList: [] };
 if(!Array.isArray(state.profileBuilderSettings.catchallDomains)) state.profileBuilderSettings.catchallDomains = [];
 if(!Array.isArray(state.profileBuilderSettings.emailList)) state.profileBuilderSettings.emailList = [];
+if(!Array.isArray(state.invoices)) state.invoices = [];
+if(!state.invoiceSettings) state.invoiceSettings = { fromName: "", defaultSendAccountId: null, nextInvoiceNumber: 1, defaultVatRate: 20 };
 
 let ui = { tab: "dashboard", period: "Month", stockFilter: "In Stock", stockCategoryFilter: "All", search: "", detailItemId: null };
 let licenseExpiresAt = null; // shown next to "Saved locally" in the sidebar once known
@@ -465,6 +467,7 @@ function render(){
       <div class="nav">
         ${navBtn("vcc-tracker","card","VCC Tracker")}
         ${navBtn("profile-builder","tools","Profile Builder")}
+        ${navBtn("invoices","cash","Invoice Generator")}
       </div>
       <div class="sidebar-footer">
         <div class="status-row"><span class="pulse"></span><span>Saved locally${licenseExpiresAt ? ` · Renews ${formatDate(licenseExpiresAt)}` : ""}</span></div>
@@ -512,7 +515,7 @@ function setTab(tab){
 function renderTopbar(){
   const bar = document.getElementById("topbar");
   if(!bar) return;
-  const titles = { dashboard: "Dashboard", stock: "Stock", add: "Add Stock", sold: "Sold", orders: "Confirmed Orders", expenses: "Expenses", "vcc-tracker": "VCC Tracker", "profile-builder": "Profile Builder" };
+  const titles = { dashboard: "Dashboard", stock: "Stock", add: "Add Stock", sold: "Sold", orders: "Confirmed Orders", expenses: "Expenses", "vcc-tracker": "VCC Tracker", "profile-builder": "Profile Builder", "invoices": "Invoice Generator" };
   let heading;
   if(ui.detailItemId){
     const item = state.items.find(i=>i.id===ui.detailItemId);
@@ -566,6 +569,7 @@ function renderView(){
   else if(ui.tab==="expenses"){ view.innerHTML = expensesHTML(); attachExpensesEvents(); }
   else if(ui.tab==="vcc-tracker"){ view.innerHTML = vccTrackerHTML(); attachVccTrackerEvents(); }
   else if(ui.tab==="profile-builder"){ view.innerHTML = profileBuilderHTML(); attachProfileBuilderEvents(); }
+  else if(ui.tab==="invoices"){ view.innerHTML = invoiceGeneratorHTML(); attachInvoiceGeneratorEvents(); }
 }
 
 /* ============================================================
@@ -2791,27 +2795,36 @@ function generateEmail(firstName, lastName, mode, catchallDomain){
 
 let profileGenUI = { mode: "catchall", selectedCatchall: "", count: 1 };
 
+// Pulls from the same catch-all domains already configured for email
+// sync, rather than keeping a separate list — avoids entering the same
+// domains twice, and stays in sync automatically if those change.
+function allImapCatchallDomains(){
+  const all = (emailUI.accounts || []).flatMap(acc => acc.catchAllDomains || []);
+  return Array.from(new Set(all));
+}
+
 function profileBuilderHTML(){
   const s = state.profileBuilderSettings;
-  if(!profileGenUI.selectedCatchall && s.catchallDomains.length) profileGenUI.selectedCatchall = s.catchallDomains[0];
+  const catchallDomains = allImapCatchallDomains();
+  if(!profileGenUI.selectedCatchall && catchallDomains.length) profileGenUI.selectedCatchall = catchallDomains[0];
 
   return `
     <div class="card panel" style="margin-bottom:20px;">
       <div class="panel-title" style="margin-bottom:6px;">Email Source</div>
-      <div class="hint" style="margin-bottom:12px;">Catch-all domains and your own addresses are managed in <strong style="color:var(--text);">Settings</strong> — pick which to use for the next profile here.</div>
+      <div class="hint" style="margin-bottom:12px;">Catch-all domains come from your Email Sync accounts, and your own addresses from <strong style="color:var(--text);">Settings</strong> — pick which to use for the next profile here.</div>
       <div class="segmented" style="margin-bottom:14px;max-width:360px;">
         <button class="${profileGenUI.mode==='catchall'?'active':''}" data-gen-mode="catchall">Catch-all domain</button>
         <button class="${profileGenUI.mode==='list'?'active':''}" data-gen-mode="list">My own addresses</button>
       </div>
       ${profileGenUI.mode==='catchall' ? (
-        s.catchallDomains.length ? `
+        catchallDomains.length ? `
           <div class="field" style="max-width:360px;">
             <label>Which catch-all domain</label>
             <select id="pb-select-catchall">
-              ${s.catchallDomains.map(d=>`<option value="${escapeAttr(d)}" ${profileGenUI.selectedCatchall===d?"selected":""}>${escapeHTML(d)}</option>`).join("")}
+              ${catchallDomains.map(d=>`<option value="${escapeAttr(d)}" ${profileGenUI.selectedCatchall===d?"selected":""}>${escapeHTML(d)}</option>`).join("")}
             </select>
           </div>
-        ` : `<div class="hint">No catch-all domains set up yet — add one in Settings first.</div>`
+        ` : `<div class="hint">No catch-all domains set up yet — add one to an email account under Settings → Email Sync first.</div>`
       ) : (
         s.emailList.length ? `<div class="hint">Picks randomly from the ${s.emailList.length} address${s.emailList.length===1?"":"es"} saved in Settings.</div>` : `<div class="hint">No addresses saved yet — add some in Settings first.</div>`
       )}
@@ -2892,7 +2905,7 @@ function attachProfileBuilderEvents(){
 
   document.getElementById("generateProfileBtn").addEventListener("click", ()=>{
     const s = state.profileBuilderSettings;
-    if(profileGenUI.mode==="catchall" && !s.catchallDomains.length){ showToast("Add a catch-all domain in Settings first", "close"); return; }
+    if(profileGenUI.mode==="catchall" && !allImapCatchallDomains().length){ showToast("Add a catch-all domain to an email account under Settings first", "close"); return; }
     if(profileGenUI.mode==="list" && !s.emailList.length){ showToast("Add some addresses in Settings first", "close"); return; }
     const countInput = document.getElementById("pb-genCount");
     const count = Math.max(1, Math.min(100, parseInt(countInput.value,10)||1));
@@ -2961,7 +2974,454 @@ function bindProfilesResultEvents(){
   });
 }
 
+/* ---------------- Invoice Generator ---------------- */
+
+let invoiceUI = { subTab: "create" };
+let invoiceDraft = null;
+
+function freshInvoiceDraft(){
+  return {
+    fromName: state.invoiceSettings.fromName,
+    buyerName: "", buyerAddress: "", buyerEmail: "",
+    lineItems: [],
+    vatEnabled: false,
+    vatRate: state.invoiceSettings.defaultVatRate,
+    shippingCost: "0",
+    notes: "",
+    itemPickerSearch: ""
+  };
+}
+
+function invoiceTotals(draft){
+  const subtotal = draft.lineItems.reduce((s,li)=>s+li.quantity*li.unitPrice,0);
+  const shipping = parseFloat(draft.shippingCost)||0;
+  const vatAmount = draft.vatEnabled ? (subtotal+shipping)*(parseFloat(draft.vatRate)||0)/100 : 0;
+  const total = subtotal + shipping + vatAmount;
+  return { subtotal, shipping, vatAmount, total };
+}
+
+function invoiceGeneratorHTML(){
+  if(!invoiceDraft) invoiceDraft = freshInvoiceDraft();
+  return `
+    <div class="segmented" style="margin-bottom:16px;">
+      <button class="${invoiceUI.subTab==='create'?'active':''}" data-invoice-subtab="create">Create Invoice</button>
+      <button class="${invoiceUI.subTab==='list'?'active':''}" data-invoice-subtab="list">Invoices (${state.invoices.length})</button>
+    </div>
+    ${invoiceUI.subTab==='create' ? invoiceCreateHTML() : invoicesListHTML()}
+  `;
+}
+
+function invoiceCreateHTML(){
+  const d = invoiceDraft;
+  const totals = invoiceTotals(d);
+  const availableItems = state.items.filter(i=>!i.isPreorder && qtyRemaining(i)>0 &&
+    (!d.itemPickerSearch || i.name.toLowerCase().includes(d.itemPickerSearch.toLowerCase())));
+
+  return `
+    <div class="card panel" style="margin-bottom:16px;">
+      <div class="panel-title" style="margin-bottom:10px;">From</div>
+      <div class="field" style="max-width:400px;">
+        <label>Your business or personal name</label>
+        <input type="text" id="inv-fromname" value="${escapeAttr(d.fromName)}" placeholder="e.g. Restock Reselling, or your name">
+      </div>
+    </div>
+
+    <div class="card panel" style="margin-bottom:16px;">
+      <div class="panel-title" style="margin-bottom:10px;">Bill To</div>
+      <div class="form-grid" style="margin-top:0;">
+        <div class="field">
+          <label>Buyer name</label>
+          <input type="text" id="inv-buyername" value="${escapeAttr(d.buyerName)}">
+        </div>
+        <div class="field">
+          <label>Buyer email</label>
+          <input type="text" id="inv-buyeremail" value="${escapeAttr(d.buyerEmail)}">
+        </div>
+      </div>
+      <div class="field">
+        <label>Buyer address</label>
+        <textarea id="inv-buyeraddress" rows="2">${escapeHTML(d.buyerAddress)}</textarea>
+      </div>
+    </div>
+
+    <div class="card panel" style="margin-bottom:16px;">
+      <div class="panel-title" style="margin-bottom:10px;">Items</div>
+      <div class="search-bar" style="margin-bottom:10px;max-width:400px;">
+        ${ICONS.search}
+        <input type="text" id="inv-itemsearch" placeholder="Search in-stock items to add" value="${escapeAttr(d.itemPickerSearch)}">
+      </div>
+      ${d.itemPickerSearch ? `
+        <div class="card table-wrap" style="margin-bottom:14px;max-height:220px;overflow-y:auto;">
+          <table class="data-table">
+            <thead><tr><th>Item</th><th>In stock</th><th></th></tr></thead>
+            <tbody>
+              ${availableItems.length===0 ? `<tr><td colspan="3" class="hint">No matching in-stock items.</td></tr>` : availableItems.map(i=>`
+                <tr>
+                  <td>${escapeHTML(i.name)}</td>
+                  <td class="mono dim">${qtyRemaining(i)}</td>
+                  <td style="text-align:right;"><button class="btn-small" data-add-invoice-item="${i.id}">Add</button></td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      ` : ""}
+
+      ${d.lineItems.length===0 ? `<div class="hint">No items added yet — search above to add some.</div>` : `
+        <div class="card table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Item</th><th>Qty</th><th>Price each</th><th style="text-align:right;">Line total</th><th></th></tr></thead>
+            <tbody>
+              ${d.lineItems.map((li,idx)=>`
+                <tr>
+                  <td>${escapeHTML(li.name)}</td>
+                  <td><input type="number" class="inv-line-qty" data-line-idx="${idx}" value="${li.quantity}" min="1" style="width:60px;padding:6px;"></td>
+                  <td><input type="number" class="inv-line-price" data-line-idx="${idx}" value="${li.unitPrice}" step="0.01" min="0" style="width:90px;padding:6px;"></td>
+                  <td style="text-align:right;" class="mono">${fmtMoney(li.quantity*li.unitPrice)}</td>
+                  <td style="text-align:right;"><button class="icon-btn" data-remove-invoice-line="${idx}">${ICONS.trash}</button></td>
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+      `}
+    </div>
+
+    <div class="card panel" style="margin-bottom:16px;">
+      <div class="panel-title" style="margin-bottom:10px;">Charges</div>
+      <div class="form-grid" style="margin-top:0;">
+        <div class="field">
+          <label>Shipping cost</label>
+          <input type="number" id="inv-shipping" value="${escapeAttr(d.shippingCost)}" step="0.01" min="0">
+        </div>
+        <div class="field">
+          <label style="display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="inv-vat-toggle" ${d.vatEnabled?"checked":""} style="width:auto;">
+            Charge VAT
+          </label>
+          <input type="number" id="inv-vat-rate" value="${escapeAttr(d.vatRate)}" step="0.1" min="0" max="100" ${d.vatEnabled?"":"disabled"} style="margin-top:8px;">
+        </div>
+      </div>
+      <div class="field">
+        <label>Notes (optional)</label>
+        <input type="text" id="inv-notes" value="${escapeAttr(d.notes)}" placeholder="Payment terms, thank-you note, etc.">
+      </div>
+    </div>
+
+    <div class="card" style="padding:16px 18px;margin-bottom:16px;">
+      <div class="kv-row"><span class="k">Subtotal</span><span class="v">${fmtMoney(totals.subtotal)}</span></div>
+      <div class="kv-row"><span class="k">Shipping</span><span class="v">${fmtMoney(totals.shipping)}</span></div>
+      ${d.vatEnabled ? `<div class="kv-row"><span class="k">VAT (${d.vatRate||0}%)</span><span class="v">${fmtMoney(totals.vatAmount)}</span></div>` : ""}
+      <div class="kv-row" style="border-top:1px solid var(--border-soft);margin-top:6px;padding-top:10px;"><span class="k" style="font-weight:700;color:var(--text);">Total</span><span class="v" style="font-size:17px;">${fmtMoney(totals.total)}</span></div>
+    </div>
+
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <button class="btn-primary" id="saveInvoiceBtn">${ICONS.check} Save Invoice</button>
+      <button class="btn-secondary" id="exportInvoicePdfBtn">${ICONS.download} Export PDF</button>
+      <button class="btn-secondary" id="sendInvoiceEmailBtn">${ICONS.mail} Send by Email</button>
+    </div>
+    <div style="height:20px;"></div>
+  `;
+}
+
+// The actual printable document — deliberately plain inline-styled HTML
+// (no external stylesheet or JS) so it renders identically whether it's
+// exported straight to PDF or emailed as an attachment.
+function buildInvoiceHTML(invoice){
+  const totals = invoiceTotals(invoice);
+  return `
+    <html><head><meta charset="utf-8"><style>
+      body{font-family:Arial,Helvetica,sans-serif;color:#111;padding:40px;font-size:13px;}
+      h1{font-size:22px;margin:0 0 4px;}
+      .muted{color:#666;}
+      table{width:100%;border-collapse:collapse;margin-top:24px;}
+      th{text-align:left;border-bottom:2px solid #333;padding:8px 6px;font-size:11px;text-transform:uppercase;color:#555;}
+      td{padding:8px 6px;border-bottom:1px solid #ddd;}
+      .totals{margin-top:16px;width:280px;margin-left:auto;}
+      .totals div{display:flex;justify-content:space-between;padding:4px 0;}
+      .totals .grand{font-weight:bold;font-size:16px;border-top:2px solid #333;margin-top:6px;padding-top:8px;}
+      .row{display:flex;justify-content:space-between;margin-bottom:30px;}
+      .box{max-width:45%;}
+      .label{font-size:11px;text-transform:uppercase;color:#888;margin-bottom:4px;}
+    </style></head><body>
+      <div class="row">
+        <div class="box">
+          <h1>${escapeHTML(invoice.fromName||"")}</h1>
+        </div>
+        <div class="box" style="text-align:right;">
+          <div class="label">Invoice</div>
+          <div style="font-weight:bold;">${escapeHTML(invoice.invoiceNumber)}</div>
+          <div class="muted">${formatDate(invoice.date)}</div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="box">
+          <div class="label">Bill To</div>
+          <div style="font-weight:bold;">${escapeHTML(invoice.buyer.name||"")}</div>
+          <div class="muted" style="white-space:pre-line;">${escapeHTML(invoice.buyer.address||"")}</div>
+          <div class="muted">${escapeHTML(invoice.buyer.email||"")}</div>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>Item</th><th>Qty</th><th>Price</th><th style="text-align:right;">Total</th></tr></thead>
+        <tbody>
+          ${invoice.lineItems.map(li=>`<tr><td>${escapeHTML(li.name)}</td><td>${li.quantity}</td><td>${fmtMoney(li.unitPrice)}</td><td style="text-align:right;">${fmtMoney(li.quantity*li.unitPrice)}</td></tr>`).join("")}
+        </tbody>
+      </table>
+      <div class="totals">
+        <div><span>Subtotal</span><span>${fmtMoney(totals.subtotal)}</span></div>
+        <div><span>Shipping</span><span>${fmtMoney(totals.shipping)}</span></div>
+        ${invoice.vatEnabled ? `<div><span>VAT (${invoice.vatRate||0}%)</span><span>${fmtMoney(totals.vatAmount)}</span></div>` : ""}
+        <div class="grand"><span>Total</span><span>${fmtMoney(totals.total)}</span></div>
+      </div>
+      ${invoice.notes ? `<div style="margin-top:30px;" class="muted">${escapeHTML(invoice.notes)}</div>` : ""}
+    </body></html>
+  `;
+}
+
+function draftToInvoiceObject(existingId){
+  const d = invoiceDraft;
+  return {
+    id: existingId || uid(),
+    invoiceNumber: existingId ? state.invoices.find(i=>i.id===existingId).invoiceNumber : `INV-${String(state.invoiceSettings.nextInvoiceNumber).padStart(4,"0")}`,
+    date: existingId ? state.invoices.find(i=>i.id===existingId).date : todayISO(),
+    status: existingId ? state.invoices.find(i=>i.id===existingId).status : "awaiting_payment",
+    fromName: d.fromName.trim(),
+    buyer: { name: d.buyerName.trim(), address: d.buyerAddress.trim(), email: d.buyerEmail.trim() },
+    lineItems: d.lineItems,
+    vatEnabled: d.vatEnabled,
+    vatRate: parseFloat(d.vatRate)||0,
+    shippingCost: parseFloat(d.shippingCost)||0,
+    notes: d.notes.trim()
+  };
+}
+
+function saveInvoiceDraft(){
+  if(invoiceDraft.lineItems.length===0){ showToast("Add at least one item first", "close"); return null; }
+  const invoice = draftToInvoiceObject(invoiceDraft.editingId);
+  if(invoiceDraft.editingId){
+    const idx = state.invoices.findIndex(i=>i.id===invoiceDraft.editingId);
+    state.invoices[idx] = invoice;
+  } else {
+    state.invoices.unshift(invoice);
+    state.invoiceSettings.nextInvoiceNumber++;
+  }
+  state.invoiceSettings.fromName = invoice.fromName; // carries forward as the default for next time
+  saveState();
+  return invoice;
+}
+
+function invoicesListHTML(){
+  if(state.invoices.length===0){
+    return `
+      <div class="empty-state">
+        ${ICONS.cash}
+        <div class="t">No invoices yet</div>
+        <div class="d">Invoices you create show up here, so you can track which are still awaiting payment.</div>
+      </div>
+    `;
+  }
+  const statusColor = { awaiting_payment: "var(--gold)", paid: "var(--green)", cancelled: "var(--text-mute)" };
+  const statusLbl = { awaiting_payment: "Awaiting Payment", paid: "Paid", cancelled: "Cancelled" };
+  return `
+    <div class="card table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Invoice #</th><th>Buyer</th><th>Date</th><th>Total</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+          ${state.invoices.map(inv=>{
+            const totals = invoiceTotals(inv);
+            return `
+            <tr data-open-invoice="${inv.id}" style="cursor:pointer;">
+              <td class="mono" style="font-weight:600;">${escapeHTML(inv.invoiceNumber)}</td>
+              <td>${escapeHTML(inv.buyer.name||"—")}</td>
+              <td class="mono dim">${formatDate(inv.date)}</td>
+              <td class="mono">${fmtMoney(totals.total)}</td>
+              <td><span class="status-chip" style="background:${statusColor[inv.status]}22;color:${statusColor[inv.status]};">${statusLbl[inv.status]}</span></td>
+              <td style="text-align:right;">
+                ${inv.status!=="paid" ? `<button class="btn-small" data-mark-paid="${inv.id}">Mark Paid</button>` : ""}
+              </td>
+            </tr>
+          `;}).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function loadInvoiceIntoDraft(invoice){
+  invoiceDraft = {
+    editingId: invoice.id,
+    fromName: invoice.fromName,
+    buyerName: invoice.buyer.name, buyerAddress: invoice.buyer.address, buyerEmail: invoice.buyer.email,
+    lineItems: invoice.lineItems.map(li=>({...li})),
+    vatEnabled: invoice.vatEnabled,
+    vatRate: invoice.vatRate,
+    shippingCost: String(invoice.shippingCost),
+    notes: invoice.notes,
+    itemPickerSearch: ""
+  };
+  invoiceUI.subTab = "create";
+}
+
+function attachInvoiceGeneratorEvents(){
+  document.querySelectorAll("[data-invoice-subtab]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ invoiceUI.subTab = btn.dataset.invoiceSubtab; renderView(); });
+  });
+
+  if(invoiceUI.subTab==="create"){
+    const d = invoiceDraft;
+    document.getElementById("inv-fromname").addEventListener("input", e=>{ d.fromName = e.target.value; });
+    document.getElementById("inv-buyername").addEventListener("input", e=>{ d.buyerName = e.target.value; });
+    document.getElementById("inv-buyeremail").addEventListener("input", e=>{ d.buyerEmail = e.target.value; });
+    document.getElementById("inv-buyeraddress").addEventListener("input", e=>{ d.buyerAddress = e.target.value; });
+    document.getElementById("inv-itemsearch").addEventListener("input", e=>{ d.itemPickerSearch = e.target.value; renderView(); });
+    document.getElementById("inv-shipping").addEventListener("input", e=>{ d.shippingCost = e.target.value; renderInvoiceTotalsOnly(); });
+    document.getElementById("inv-vat-toggle").addEventListener("change", e=>{ d.vatEnabled = e.target.checked; renderView(); });
+    document.getElementById("inv-vat-rate").addEventListener("input", e=>{ d.vatRate = e.target.value; renderInvoiceTotalsOnly(); });
+    document.getElementById("inv-notes").addEventListener("input", e=>{ d.notes = e.target.value; });
+
+    document.querySelectorAll("[data-add-invoice-item]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const item = state.items.find(i=>i.id===btn.dataset.addInvoiceItem);
+        if(!item) return;
+        const existing = d.lineItems.find(li=>li.itemId===item.id);
+        if(existing){ existing.quantity++; }
+        else { d.lineItems.push({ itemId: item.id, name: item.name, quantity: 1, unitPrice: item.purchasePricePerUnit||0 }); }
+        d.itemPickerSearch = "";
+        renderView();
+      });
+    });
+    document.querySelectorAll(".inv-line-qty").forEach(input=>{
+      input.addEventListener("input", e=>{
+        d.lineItems[parseInt(e.target.dataset.lineIdx,10)].quantity = Math.max(1, parseInt(e.target.value,10)||1);
+        renderInvoiceTotalsOnly();
+      });
+    });
+    document.querySelectorAll(".inv-line-price").forEach(input=>{
+      input.addEventListener("input", e=>{
+        d.lineItems[parseInt(e.target.dataset.lineIdx,10)].unitPrice = parseFloat(e.target.value)||0;
+        renderInvoiceTotalsOnly();
+      });
+    });
+    document.querySelectorAll("[data-remove-invoice-line]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        d.lineItems.splice(parseInt(btn.dataset.removeInvoiceLine,10),1);
+        renderView();
+      });
+    });
+
+    document.getElementById("saveInvoiceBtn").addEventListener("click", ()=>{
+      const invoice = saveInvoiceDraft();
+      if(invoice){
+        showToast(`Invoice ${invoice.invoiceNumber} saved`);
+        invoiceDraft = freshInvoiceDraft();
+        invoiceUI.subTab = "list";
+        renderView();
+      }
+    });
+    document.getElementById("exportInvoicePdfBtn").addEventListener("click", async ()=>{
+      if(d.lineItems.length===0){ showToast("Add at least one item first", "close"); return; }
+      const invoice = draftToInvoiceObject(d.editingId);
+      const html = buildInvoiceHTML(invoice);
+      const res = await window.invoiceAPI.exportPdf(html, `${invoice.invoiceNumber}.pdf`);
+      if(res.ok) showToast("PDF saved");
+      else if(!res.cancelled) showToast(res.error || "Could not export PDF", "close");
+    });
+    document.getElementById("sendInvoiceEmailBtn").addEventListener("click", ()=>{
+      if(d.lineItems.length===0){ showToast("Add at least one item first", "close"); return; }
+      if(!d.buyerEmail.trim()){ showToast("Enter the buyer's email first", "close"); return; }
+      openSendInvoiceModal();
+    });
+  } else {
+    document.querySelectorAll("[data-open-invoice]").forEach(row=>{
+      row.addEventListener("click", (e)=>{
+        if(e.target.closest("button")) return;
+        const invoice = state.invoices.find(i=>i.id===row.dataset.openInvoice);
+        if(invoice){ loadInvoiceIntoDraft(invoice); renderView(); }
+      });
+    });
+    document.querySelectorAll("[data-mark-paid]").forEach(btn=>{
+      btn.addEventListener("click", (e)=>{
+        e.stopPropagation();
+        const invoice = state.invoices.find(i=>i.id===btn.dataset.markPaid);
+        if(invoice){ invoice.status = "paid"; saveState(); renderView(); showToast("Marked as paid"); }
+      });
+    });
+  }
+}
+
+function renderInvoiceTotalsOnly(){
+  // Cheap re-render for number inputs that change on every keystroke —
+  // avoids losing focus/cursor position that a full renderView() would
+  // cause.
+  if(ui.tab==="invoices" && invoiceUI.subTab==="create") renderView();
+}
+
+function openSendInvoiceModal(){
+  const accounts = emailUI.accounts || [];
+  const accountsWithSmtp = accounts.filter(a=>a.smtpHost);
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open">
+      <div class="modal" style="width:440px;">
+        <div class="modal-header">
+          <h2>Send Invoice</h2>
+          <button class="icon-btn" id="closeSendInvoice">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          ${accountsWithSmtp.length===0 ? `
+            <div class="hint">No connected email account has sending set up. Reconnect an account under Settings → Email Sync to enable this.</div>
+          ` : `
+            <div class="field">
+              <label>Send from</label>
+              <select id="send-from-account">
+                ${accountsWithSmtp.map(a=>`<option value="${a.id}" ${state.invoiceSettings.defaultSendAccountId===a.id?"selected":""}>${escapeHTML(a.email)}</option>`).join("")}
+              </select>
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-dim);margin-bottom:14px;">
+              <input type="checkbox" id="send-set-default" style="width:auto;"> Make this my default sending account
+            </label>
+            <button class="btn-primary block" id="confirmSendInvoiceBtn">${ICONS.mail} Send</button>
+          `}
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("closeSendInvoice").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
+  const confirmBtn = document.getElementById("confirmSendInvoiceBtn");
+  if(confirmBtn) confirmBtn.addEventListener("click", async ()=>{
+    const accountId = document.getElementById("send-from-account").value;
+    if(document.getElementById("send-set-default").checked){
+      state.invoiceSettings.defaultSendAccountId = accountId;
+      saveState();
+    }
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = "Sending…";
+    const invoice = draftToInvoiceObject(invoiceDraft.editingId);
+    const html = buildInvoiceHTML(invoice);
+    const res = await window.invoiceAPI.sendEmail({
+      accountId, toEmail: invoiceDraft.buyerEmail.trim(),
+      subject: `Invoice ${invoice.invoiceNumber} from ${invoice.fromName}`,
+      bodyText: `Please find attached invoice ${invoice.invoiceNumber}.${invoice.notes ? "\n\n"+invoice.notes : ""}`,
+      invoiceHtml: html, pdfFileName: `${invoice.invoiceNumber}.pdf`
+    });
+    if(res.ok){
+      saveInvoiceDraft();
+      showToast("Invoice sent");
+      document.getElementById("modalRoot").innerHTML = "";
+      invoiceDraft = freshInvoiceDraft();
+      invoiceUI.subTab = "list";
+      renderView();
+    } else {
+      showToast(res.error || "Could not send the email", "close");
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = "Send";
+    }
+  });
+}
+
 let expensesUI = { tagFilter: "All" };
+
 
 function expensesHTML(){
   return `
@@ -4171,13 +4631,17 @@ async function connectEmailAccount(){
   refreshSettingsIfOpen();
 
   try{
+    const preset = PROVIDER_PRESETS[f.provider] || PROVIDER_PRESETS.custom;
     const res = await window.emailAPI.addAccount({
       email: f.formEmail.trim(),
       password: f.formPassword,
       host: f.formHost,
       port: f.formPort,
       secure: f.formSecure,
-      catchAllDomains: f.formCatchAllList
+      catchAllDomains: f.formCatchAllList,
+      smtpHost: preset.smtpHost,
+      smtpPort: preset.smtpPort,
+      smtpSecure: preset.smtpSecure
     });
     f.connecting = false;
     if(res.ok){
@@ -4860,18 +5324,7 @@ function openSettings(){
 
           <div style="height:20px;"></div>
           <div class="panel-title" style="margin-bottom:6px;">Profile Builder</div>
-          <div class="hint" style="margin-bottom:10px;">Catch-all domains and email addresses available to Profile Builder — manage them here, pick which to use for each generated profile there.</div>
-
-          <div style="font-weight:700;font-size:12.5px;color:var(--text-dim);margin-bottom:6px;">Catch-all domains</div>
-          <div class="chip-list" id="catchallDomainsChips" style="margin-bottom:10px;">
-            ${state.profileBuilderSettings.catchallDomains.length===0 ? `<span class="hint" style="margin:0;">None added yet.</span>` : state.profileBuilderSettings.catchallDomains.map(d=>`
-              <span class="excl-chip">${escapeHTML(d)}<button data-remove-pb-catchall="${escapeAttr(d)}">${ICONS.close}</button></span>
-            `).join("")}
-          </div>
-          <div class="add-exclusion-row" style="margin-bottom:16px;">
-            <input type="text" id="pbNewCatchallInput" placeholder="yourdomain.com">
-            <button class="btn-small" id="addPbCatchallBtn">${ICONS.plus} Add</button>
-          </div>
+          <div class="hint" style="margin-bottom:10px;">Catch-all domains for Profile Builder come from your Email Sync accounts above — add them there. Your own email addresses (for the "my own addresses" mode) are managed here.</div>
 
           <div style="font-weight:700;font-size:12.5px;color:var(--text-dim);margin-bottom:6px;">Your own email addresses</div>
           <div class="chip-list" id="ownedEmailsChips" style="margin-bottom:10px;">
@@ -4896,23 +5349,6 @@ function openSettings(){
     </div>
   `;
   document.getElementById("closeSettings").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; render(); });
-  document.getElementById("addPbCatchallBtn").addEventListener("click", ()=>{
-    const input = document.getElementById("pbNewCatchallInput");
-    const val = input.value.trim().replace(/^@/,"");
-    if(val && !state.profileBuilderSettings.catchallDomains.includes(val)){
-      state.profileBuilderSettings.catchallDomains.push(val);
-      saveState();
-    }
-    input.value = "";
-    refreshSettingsIfOpen();
-  });
-  document.querySelectorAll("[data-remove-pb-catchall]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{
-      state.profileBuilderSettings.catchallDomains = state.profileBuilderSettings.catchallDomains.filter(d=>d!==btn.dataset.removePbCatchall);
-      saveState();
-      refreshSettingsIfOpen();
-    });
-  });
   document.getElementById("addPbEmailBtn").addEventListener("click", ()=>{
     const input = document.getElementById("pbNewEmailInput");
     // Supports pasting several at once, comma or newline separated, not
@@ -5022,7 +5458,7 @@ function downloadCSV(filename, headers, rows){
 /* ---------------- Utility ---------------- */
 
 function escapeHTML(str){
-  return (str||"").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  return String(str==null ? "" : str).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
 function escapeAttr(str){ return escapeHTML(str); }
 

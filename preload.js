@@ -19,6 +19,11 @@ contextBridge.exposeInMainWorld('emailAPI', {
   sync: (opts) => ipcRenderer.invoke('email:sync', opts)
 });
 
+contextBridge.exposeInMainWorld('invoiceAPI', {
+  exportPdf: (html, suggestedName) => ipcRenderer.invoke('invoice:exportPdf', { html, suggestedName }),
+  sendEmail: (opts) => ipcRenderer.invoke('invoice:sendEmail', opts)
+});
+
 contextBridge.exposeInMainWorld('updaterAPI', {
   check: () => ipcRenderer.invoke('updater:check'),
   download: () => ipcRenderer.invoke('updater:download'),

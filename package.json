@@ -1,6 +1,6 @@
 {
   "name": "restock-reseller-tracker",
-  "version": "1.0.66",
+  "version": "1.0.68",
   "description": "Purchase tracking, profit/ROI, and stock management for resellers",
   "main": "main.js",
   "private": true,
@@ -15,7 +15,8 @@
   "dependencies": {
     "imapflow": "^1.0.171",
     "mailparser": "^3.7.1",
-    "electron-updater": "^6.3.0"
+    "electron-updater": "^6.3.0",
+    "nodemailer": "^6.9.14"
   },
   "build": {
     "appId": "com.restock.resellertracker",
@@ -34,7 +35,12 @@
     ],
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "icon": "icon.ico"
     },
