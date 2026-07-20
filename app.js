@@ -244,6 +244,7 @@ if(!state.pendingOrders) state.pendingOrders = [];
 if(!state.pendingSales) state.pendingSales = [];
 if(!state.displayCurrency) state.displayCurrency = "USD";
 if(!state.emailFilters) state.emailFilters = { blockPromotions: true, excludedSenders: [] };
+if(!Array.isArray(state.vccs)) state.vccs = [];
 
 let ui = { tab: "dashboard", period: "Month", stockFilter: "In Stock", stockCategoryFilter: "All", search: "", detailItemId: null };
 let licenseExpiresAt = null; // shown next to "Saved locally" in the sidebar once known
@@ -345,6 +346,8 @@ const ICONS = {
   trend: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/></svg>`,
   percent: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/></svg>`,
   cash: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="3"/></svg>`,
+  card: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>`,
+  tools: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>`,
   check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`,
   close: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>`,
   search: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>`,
@@ -453,6 +456,10 @@ function render(){
         ${navBtn("add","plus","Add Stock")}
         ${navBtn("expenses","cash","Expenses")}
       </div>
+      <div class="navlabel">Tools</div>
+      <div class="nav">
+        ${navBtn("vcc-tracker","card","VCC Tracker")}
+      </div>
       <div class="sidebar-footer">
         <div class="status-row"><span class="pulse"></span><span>Saved locally${licenseExpiresAt ? ` · Renews ${formatDate(licenseExpiresAt)}` : ""}</span></div>
         <div id="updateBannerSlot"></div>
@@ -499,7 +506,7 @@ function setTab(tab){
 function renderTopbar(){
   const bar = document.getElementById("topbar");
   if(!bar) return;
-  const titles = { dashboard: "Dashboard", stock: "Stock", add: "Add Stock", sold: "Sold", orders: "Confirmed Orders", expenses: "Expenses" };
+  const titles = { dashboard: "Dashboard", stock: "Stock", add: "Add Stock", sold: "Sold", orders: "Confirmed Orders", expenses: "Expenses", "vcc-tracker": "VCC Tracker" };
   let heading;
   if(ui.detailItemId){
     const item = state.items.find(i=>i.id===ui.detailItemId);
@@ -551,6 +558,7 @@ function renderView(){
   else if(ui.tab==="orders"){ view.innerHTML = ordersHTML(); attachOrdersEvents(); }
   else if(ui.tab==="sold"){ view.innerHTML = soldHTML(); attachSoldEvents(); }
   else if(ui.tab==="expenses"){ view.innerHTML = expensesHTML(); attachExpensesEvents(); }
+  else if(ui.tab==="vcc-tracker"){ view.innerHTML = vccTrackerHTML(); attachVccTrackerEvents(); }
 }
 
 /* ============================================================
@@ -2525,7 +2533,210 @@ function attachSoldEvents(){
   }
 }
 
-/* ---------------- Expenses ---------------- */
+/* ---------------- VCC Tracker ---------------- */
+
+let vccUI = { statusFilter: "All", search: "" };
+
+function vccTrackerHTML(){
+  const cards = state.vccs
+    .filter(c => vccUI.statusFilter==="All" || c.status===vccUI.statusFilter)
+    .filter(c => !vccUI.search || c.nickname.toLowerCase().includes(vccUI.search.toLowerCase()) || (c.last4||"").includes(vccUI.search));
+
+  const activeTotal = state.vccs.filter(c=>c.status==="active").reduce((s,c)=>s+(c.balance||0),0);
+
+  return `
+    <div class="stat-grid" style="margin-bottom:16px;">
+      ${statCard("card", "Total Balance (Active)", fmtMoney(activeTotal), "var(--violet)", "var(--violet-bg)")}
+      ${statCard("card", "Total Cards", ""+state.vccs.length, "var(--blue)", "var(--blue-bg)")}
+      ${statCard("card", "Active", ""+state.vccs.filter(c=>c.status==="active").length, "var(--green)", "var(--green-bg)")}
+      ${statCard("card", "Frozen / Expired", ""+state.vccs.filter(c=>c.status!=="active").length, "var(--text-mute)", "var(--card-2)")}
+    </div>
+    <div class="toolbar-row">
+      <button class="btn-primary" id="addVccBtn">${ICONS.plus} Add Card</button>
+      <select id="vccStatusFilterSelect" style="width:auto;padding:9px 30px 9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
+        <option ${vccUI.statusFilter==="All"?"selected":""}>All</option>
+        <option ${vccUI.statusFilter==="active"?"selected":""}>active</option>
+        <option ${vccUI.statusFilter==="frozen"?"selected":""}>frozen</option>
+        <option ${vccUI.statusFilter==="expired"?"selected":""}>expired</option>
+      </select>
+      <div class="search-bar">
+        ${ICONS.search}
+        <input type="text" id="vccSearchInput" placeholder="Search by nickname or last 4" value="${escapeAttr(vccUI.search)}">
+      </div>
+    </div>
+    <div id="vccResultsContainer">${vccResultsHTML(cards)}</div>
+    <div style="height:20px;"></div>
+  `;
+}
+
+function vccResultsHTML(cards){
+  if(cards.length===0){
+    return `
+      <div class="empty-state">
+        ${ICONS.card}
+        <div class="t">No cards yet</div>
+        <div class="d">Add the virtual cards your business uses, so you can see balances and limits in one place instead of hunting through a banking app.</div>
+      </div>
+    `;
+  }
+  const statusColor = { active: "var(--green)", frozen: "var(--blue)", expired: "var(--text-mute)" };
+  return `
+    <div class="stat-grid">
+      ${cards.map(c => `
+        <div class="card" style="padding:16px 18px;cursor:pointer;" data-open-vcc="${c.id}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+            <div style="min-width:0;">
+              <div style="font-weight:700;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(c.nickname)}</div>
+              <div class="hint mono" style="margin:2px 0 0;">${c.network ? escapeHTML(c.network)+" · " : ""}${c.last4 ? "•••• "+escapeHTML(c.last4) : "No card number saved"}</div>
+            </div>
+            <span class="status-chip" style="background:${statusColor[c.status]||"var(--card-2)"}22;color:${statusColor[c.status]||"var(--text-mute)"};flex-shrink:0;">${c.status}</span>
+          </div>
+          <div style="margin-top:14px;display:flex;justify-content:space-between;align-items:baseline;">
+            <div>
+              <div class="stat-value" style="font-size:19px;">${fmtMoney(c.balance||0)}</div>
+              <div class="hint" style="margin:0;">Balance</div>
+            </div>
+            ${c.limit ? `<div style="text-align:right;"><div class="mono" style="font-size:13px;color:var(--text-dim);">${fmtMoney(c.limit)}</div><div class="hint" style="margin:0;">Limit</div></div>` : ""}
+          </div>
+          ${c.notes ? `<div class="hint" style="margin-top:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(c.notes)}</div>` : ""}
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderVccResults(){
+  const container = document.getElementById("vccResultsContainer");
+  if(!container) return;
+  const cards = state.vccs
+    .filter(c => vccUI.statusFilter==="All" || c.status===vccUI.statusFilter)
+    .filter(c => !vccUI.search || c.nickname.toLowerCase().includes(vccUI.search.toLowerCase()) || (c.last4||"").includes(vccUI.search));
+  container.innerHTML = vccResultsHTML(cards);
+  bindVccResultEvents();
+}
+
+function attachVccTrackerEvents(){
+  document.getElementById("addVccBtn").addEventListener("click", ()=>openVccModal(null));
+  document.getElementById("vccStatusFilterSelect").addEventListener("change", e=>{
+    vccUI.statusFilter = e.target.value; renderVccResults();
+  });
+  const search = document.getElementById("vccSearchInput");
+  search.addEventListener("input", e=>{ vccUI.search = e.target.value; renderVccResults(); });
+  bindVccResultEvents();
+}
+
+function bindVccResultEvents(){
+  document.querySelectorAll("[data-open-vcc]").forEach(card=>{
+    card.addEventListener("click", ()=>openVccModal(card.dataset.openVcc));
+  });
+}
+
+let vccFormState = null;
+
+function openVccModal(vccId){
+  const existing = vccId ? state.vccs.find(c=>c.id===vccId) : null;
+  vccFormState = {
+    id: existing ? existing.id : null,
+    nickname: existing ? existing.nickname : "",
+    last4: existing ? existing.last4 || "" : "",
+    network: existing ? existing.network || "" : "",
+    balance: existing ? String(existing.balance||0) : "",
+    limit: existing ? String(existing.limit||"") : "",
+    status: existing ? existing.status : "active",
+    notes: existing ? existing.notes || "" : ""
+  };
+  renderVccModal();
+}
+
+function renderVccModal(){
+  const f = vccFormState;
+  const isEdit = !!f.id;
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open" id="vccModalBackdrop">
+      <div class="modal" style="width:460px;">
+        <div class="modal-header">
+          <h2>${isEdit ? "Edit Card" : "Add Card"}</h2>
+          <button class="icon-btn" id="closeVccModal">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label>Nickname</label>
+            <input type="text" id="vcc-nickname" value="${escapeAttr(f.nickname)}" placeholder="e.g. Marketing Card 3">
+          </div>
+          <div class="form-grid">
+            <div class="field">
+              <label>Last 4 digits</label>
+              <input type="text" id="vcc-last4" value="${escapeAttr(f.last4)}" maxlength="4" placeholder="4242">
+            </div>
+            <div class="field">
+              <label>Network (optional)</label>
+              <input type="text" id="vcc-network" value="${escapeAttr(f.network)}" placeholder="Visa, Mastercard...">
+            </div>
+            <div class="field">
+              <label>Balance</label>
+              <input type="number" id="vcc-balance" value="${escapeAttr(f.balance)}" step="0.01" placeholder="0.00">
+            </div>
+            <div class="field">
+              <label>Limit (optional)</label>
+              <input type="number" id="vcc-limit" value="${escapeAttr(f.limit)}" step="0.01" placeholder="0.00">
+            </div>
+            <div class="field">
+              <label>Status</label>
+              <select id="vcc-status">
+                <option value="active" ${f.status==="active"?"selected":""}>active</option>
+                <option value="frozen" ${f.status==="frozen"?"selected":""}>frozen</option>
+                <option value="expired" ${f.status==="expired"?"selected":""}>expired</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label>Notes</label>
+            <input type="text" id="vcc-notes" value="${escapeAttr(f.notes)}" placeholder="What this card is usually used for">
+          </div>
+          <div style="height:6px;"></div>
+          <button class="btn-primary block" id="saveVccBtn">${isEdit ? "Save Changes" : "Add Card"}</button>
+          ${isEdit ? `<button class="btn-secondary block" id="deleteVccBtn" style="margin-top:10px;border-color:var(--red);color:var(--red);">${ICONS.trash} Delete Card</button>` : ""}
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("closeVccModal").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
+  document.getElementById("vcc-nickname").addEventListener("input", e=>{ f.nickname = e.target.value; });
+  document.getElementById("vcc-last4").addEventListener("input", e=>{ f.last4 = e.target.value.replace(/\D/g,"").slice(0,4); });
+  document.getElementById("vcc-network").addEventListener("input", e=>{ f.network = e.target.value; });
+  document.getElementById("vcc-balance").addEventListener("input", e=>{ f.balance = e.target.value; });
+  document.getElementById("vcc-limit").addEventListener("input", e=>{ f.limit = e.target.value; });
+  document.getElementById("vcc-status").addEventListener("change", e=>{ f.status = e.target.value; });
+  document.getElementById("vcc-notes").addEventListener("input", e=>{ f.notes = e.target.value; });
+
+  document.getElementById("saveVccBtn").addEventListener("click", ()=>{
+    const nickname = f.nickname.trim();
+    if(!nickname){ showToast("Enter a nickname for this card", "close"); return; }
+    const balance = parseFloat(f.balance)||0;
+    const limit = f.limit.trim() ? parseFloat(f.limit) : null;
+    if(f.id){
+      const card = state.vccs.find(c=>c.id===f.id);
+      Object.assign(card, { nickname, last4: f.last4, network: f.network.trim(), balance, limit, status: f.status, notes: f.notes.trim() });
+    } else {
+      state.vccs.unshift({ id: uid(), nickname, last4: f.last4, network: f.network.trim(), balance, limit, status: f.status, notes: f.notes.trim() });
+    }
+    saveState();
+    document.getElementById("modalRoot").innerHTML = "";
+    showToast(f.id ? "Card updated" : "Card added");
+    if(ui.tab==="vcc-tracker") renderView();
+  });
+
+  const deleteBtn = document.getElementById("deleteVccBtn");
+  if(deleteBtn) deleteBtn.addEventListener("click", ()=>{
+    if(!confirm(`Delete "${f.nickname}"? This can't be undone.`)) return;
+    state.vccs = state.vccs.filter(c=>c.id!==f.id);
+    saveState();
+    document.getElementById("modalRoot").innerHTML = "";
+    showToast("Card deleted");
+    if(ui.tab==="vcc-tracker") renderView();
+  });
+}
 
 let expensesUI = { tagFilter: "All" };
 
