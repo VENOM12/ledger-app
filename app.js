@@ -2586,8 +2586,9 @@ function vccTrackerHTML(){
       </div>
     </div>
     <div id="vccResultsContainer">${vccResultsHTML(cards)}</div>
-    <div class="hint" style="margin-top:14px;padding:12px 14px;background:var(--red-bg);border:1px solid var(--red);border-radius:var(--radius-sm);color:var(--red);">
-      ${ICONS.warning} All data in this app, including anything entered here, is stored locally on your own machine only — nothing is sent anywhere else. You use this feature entirely at your own risk. The reseller/developer of this app is not responsible for any loss if your device is compromised.
+    <div style="margin-top:14px;padding:6px 10px;background:var(--red-bg);border:1px solid var(--red);border-radius:var(--radius-sm);color:var(--red);font-size:11px;line-height:1.4;display:flex;align-items:flex-start;gap:6px;">
+      <span style="flex-shrink:0;width:12px;height:12px;margin-top:1px;">${ICONS.warning}</span>
+      <span>All data here is stored locally on your device only. Used entirely at your own risk — no responsibility taken for loss if your device is compromised.</span>
     </div>
     <div style="height:20px;"></div>
   `;
@@ -2828,6 +2829,8 @@ function profileBuilderHTML(){
   `;
 }
 
+let profileSelection = new Set();
+
 function profilesResultsHTML(){
   if(state.generatedProfiles.length===0){
     return `
@@ -2838,13 +2841,24 @@ function profilesResultsHTML(){
       </div>
     `;
   }
+  const allSelected = state.generatedProfiles.length>0 && state.generatedProfiles.every(p=>profileSelection.has(p.id));
   return `
-    <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;margin-bottom:8px;">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-dim);cursor:pointer;">
+        <input type="checkbox" id="selectAllProfilesCheckbox" ${allSelected?"checked":""}>
+        Select all
+      </label>
+      ${profileSelection.size>0 ? `<button class="btn-small" id="deleteSelectedProfilesBtn" style="border-color:var(--red);color:var(--red);">${ICONS.trash} Delete Selected (${profileSelection.size})</button>` : ""}
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px;">
       ${state.generatedProfiles.map(p=>`
         <div class="card" style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
-          <div style="min-width:0;">
-            <div style="font-weight:700;font-size:14px;">${escapeHTML(p.firstName)} ${escapeHTML(p.lastName)}</div>
-            <div class="hint mono" style="margin:3px 0 0;">${escapeHTML(p.phone)}${p.email ? " · "+escapeHTML(p.email) : ""}</div>
+          <div style="display:flex;align-items:center;gap:12px;min-width:0;">
+            <input type="checkbox" class="profile-select-checkbox" data-select-profile="${p.id}" ${profileSelection.has(p.id)?"checked":""}>
+            <div style="min-width:0;">
+              <div style="font-weight:700;font-size:14px;">${escapeHTML(p.firstName)} ${escapeHTML(p.lastName)}</div>
+              <div class="hint mono" style="margin:3px 0 0;">${escapeHTML(p.phone)}${p.email ? " · "+escapeHTML(p.email) : ""}</div>
+            </div>
           </div>
           <div style="display:flex;gap:6px;flex-shrink:0;">
             <button class="btn-small" data-copy-profile="${p.id}">Copy</button>
@@ -2913,9 +2927,37 @@ function bindProfilesResultEvents(){
   document.querySelectorAll("[data-delete-profile]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
       state.generatedProfiles = state.generatedProfiles.filter(p=>p.id!==btn.dataset.deleteProfile);
+      profileSelection.delete(btn.dataset.deleteProfile);
       saveState();
       renderProfilesResults();
     });
+  });
+  const selectAllCheckbox = document.getElementById("selectAllProfilesCheckbox");
+  if(selectAllCheckbox) selectAllCheckbox.addEventListener("change", e=>{
+    if(e.target.checked){
+      state.generatedProfiles.forEach(p=>profileSelection.add(p.id));
+    } else {
+      profileSelection.clear();
+    }
+    renderProfilesResults();
+  });
+  document.querySelectorAll("[data-select-profile]").forEach(cb=>{
+    cb.addEventListener("change", e=>{
+      const id = cb.dataset.selectProfile;
+      if(e.target.checked) profileSelection.add(id);
+      else profileSelection.delete(id);
+      renderProfilesResults();
+    });
+  });
+  const deleteSelectedBtn = document.getElementById("deleteSelectedProfilesBtn");
+  if(deleteSelectedBtn) deleteSelectedBtn.addEventListener("click", ()=>{
+    const count = profileSelection.size;
+    if(!confirm(`Delete ${count} selected profile${count===1?"":"s"}? This can't be undone.`)) return;
+    state.generatedProfiles = state.generatedProfiles.filter(p=>!profileSelection.has(p.id));
+    profileSelection.clear();
+    saveState();
+    renderProfilesResults();
+    showToast(`${count} profile${count===1?"":"s"} deleted`);
   });
 }
 
