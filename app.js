@@ -246,7 +246,9 @@ if(!state.displayCurrency) state.displayCurrency = "USD";
 if(!state.emailFilters) state.emailFilters = { blockPromotions: true, excludedSenders: [] };
 if(!Array.isArray(state.vccs)) state.vccs = [];
 if(!Array.isArray(state.generatedProfiles)) state.generatedProfiles = [];
-if(!state.profileBuilderSettings) state.profileBuilderSettings = { emailMode: "catchall", catchallDomain: "", emailList: [] };
+if(!state.profileBuilderSettings) state.profileBuilderSettings = { catchallDomains: [], emailList: [] };
+if(!Array.isArray(state.profileBuilderSettings.catchallDomains)) state.profileBuilderSettings.catchallDomains = [];
+if(!Array.isArray(state.profileBuilderSettings.emailList)) state.profileBuilderSettings.emailList = [];
 
 let ui = { tab: "dashboard", period: "Month", stockFilter: "In Stock", stockCategoryFilter: "All", search: "", detailItemId: null };
 let licenseExpiresAt = null; // shown next to "Saved locally" in the sidebar once known
@@ -350,6 +352,7 @@ const ICONS = {
   cash: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="3"/></svg>`,
   card: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>`,
   tools: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>`,
+  warning: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
   check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`,
   close: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>`,
   search: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>`,
@@ -2583,10 +2586,8 @@ function vccTrackerHTML(){
       </div>
     </div>
     <div id="vccResultsContainer">${vccResultsHTML(cards)}</div>
-    <div class="hint" style="margin-top:14px;">
-      CVV is never asked for or stored — you'll always type it fresh at checkout, the same way any
-      legitimate saved-card feature works. Card status is worked out automatically from the expiry
-      date, not something you set by hand.
+    <div class="hint" style="margin-top:14px;padding:12px 14px;background:var(--red-bg);border:1px solid var(--red);border-radius:var(--radius-sm);color:var(--red);">
+      ${ICONS.warning} All data in this app, including anything entered here, is stored locally on your own machine only — nothing is sent anywhere else. You use this feature entirely at your own risk. The reseller/developer of this app is not responsible for any loss if your device is compromised.
     </div>
     <div style="height:20px;"></div>
   `;
@@ -2696,11 +2697,10 @@ function renderVccModal(){
               <input type="text" id="vcc-network" value="${escapeAttr(f.network)}" placeholder="Visa, Mastercard...">
             </div>
           </div>
-          <div class="field">
+          <div class="field" style="max-width:120px;">
             <label>Cvv</label>
             <input type="text" id="vcc-cvv" value="${escapeAttr(f.cvv)}" placeholder="What this card is usually used for">
           </div>
-          <div class="hint" style="margin-top:2px;">CVV is never stored here — you'll enter it directly at checkout, same as any legitimate saved-card feature.</div>
           <div style="height:6px;"></div>
           <button class="btn-primary block" id="saveVccBtn">${isEdit ? "Save Changes" : "Add Card"}</button>
           ${isEdit ? `<button class="btn-secondary block" id="deleteVccBtn" style="margin-top:10px;border-color:var(--red);color:var(--red);">${ICONS.trash} Delete Card</button>` : ""}
@@ -2774,44 +2774,54 @@ function generatePhoneNumber(){
   return "07"+digits;
 }
 
-function generateEmail(){
-  const s = state.profileBuilderSettings;
-  if(s.emailMode==="list" && s.emailList.length){
-    return randomFrom(s.emailList);
+// Takes the chosen mode/domain explicitly rather than reading a single
+// stored setting — catch-all domains are now managed as a list in
+// Settings, and which one to use (or whether to use the owned-addresses
+// list instead) is chosen per generation.
+function generateEmail(firstName, lastName, mode, catchallDomain){
+  if(mode==="list" && state.profileBuilderSettings.emailList.length){
+    return randomFrom(state.profileBuilderSettings.emailList);
   }
-  if(s.emailMode==="catchall" && s.catchallDomain){
-    const localPart = Math.random().toString(36).slice(2,10);
-    return `${localPart}@${s.catchallDomain.replace(/^@/,"")}`;
+  if(mode==="catchall" && catchallDomain){
+    return `${firstName.toLowerCase()}.${lastName.toLowerCase()}@${catchallDomain.replace(/^@/,"")}`;
   }
   return null;
 }
 
+let profileGenUI = { mode: "catchall", selectedCatchall: "", count: 1 };
+
 function profileBuilderHTML(){
   const s = state.profileBuilderSettings;
+  if(!profileGenUI.selectedCatchall && s.catchallDomains.length) profileGenUI.selectedCatchall = s.catchallDomains[0];
+
   return `
     <div class="card panel" style="margin-bottom:20px;">
       <div class="panel-title" style="margin-bottom:6px;">Email Source</div>
-      <div class="hint" style="margin-bottom:12px;">Choose how generated profiles get an email address.</div>
+      <div class="hint" style="margin-bottom:12px;">Catch-all domains and your own addresses are managed in <strong style="color:var(--text);">Settings</strong> — pick which to use for the next profile here.</div>
       <div class="segmented" style="margin-bottom:14px;max-width:360px;">
-        <button class="${s.emailMode==='catchall'?'active':''}" data-email-mode="catchall">Catch-all domain</button>
-        <button class="${s.emailMode==='list'?'active':''}" data-email-mode="list">My own addresses</button>
+        <button class="${profileGenUI.mode==='catchall'?'active':''}" data-gen-mode="catchall">Catch-all domain</button>
+        <button class="${profileGenUI.mode==='list'?'active':''}" data-gen-mode="list">My own addresses</button>
       </div>
-      ${s.emailMode==='catchall' ? `
-        <div class="field" style="max-width:360px;">
-          <label>Your catch-all domain</label>
-          <input type="text" id="pb-catchall" value="${escapeAttr(s.catchallDomain)}" placeholder="yourdomain.com">
-        </div>
-      ` : `
-        <div class="field">
-          <label>Email addresses you own (one per line)</label>
-          <textarea id="pb-emaillist" rows="4" placeholder="you@example.com&#10;you2@example.com">${escapeHTML(s.emailList.join("\n"))}</textarea>
-        </div>
-      `}
-      <button class="btn-small" id="saveEmailSettingsBtn" style="margin-top:10px;">Save</button>
+      ${profileGenUI.mode==='catchall' ? (
+        s.catchallDomains.length ? `
+          <div class="field" style="max-width:360px;">
+            <label>Which catch-all domain</label>
+            <select id="pb-select-catchall">
+              ${s.catchallDomains.map(d=>`<option value="${escapeAttr(d)}" ${profileGenUI.selectedCatchall===d?"selected":""}>${escapeHTML(d)}</option>`).join("")}
+            </select>
+          </div>
+        ` : `<div class="hint">No catch-all domains set up yet — add one in Settings first.</div>`
+      ) : (
+        s.emailList.length ? `<div class="hint">Picks randomly from the ${s.emailList.length} address${s.emailList.length===1?"":"es"} saved in Settings.</div>` : `<div class="hint">No addresses saved yet — add some in Settings first.</div>`
+      )}
     </div>
 
     <div class="toolbar-row">
-      <button class="btn-primary" id="generateProfileBtn">${ICONS.plus} Generate New Profile</button>
+      <button class="btn-primary" id="generateProfileBtn">${ICONS.plus} Generate</button>
+      <div class="field" style="margin:0;width:90px;">
+        <input type="number" id="pb-genCount" value="${profileGenUI.count}" min="1" max="100" step="1">
+      </div>
+      <div class="hint" style="margin:0;">profile${profileGenUI.count===1?"":"s"} at once</div>
     </div>
     <div id="profilesResultsContainer">${profilesResultsHTML()}</div>
     <div style="height:20px;"></div>
@@ -2854,37 +2864,39 @@ function renderProfilesResults(){
 }
 
 function attachProfileBuilderEvents(){
-  document.querySelectorAll("[data-email-mode]").forEach(btn=>{
+  document.querySelectorAll("[data-gen-mode]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
-      state.profileBuilderSettings.emailMode = btn.dataset.emailMode;
-      saveState();
+      profileGenUI.mode = btn.dataset.genMode;
       renderView();
     });
   });
-  document.getElementById("saveEmailSettingsBtn").addEventListener("click", ()=>{
-    const s = state.profileBuilderSettings;
-    if(s.emailMode==="catchall"){
-      const input = document.getElementById("pb-catchall");
-      s.catchallDomain = input.value.trim().replace(/^@/,"");
-    } else {
-      const textarea = document.getElementById("pb-emaillist");
-      s.emailList = textarea.value.split("\n").map(e=>e.trim()).filter(Boolean);
-    }
-    saveState();
-    showToast("Email settings saved");
+  const catchallSelect = document.getElementById("pb-select-catchall");
+  if(catchallSelect) catchallSelect.addEventListener("change", e=>{ profileGenUI.selectedCatchall = e.target.value; });
+  document.getElementById("pb-genCount").addEventListener("input", e=>{
+    profileGenUI.count = Math.max(1, Math.min(100, parseInt(e.target.value,10)||1));
   });
+
   document.getElementById("generateProfileBtn").addEventListener("click", ()=>{
-    const profile = {
-      id: uid(),
-      firstName: randomFrom(PROFILE_FIRST_NAMES),
-      lastName: randomFrom(PROFILE_LAST_NAMES),
-      phone: generatePhoneNumber(),
-      email: generateEmail()
-    };
-    state.generatedProfiles.unshift(profile);
+    const s = state.profileBuilderSettings;
+    if(profileGenUI.mode==="catchall" && !s.catchallDomains.length){ showToast("Add a catch-all domain in Settings first", "close"); return; }
+    if(profileGenUI.mode==="list" && !s.emailList.length){ showToast("Add some addresses in Settings first", "close"); return; }
+    const countInput = document.getElementById("pb-genCount");
+    const count = Math.max(1, Math.min(100, parseInt(countInput.value,10)||1));
+    const newProfiles = [];
+    for(let i=0; i<count; i++){
+      const firstName = randomFrom(PROFILE_FIRST_NAMES);
+      const lastName = randomFrom(PROFILE_LAST_NAMES);
+      newProfiles.push({
+        id: uid(),
+        firstName, lastName,
+        phone: generatePhoneNumber(),
+        email: generateEmail(firstName, lastName, profileGenUI.mode, profileGenUI.selectedCatchall)
+      });
+    }
+    state.generatedProfiles.unshift(...newProfiles);
     saveState();
     renderProfilesResults();
-    showToast("Profile generated");
+    showToast(`${count} profile${count===1?"":"s"} generated`);
   });
   bindProfilesResultEvents();
 }
@@ -4805,6 +4817,33 @@ function openSettings(){
           </div>
 
           <div style="height:20px;"></div>
+          <div class="panel-title" style="margin-bottom:6px;">Profile Builder</div>
+          <div class="hint" style="margin-bottom:10px;">Catch-all domains and email addresses available to Profile Builder — manage them here, pick which to use for each generated profile there.</div>
+
+          <div style="font-weight:700;font-size:12.5px;color:var(--text-dim);margin-bottom:6px;">Catch-all domains</div>
+          <div class="chip-list" id="catchallDomainsChips" style="margin-bottom:10px;">
+            ${state.profileBuilderSettings.catchallDomains.length===0 ? `<span class="hint" style="margin:0;">None added yet.</span>` : state.profileBuilderSettings.catchallDomains.map(d=>`
+              <span class="excl-chip">${escapeHTML(d)}<button data-remove-pb-catchall="${escapeAttr(d)}">${ICONS.close}</button></span>
+            `).join("")}
+          </div>
+          <div class="add-exclusion-row" style="margin-bottom:16px;">
+            <input type="text" id="pbNewCatchallInput" placeholder="yourdomain.com">
+            <button class="btn-small" id="addPbCatchallBtn">${ICONS.plus} Add</button>
+          </div>
+
+          <div style="font-weight:700;font-size:12.5px;color:var(--text-dim);margin-bottom:6px;">Your own email addresses</div>
+          <div class="chip-list" id="ownedEmailsChips" style="margin-bottom:10px;">
+            ${state.profileBuilderSettings.emailList.length===0 ? `<span class="hint" style="margin:0;">None added yet.</span>` : state.profileBuilderSettings.emailList.map(e=>`
+              <span class="excl-chip">${escapeHTML(e)}<button data-remove-pb-email="${escapeAttr(e)}">${ICONS.close}</button></span>
+            `).join("")}
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <textarea id="pbNewEmailInput" rows="2" placeholder="you@example.com, you2@example.com"></textarea>
+          </div>
+          <button class="btn-small" id="addPbEmailBtn" style="margin-top:8px;">${ICONS.plus} Add</button>
+          <div class="hint" style="margin-top:8px;">To import several at once, paste a comma or newline-separated list into the field above and click Add.</div>
+
+          <div style="height:20px;"></div>
           <div class="panel-title" style="margin-bottom:10px;">Data</div>
           <div class="settings-row">
             <button class="btn-small" id="exportBtn">${ICONS.download} Export data</button>
@@ -4815,6 +4854,46 @@ function openSettings(){
     </div>
   `;
   document.getElementById("closeSettings").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; render(); });
+  document.getElementById("addPbCatchallBtn").addEventListener("click", ()=>{
+    const input = document.getElementById("pbNewCatchallInput");
+    const val = input.value.trim().replace(/^@/,"");
+    if(val && !state.profileBuilderSettings.catchallDomains.includes(val)){
+      state.profileBuilderSettings.catchallDomains.push(val);
+      saveState();
+    }
+    input.value = "";
+    refreshSettingsIfOpen();
+  });
+  document.querySelectorAll("[data-remove-pb-catchall]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      state.profileBuilderSettings.catchallDomains = state.profileBuilderSettings.catchallDomains.filter(d=>d!==btn.dataset.removePbCatchall);
+      saveState();
+      refreshSettingsIfOpen();
+    });
+  });
+  document.getElementById("addPbEmailBtn").addEventListener("click", ()=>{
+    const input = document.getElementById("pbNewEmailInput");
+    // Supports pasting several at once, comma or newline separated, not
+    // just one address per click.
+    const newOnes = input.value.split(/[,\n]/).map(e=>e.trim()).filter(Boolean);
+    let addedCount = 0;
+    newOnes.forEach(e=>{
+      if(!state.profileBuilderSettings.emailList.includes(e)){
+        state.profileBuilderSettings.emailList.push(e);
+        addedCount++;
+      }
+    });
+    if(addedCount) saveState();
+    input.value = "";
+    refreshSettingsIfOpen();
+  });
+  document.querySelectorAll("[data-remove-pb-email]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      state.profileBuilderSettings.emailList = state.profileBuilderSettings.emailList.filter(e=>e!==btn.dataset.removePbEmail);
+      saveState();
+      refreshSettingsIfOpen();
+    });
+  });
   document.getElementById("currencySelect").addEventListener("change", e=>{
     state.displayCurrency = e.target.value; saveState(); render();
   });
