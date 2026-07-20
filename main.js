@@ -249,13 +249,38 @@ function loadAccounts() {
     const raw = fs.readFileSync(accountsFilePath(), 'utf-8');
     const data = JSON.parse(raw);
     const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+    let needsSave = false;
     accounts.forEach(acc => {
       if (acc.encryptedPassword && safeStorage.isEncryptionAvailable()) {
         acc.password = safeStorage.decryptString(Buffer.from(acc.encryptedPassword, 'base64'));
       }
       if (!Array.isArray(acc.catchAllDomains)) acc.catchAllDomains = [];
       if (!Array.isArray(acc.processedMessageIds)) acc.processedMessageIds = [];
+      // Accounts connected before invoice-sending existed have no SMTP
+      // settings saved at all — this is exactly why "no account has
+      // sending set up" showed even for a genuinely connected account.
+      // Derived here from the same known provider host patterns the
+      // connect form itself uses, so an existing account doesn't need to
+      // be manually reconnected just to gain this.
+      if (!acc.smtpHost) {
+        const smtpMap = {
+          'imap.gmail.com': 'smtp.gmail.com',
+          'outlook.office365.com': 'smtp.office365.com',
+          'imap.mail.yahoo.com': 'smtp.mail.yahoo.com',
+          'imap.mail.me.com': 'smtp.mail.me.com'
+        };
+        const derived = smtpMap[acc.host];
+        if (derived) {
+          acc.smtpHost = derived;
+          acc.smtpPort = 587;
+          acc.smtpSecure = false;
+          needsSave = true;
+        }
+      }
     });
+    if (needsSave) {
+      saveAccounts(accounts.map(a => { const { password, ...rest } = a; return rest; }));
+    }
     return accounts;
   } catch (e) {
     // No multi-account file yet — check for the old single-account format

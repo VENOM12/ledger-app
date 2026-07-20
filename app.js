@@ -250,7 +250,9 @@ if(!state.profileBuilderSettings) state.profileBuilderSettings = { catchallDomai
 if(!Array.isArray(state.profileBuilderSettings.catchallDomains)) state.profileBuilderSettings.catchallDomains = [];
 if(!Array.isArray(state.profileBuilderSettings.emailList)) state.profileBuilderSettings.emailList = [];
 if(!Array.isArray(state.invoices)) state.invoices = [];
-if(!state.invoiceSettings) state.invoiceSettings = { fromName: "", defaultSendAccountId: null, nextInvoiceNumber: 1, defaultVatRate: 20 };
+if(!state.invoiceSettings) state.invoiceSettings = { fromName: "", defaultSendAccountId: null, nextInvoiceNumber: 1, defaultVatRate: 20, defaultLogo: null, defaultBankDetails: "" };
+if(state.invoiceSettings.defaultLogo===undefined) state.invoiceSettings.defaultLogo = null;
+if(state.invoiceSettings.defaultBankDetails===undefined) state.invoiceSettings.defaultBankDetails = "";
 
 let ui = { tab: "dashboard", period: "Month", stockFilter: "In Stock", stockCategoryFilter: "All", search: "", detailItemId: null };
 let licenseExpiresAt = null; // shown next to "Saved locally" in the sidebar once known
@@ -2598,6 +2600,8 @@ function vccTrackerHTML(){
   `;
 }
 
+let vccRevealedCvv = new Set();
+
 function vccResultsHTML(cards){
   if(cards.length===0){
     return `
@@ -2610,22 +2614,34 @@ function vccResultsHTML(cards){
   }
   const statusColor = { active: "var(--green)", expired: "var(--text-mute)" };
   return `
-    <div class="stat-grid">
-      ${cards.map(c => `
-        <div class="card" style="padding:16px 18px;cursor:pointer;" data-open-vcc="${c.id}">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+    <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(240px, 1fr));gap:16px;">
+      ${cards.map(c => {
+        const revealed = vccRevealedCvv.has(c.id);
+        return `
+        <div class="debit-card-visual" data-reveal-vcc="${c.id}" style="aspect-ratio:1.586/1;border-radius:14px;background:linear-gradient(135deg, var(--violet), var(--magenta));padding:16px 18px;color:#fff;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;position:relative;box-shadow:0 6px 18px rgba(0,0,0,0.25);">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
             <div style="min-width:0;">
-              <div style="font-weight:700;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(c.nickname)}</div>
-              <div class="hint mono" style="margin:2px 0 0;">${c.network ? escapeHTML(c.network)+" · " : ""}${c.number ? maskCardNumber(c.number) : "No card number saved"}</div>
+              <div style="font-weight:700;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(c.nickname)}</div>
+              ${c.network ? `<div style="font-size:10.5px;opacity:0.8;margin-top:1px;">${escapeHTML(c.network)}</div>` : ""}
             </div>
-            <span class="status-chip" style="background:${statusColor[c.computedStatus]||"var(--card-2)"}22;color:${statusColor[c.computedStatus]||"var(--text-mute)"};flex-shrink:0;">${c.computedStatus}</span>
+            <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
+              <span class="status-chip" style="background:rgba(255,255,255,0.18);color:#fff;font-size:9.5px;">${c.computedStatus}</span>
+              <button class="icon-btn" data-edit-vcc="${c.id}" style="color:#fff;background:rgba(255,255,255,0.14);width:22px;height:22px;" title="Edit">${ICONS.pencil}</button>
+            </div>
           </div>
-          <div style="margin-top:12px;">
-            <div class="hint mono" style="margin:0;">Expires ${c.expiry ? escapeHTML(c.expiry) : "—"}</div>
+          <div class="mono" style="font-size:15px;letter-spacing:1.5px;">${c.number ? maskCardNumber(c.number) : "No card number saved"}</div>
+          <div style="display:flex;justify-content:space-between;align-items:flex-end;">
+            <div>
+              <div style="font-size:8.5px;opacity:0.7;letter-spacing:0.05em;">EXPIRES</div>
+              <div class="mono" style="font-size:12px;">${c.expiry ? escapeHTML(c.expiry) : "—"}</div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:8.5px;opacity:0.7;letter-spacing:0.05em;">CVV</div>
+              <div class="mono" style="font-size:12px;">${revealed ? (c.cvv ? escapeHTML(c.cvv) : "—") : "•••"}</div>
+            </div>
           </div>
-          ${c.cvv ? `<div class="hint" style="margin-top:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(c.cvv)}</div>` : ""}
         </div>
-      `).join("")}
+      `;}).join("")}
     </div>
   `;
 }
@@ -2652,8 +2668,20 @@ function attachVccTrackerEvents(){
 }
 
 function bindVccResultEvents(){
-  document.querySelectorAll("[data-open-vcc]").forEach(card=>{
-    card.addEventListener("click", ()=>openVccModal(card.dataset.openVcc));
+  document.querySelectorAll("[data-reveal-vcc]").forEach(card=>{
+    card.addEventListener("click", (e)=>{
+      if(e.target.closest("button")) return; // let the Edit button handle its own click
+      const id = card.dataset.revealVcc;
+      if(vccRevealedCvv.has(id)) vccRevealedCvv.delete(id);
+      else vccRevealedCvv.add(id);
+      renderVccResults();
+    });
+  });
+  document.querySelectorAll("[data-edit-vcc]").forEach(btn=>{
+    btn.addEventListener("click", (e)=>{
+      e.stopPropagation();
+      openVccModal(btn.dataset.editVcc);
+    });
   });
 }
 
@@ -2982,11 +3010,14 @@ let invoiceDraft = null;
 function freshInvoiceDraft(){
   return {
     fromName: state.invoiceSettings.fromName,
+    logo: state.invoiceSettings.defaultLogo || null,
     buyerName: "", buyerAddress: "", buyerEmail: "",
     lineItems: [],
     vatEnabled: false,
     vatRate: state.invoiceSettings.defaultVatRate,
     shippingCost: "0",
+    paymentDeadline: "",
+    bankDetails: state.invoiceSettings.defaultBankDetails || "",
     notes: "",
     itemPickerSearch: ""
   };
@@ -3011,11 +3042,58 @@ function invoiceGeneratorHTML(){
   `;
 }
 
+function invoiceTotalsCardHTML(d, totals){
+  return `
+    <div class="card" style="padding:16px 18px;">
+      <div class="kv-row"><span class="k">Subtotal</span><span class="v">${fmtMoney(totals.subtotal)}</span></div>
+      <div class="kv-row"><span class="k">Shipping</span><span class="v">${fmtMoney(totals.shipping)}</span></div>
+      ${d.vatEnabled ? `<div class="kv-row"><span class="k">VAT (${d.vatRate||0}%)</span><span class="v">${fmtMoney(totals.vatAmount)}</span></div>` : ""}
+      <div class="kv-row" style="border-top:1px solid var(--border-soft);margin-top:6px;padding-top:10px;"><span class="k" style="font-weight:700;color:var(--text);">Total</span><span class="v" style="font-size:17px;">${fmtMoney(totals.total)}</span></div>
+    </div>
+  `;
+}
+
+function bindInvoiceItemPickerEvents(){
+  document.querySelectorAll("[data-add-invoice-item]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const d = invoiceDraft;
+      const item = state.items.find(i=>i.id===btn.dataset.addInvoiceItem);
+      if(!item) return;
+      const existing = d.lineItems.find(li=>li.itemId===item.id);
+      if(existing){ existing.quantity++; }
+      else { d.lineItems.push({ itemId: item.id, name: item.name, quantity: 1, unitPrice: item.purchasePricePerUnit||0 }); }
+      d.itemPickerSearch = "";
+      renderView();
+    });
+  });
+}
+
+function invoiceItemPickerHTML(d){
+  const matchingItems = state.items.filter(i=>!i.isPreorder && qtyRemaining(i)>0 &&
+    (!d.itemPickerSearch || i.name.toLowerCase().includes(d.itemPickerSearch.toLowerCase())));
+  const availableItems = d.itemPickerSearch ? matchingItems : matchingItems.slice(0, 15);
+  return `
+    <div class="card table-wrap" style="margin-bottom:14px;max-height:260px;overflow-y:auto;">
+      <table class="data-table">
+        <thead><tr><th>Item</th><th>In stock</th><th></th></tr></thead>
+        <tbody>
+          ${availableItems.length===0 ? `<tr><td colspan="3" class="hint">${d.itemPickerSearch ? "No matching in-stock items." : "Nothing in stock yet."}</td></tr>` : availableItems.map(i=>`
+            <tr>
+              <td>${escapeHTML(i.name)}</td>
+              <td class="mono dim">${qtyRemaining(i)}</td>
+              <td style="text-align:right;"><button class="btn-small" data-add-invoice-item="${i.id}">Add</button></td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+      ${!d.itemPickerSearch && matchingItems.length>availableItems.length ? `<div class="hint" style="padding:8px 12px;">Showing ${availableItems.length} of ${matchingItems.length} in-stock items — search above to find more.</div>` : ""}
+    </div>
+  `;
+}
+
 function invoiceCreateHTML(){
   const d = invoiceDraft;
   const totals = invoiceTotals(d);
-  const availableItems = state.items.filter(i=>!i.isPreorder && qtyRemaining(i)>0 &&
-    (!d.itemPickerSearch || i.name.toLowerCase().includes(d.itemPickerSearch.toLowerCase())));
 
   return `
     <div class="card panel" style="margin-bottom:16px;">
@@ -3048,24 +3126,10 @@ function invoiceCreateHTML(){
       <div class="panel-title" style="margin-bottom:10px;">Items</div>
       <div class="search-bar" style="margin-bottom:10px;max-width:400px;">
         ${ICONS.search}
-        <input type="text" id="inv-itemsearch" placeholder="Search in-stock items to add" value="${escapeAttr(d.itemPickerSearch)}">
+        <input type="text" id="inv-itemsearch" placeholder="Search in-stock items, or just pick from the list below" value="${escapeAttr(d.itemPickerSearch)}">
       </div>
-      ${d.itemPickerSearch ? `
-        <div class="card table-wrap" style="margin-bottom:14px;max-height:220px;overflow-y:auto;">
-          <table class="data-table">
-            <thead><tr><th>Item</th><th>In stock</th><th></th></tr></thead>
-            <tbody>
-              ${availableItems.length===0 ? `<tr><td colspan="3" class="hint">No matching in-stock items.</td></tr>` : availableItems.map(i=>`
-                <tr>
-                  <td>${escapeHTML(i.name)}</td>
-                  <td class="mono dim">${qtyRemaining(i)}</td>
-                  <td style="text-align:right;"><button class="btn-small" data-add-invoice-item="${i.id}">Add</button></td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
-        </div>
-      ` : ""}
+      <div id="invoiceItemPicker">${invoiceItemPickerHTML(d)}</div>
+    </div>
 
       ${d.lineItems.length===0 ? `<div class="hint">No items added yet — search above to add some.</div>` : `
         <div class="card table-wrap">
@@ -3075,9 +3139,9 @@ function invoiceCreateHTML(){
               ${d.lineItems.map((li,idx)=>`
                 <tr>
                   <td>${escapeHTML(li.name)}</td>
-                  <td><input type="number" class="inv-line-qty" data-line-idx="${idx}" value="${li.quantity}" min="1" style="width:60px;padding:6px;"></td>
-                  <td><input type="number" class="inv-line-price" data-line-idx="${idx}" value="${li.unitPrice}" step="0.01" min="0" style="width:90px;padding:6px;"></td>
-                  <td style="text-align:right;" class="mono">${fmtMoney(li.quantity*li.unitPrice)}</td>
+                  <td><div class="field" style="margin:0;width:70px;"><input type="number" class="inv-line-qty" data-line-idx="${idx}" value="${li.quantity}" min="1" style="padding:6px 8px;"></div></td>
+                  <td><div class="field" style="margin:0;width:100px;"><input type="number" class="inv-line-price" data-line-idx="${idx}" value="${li.unitPrice}" step="0.01" min="0" style="padding:6px 8px;"></div></td>
+                  <td style="text-align:right;" class="mono" id="inv-line-total-${idx}">${fmtMoney(li.quantity*li.unitPrice)}</td>
                   <td style="text-align:right;"><button class="icon-btn" data-remove-invoice-line="${idx}">${ICONS.trash}</button></td>
                 </tr>
               `).join("")}
@@ -3108,12 +3172,7 @@ function invoiceCreateHTML(){
       </div>
     </div>
 
-    <div class="card" style="padding:16px 18px;margin-bottom:16px;">
-      <div class="kv-row"><span class="k">Subtotal</span><span class="v">${fmtMoney(totals.subtotal)}</span></div>
-      <div class="kv-row"><span class="k">Shipping</span><span class="v">${fmtMoney(totals.shipping)}</span></div>
-      ${d.vatEnabled ? `<div class="kv-row"><span class="k">VAT (${d.vatRate||0}%)</span><span class="v">${fmtMoney(totals.vatAmount)}</span></div>` : ""}
-      <div class="kv-row" style="border-top:1px solid var(--border-soft);margin-top:6px;padding-top:10px;"><span class="k" style="font-weight:700;color:var(--text);">Total</span><span class="v" style="font-size:17px;">${fmtMoney(totals.total)}</span></div>
-    </div>
+    <div id="invoiceTotalsCard">${invoiceTotalsCardHTML(d, totals)}</div>
 
     <div style="display:flex;gap:10px;flex-wrap:wrap;">
       <button class="btn-primary" id="saveInvoiceBtn">${ICONS.check} Save Invoice</button>
@@ -3187,11 +3246,14 @@ function draftToInvoiceObject(existingId){
     date: existingId ? state.invoices.find(i=>i.id===existingId).date : todayISO(),
     status: existingId ? state.invoices.find(i=>i.id===existingId).status : "awaiting_payment",
     fromName: d.fromName.trim(),
+    logo: d.logo || null,
     buyer: { name: d.buyerName.trim(), address: d.buyerAddress.trim(), email: d.buyerEmail.trim() },
     lineItems: d.lineItems,
     vatEnabled: d.vatEnabled,
     vatRate: parseFloat(d.vatRate)||0,
     shippingCost: parseFloat(d.shippingCost)||0,
+    paymentDeadline: d.paymentDeadline || null,
+    bankDetails: d.bankDetails.trim(),
     notes: d.notes.trim()
   };
 }
@@ -3274,33 +3336,42 @@ function attachInvoiceGeneratorEvents(){
     document.getElementById("inv-buyername").addEventListener("input", e=>{ d.buyerName = e.target.value; });
     document.getElementById("inv-buyeremail").addEventListener("input", e=>{ d.buyerEmail = e.target.value; });
     document.getElementById("inv-buyeraddress").addEventListener("input", e=>{ d.buyerAddress = e.target.value; });
-    document.getElementById("inv-itemsearch").addEventListener("input", e=>{ d.itemPickerSearch = e.target.value; renderView(); });
-    document.getElementById("inv-shipping").addEventListener("input", e=>{ d.shippingCost = e.target.value; renderInvoiceTotalsOnly(); });
+    document.getElementById("inv-itemsearch").addEventListener("input", e=>{
+      d.itemPickerSearch = e.target.value;
+      const picker = document.getElementById("invoiceItemPicker");
+      if(picker){ picker.innerHTML = invoiceItemPickerHTML(d); bindInvoiceItemPickerEvents(); }
+    });
+    document.getElementById("inv-shipping").addEventListener("input", e=>{ d.shippingCost = e.target.value; updateInvoiceTotalsCard(); });
     document.getElementById("inv-vat-toggle").addEventListener("change", e=>{ d.vatEnabled = e.target.checked; renderView(); });
-    document.getElementById("inv-vat-rate").addEventListener("input", e=>{ d.vatRate = e.target.value; renderInvoiceTotalsOnly(); });
+    document.getElementById("inv-vat-rate").addEventListener("input", e=>{ d.vatRate = e.target.value; updateInvoiceTotalsCard(); });
     document.getElementById("inv-notes").addEventListener("input", e=>{ d.notes = e.target.value; });
 
-    document.querySelectorAll("[data-add-invoice-item]").forEach(btn=>{
-      btn.addEventListener("click", ()=>{
-        const item = state.items.find(i=>i.id===btn.dataset.addInvoiceItem);
-        if(!item) return;
-        const existing = d.lineItems.find(li=>li.itemId===item.id);
-        if(existing){ existing.quantity++; }
-        else { d.lineItems.push({ itemId: item.id, name: item.name, quantity: 1, unitPrice: item.purchasePricePerUnit||0 }); }
-        d.itemPickerSearch = "";
-        renderView();
-      });
-    });
+    bindInvoiceItemPickerEvents();
     document.querySelectorAll(".inv-line-qty").forEach(input=>{
       input.addEventListener("input", e=>{
-        d.lineItems[parseInt(e.target.dataset.lineIdx,10)].quantity = Math.max(1, parseInt(e.target.value,10)||1);
-        renderInvoiceTotalsOnly();
+        const idx = parseInt(e.target.dataset.lineIdx,10);
+        // Not clamping to a minimum here — forcing a value back into the
+        // field while someone is still typing is exactly what caused the
+        // "only one digit at a time" bug in the first place. Blank/zero
+        // is corrected on blur instead, once they're actually done typing.
+        const raw = parseInt(e.target.value,10);
+        d.lineItems[idx].quantity = isNaN(raw) ? 0 : raw;
+        updateInvoiceLineTotal(idx);
+      });
+      input.addEventListener("blur", e=>{
+        const idx = parseInt(e.target.dataset.lineIdx,10);
+        if(!d.lineItems[idx].quantity || d.lineItems[idx].quantity<1){
+          d.lineItems[idx].quantity = 1;
+          e.target.value = 1;
+          updateInvoiceLineTotal(idx);
+        }
       });
     });
     document.querySelectorAll(".inv-line-price").forEach(input=>{
       input.addEventListener("input", e=>{
-        d.lineItems[parseInt(e.target.dataset.lineIdx,10)].unitPrice = parseFloat(e.target.value)||0;
-        renderInvoiceTotalsOnly();
+        const idx = parseInt(e.target.dataset.lineIdx,10);
+        d.lineItems[idx].unitPrice = parseFloat(e.target.value)||0;
+        updateInvoiceLineTotal(idx);
       });
     });
     document.querySelectorAll("[data-remove-invoice-line]").forEach(btn=>{
@@ -3350,11 +3421,17 @@ function attachInvoiceGeneratorEvents(){
   }
 }
 
-function renderInvoiceTotalsOnly(){
-  // Cheap re-render for number inputs that change on every keystroke —
-  // avoids losing focus/cursor position that a full renderView() would
-  // cause.
-  if(ui.tab==="invoices" && invoiceUI.subTab==="create") renderView();
+function updateInvoiceLineTotal(idx){
+  const li = invoiceDraft.lineItems[idx];
+  const cell = document.getElementById(`inv-line-total-${idx}`);
+  if(cell) cell.textContent = fmtMoney(li.quantity*li.unitPrice);
+  updateInvoiceTotalsCard();
+}
+
+function updateInvoiceTotalsCard(){
+  const container = document.getElementById("invoiceTotalsCard");
+  if(!container) return;
+  container.innerHTML = invoiceTotalsCardHTML(invoiceDraft, invoiceTotals(invoiceDraft));
 }
 
 function openSendInvoiceModal(){
@@ -4061,7 +4138,7 @@ function emailConnectFormHTML(){
         <input type="text" id="e-email" value="${escapeAttr(f.formEmail)}" placeholder="you@example.com">
       </div>
       <div class="field">
-        <label>App Password ${ICONS.lock}</label>
+        <label style="display:flex;align-items:center;gap:6px;">App Password <span style="width:13px;height:13px;display:inline-flex;color:var(--text-mute);">${ICONS.lock}</span></label>
         <input type="password" id="e-password" value="${escapeAttr(f.formPassword)}" placeholder="Not your regular password">
         <div class="hint">Most providers (Gmail, Outlook, Yahoo) block regular passwords over IMAP and require a separate "app password" — generate one in your email account's security settings, then paste it here.</div>
       </div>
