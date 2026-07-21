@@ -467,7 +467,7 @@ function render(){
       </div>
       <div class="navlabel">Tools</div>
       <div class="nav">
-        ${navBtn("vcc-tracker","card","VCC Tracker")}
+        ${navBtn("vcc-tracker","card","Card Tracker")}
         ${navBtn("profile-builder","tools","Profile Builder")}
         ${navBtn("invoices","cash","Invoice Generator")}
       </div>
@@ -517,7 +517,7 @@ function setTab(tab){
 function renderTopbar(){
   const bar = document.getElementById("topbar");
   if(!bar) return;
-  const titles = { dashboard: "Dashboard", stock: "Stock", add: "Add Stock", sold: "Sold", orders: "Confirmed Orders", expenses: "Expenses", "vcc-tracker": "VCC Tracker", "profile-builder": "Profile Builder", "invoices": "Invoice Generator" };
+  const titles = { dashboard: "Dashboard", stock: "Stock", add: "Add Stock", sold: "Sold", orders: "Confirmed Orders", expenses: "Expenses", "vcc-tracker": "Card Tracker", "profile-builder": "Profile Builder", "invoices": "Invoice Generator" };
   let heading;
   if(ui.detailItemId){
     const item = state.items.find(i=>i.id===ui.detailItemId);
@@ -2548,11 +2548,13 @@ function attachSoldEvents(){
 
 /* ---------------- VCC Tracker ---------------- */
 
-let vccUI = { statusFilter: "All", search: "" };
+let vccUI = { statusFilter: "All", providerFilter: "All", networkFilter: "All", typeFilter: "All", search: "" };
 
 // Status is computed from the expiry date, not stored/set manually —
 // matches how a real card actually works (it just stops being valid
 // after its printed date, nothing to track separately).
+const CARD_PROVIDERS = ["Revolut","RBS","Starling","Lloyds","Crypto.com","Curve","Monese","Chase","Tide","Capital on Tap","Wise","PayPal","Monzo","Capital One","Vanquis","Zilch","Other"];
+
 function vccStatus(card){
   if(!card.expiry) return "active";
   const [mm, yy] = card.expiry.split("/").map(s=>s.trim());
@@ -2571,7 +2573,12 @@ function vccTrackerHTML(){
   const cardsWithStatus = state.vccs.map(c=>({...c, computedStatus: vccStatus(c)}));
   const cards = cardsWithStatus
     .filter(c => vccUI.statusFilter==="All" || c.computedStatus===vccUI.statusFilter)
+    .filter(c => vccUI.providerFilter==="All" || c.provider===vccUI.providerFilter)
+    .filter(c => vccUI.networkFilter==="All" || c.network===vccUI.networkFilter)
+    .filter(c => vccUI.typeFilter==="All" || c.cardType===vccUI.typeFilter)
     .filter(c => !vccUI.search || c.nickname.toLowerCase().includes(vccUI.search.toLowerCase()) || (c.number||"").replace(/\s/g,"").endsWith(vccUI.search.replace(/\s/g,"")));
+
+  const usedProviders = Array.from(new Set(state.vccs.map(c=>c.provider).filter(Boolean))).sort();
 
   return `
     <div class="stat-grid" style="margin-bottom:16px;">
@@ -2579,12 +2586,26 @@ function vccTrackerHTML(){
       ${statCard("card", "Active", ""+cardsWithStatus.filter(c=>c.computedStatus==="active").length, "var(--green)", "var(--green-bg)")}
       ${statCard("card", "Expired", ""+cardsWithStatus.filter(c=>c.computedStatus==="expired").length, "var(--text-mute)", "var(--card-2)")}
     </div>
-    <div class="toolbar-row">
+    <div class="toolbar-row" style="flex-wrap:wrap;">
       <button class="btn-primary" id="addVccBtn">${ICONS.plus} Add Card</button>
-      <select id="vccStatusFilterSelect" style="width:auto;padding:9px 30px 9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
-        <option ${vccUI.statusFilter==="All"?"selected":""}>All</option>
-        <option ${vccUI.statusFilter==="active"?"selected":""}>active</option>
-        <option ${vccUI.statusFilter==="expired"?"selected":""}>expired</option>
+      <select id="vccStatusFilterSelect" style="width:auto;">
+        <option ${vccUI.statusFilter==="All"?"selected":""}>All Statuses</option>
+        <option value="active" ${vccUI.statusFilter==="active"?"selected":""}>Active</option>
+        <option value="expired" ${vccUI.statusFilter==="expired"?"selected":""}>Expired</option>
+      </select>
+      <select id="vccProviderFilterSelect" style="width:auto;">
+        <option value="All" ${vccUI.providerFilter==="All"?"selected":""}>All Providers</option>
+        ${usedProviders.map(p=>`<option value="${escapeAttr(p)}" ${vccUI.providerFilter===p?"selected":""}>${escapeHTML(p)}</option>`).join("")}
+      </select>
+      <select id="vccNetworkFilterSelect" style="width:auto;">
+        <option value="All" ${vccUI.networkFilter==="All"?"selected":""}>Visa &amp; Mastercard</option>
+        <option value="Visa" ${vccUI.networkFilter==="Visa"?"selected":""}>Visa</option>
+        <option value="Mastercard" ${vccUI.networkFilter==="Mastercard"?"selected":""}>Mastercard</option>
+      </select>
+      <select id="vccTypeFilterSelect" style="width:auto;">
+        <option value="All" ${vccUI.typeFilter==="All"?"selected":""}>Virtual &amp; Physical</option>
+        <option value="virtual" ${vccUI.typeFilter==="virtual"?"selected":""}>Virtual</option>
+        <option value="physical" ${vccUI.typeFilter==="physical"?"selected":""}>Physical</option>
       </select>
       <div class="search-bar">
         ${ICONS.search}
@@ -2622,14 +2643,14 @@ function vccResultsHTML(cards){
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
             <div style="min-width:0;">
               <div style="font-weight:700;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(c.nickname)}</div>
-              ${c.network ? `<div style="font-size:10.5px;opacity:0.8;margin-top:1px;">${escapeHTML(c.network)}</div>` : ""}
+              <div style="font-size:10.5px;opacity:0.8;margin-top:1px;">${[c.provider, c.network, c.cardType ? (c.cardType==="virtual"?"Virtual":"Physical") : null].filter(Boolean).join(" · ")}</div>
             </div>
             <div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">
               <span class="status-chip" style="background:rgba(255,255,255,0.18);color:#fff;font-size:9.5px;">${c.computedStatus}</span>
               <button class="icon-btn" data-edit-vcc="${c.id}" style="color:#fff;background:rgba(255,255,255,0.14);width:22px;height:22px;" title="Edit">${ICONS.pencil}</button>
             </div>
           </div>
-          <div class="mono" style="font-size:15px;letter-spacing:1.5px;">${c.number ? maskCardNumber(c.number) : "No card number saved"}</div>
+          <div class="mono" style="font-size:15px;letter-spacing:1.5px;">${c.number ? (revealed ? escapeHTML(c.number) : maskCardNumber(c.number)) : "No card number saved"}</div>
           <div style="display:flex;justify-content:space-between;align-items:flex-end;">
             <div>
               <div style="font-size:8.5px;opacity:0.7;letter-spacing:0.05em;">EXPIRES</div>
@@ -2652,6 +2673,9 @@ function renderVccResults(){
   const cardsWithStatus = state.vccs.map(c=>({...c, computedStatus: vccStatus(c)}));
   const cards = cardsWithStatus
     .filter(c => vccUI.statusFilter==="All" || c.computedStatus===vccUI.statusFilter)
+    .filter(c => vccUI.providerFilter==="All" || c.provider===vccUI.providerFilter)
+    .filter(c => vccUI.networkFilter==="All" || c.network===vccUI.networkFilter)
+    .filter(c => vccUI.typeFilter==="All" || c.cardType===vccUI.typeFilter)
     .filter(c => !vccUI.search || c.nickname.toLowerCase().includes(vccUI.search.toLowerCase()) || (c.number||"").replace(/\s/g,"").endsWith(vccUI.search.replace(/\s/g,"")));
   container.innerHTML = vccResultsHTML(cards);
   bindVccResultEvents();
@@ -2661,6 +2685,15 @@ function attachVccTrackerEvents(){
   document.getElementById("addVccBtn").addEventListener("click", ()=>openVccModal(null));
   document.getElementById("vccStatusFilterSelect").addEventListener("change", e=>{
     vccUI.statusFilter = e.target.value; renderVccResults();
+  });
+  document.getElementById("vccProviderFilterSelect").addEventListener("change", e=>{
+    vccUI.providerFilter = e.target.value; renderVccResults();
+  });
+  document.getElementById("vccNetworkFilterSelect").addEventListener("change", e=>{
+    vccUI.networkFilter = e.target.value; renderVccResults();
+  });
+  document.getElementById("vccTypeFilterSelect").addEventListener("change", e=>{
+    vccUI.typeFilter = e.target.value; renderVccResults();
   });
   const search = document.getElementById("vccSearchInput");
   search.addEventListener("input", e=>{ vccUI.search = e.target.value; renderVccResults(); });
@@ -2689,13 +2722,23 @@ let vccFormState = null;
 
 function openVccModal(vccId){
   const existing = vccId ? state.vccs.find(c=>c.id===vccId) : null;
+  // Existing cards may have free-text network values from before this was
+  // a dropdown (e.g. "visa" lowercase) — normalized here so they still
+  // correctly pre-select instead of silently showing blank.
+  let normalizedNetwork = existing ? existing.network || "" : "";
+  if(/^visa/i.test(normalizedNetwork)) normalizedNetwork = "Visa";
+  else if(/^master/i.test(normalizedNetwork)) normalizedNetwork = "Mastercard";
+  else if(normalizedNetwork !== "Visa" && normalizedNetwork !== "Mastercard") normalizedNetwork = "";
+
   vccFormState = {
     id: existing ? existing.id : null,
     nickname: existing ? existing.nickname : "",
     number: existing ? existing.number || "" : "",
     expiry: existing ? existing.expiry || "" : "",
-    network: existing ? existing.network || "" : "",
-    cvv: existing ? existing.ccv || "" : ""
+    network: normalizedNetwork,
+    cvv: existing ? existing.ccv || "" : "",
+    provider: existing ? existing.provider || "" : "",
+    cardType: existing ? existing.cardType || "virtual" : "virtual"
   };
   renderVccModal();
 }
@@ -2725,14 +2768,32 @@ function renderVccModal(){
               <label>Expiry (MM/YY)</label>
               <input type="text" id="vcc-expiry" value="${escapeAttr(f.expiry)}" maxlength="5" placeholder="MM/YY">
             </div>
+            <div class="field" style="max-width:120px;">
+              <label>Cvv</label>
+              <input type="text" id="vcc-cvv" value="${escapeAttr(f.cvv)}" placeholder="What this card is usually used for">
+            </div>
             <div class="field">
-              <label>Network (optional)</label>
-              <input type="text" id="vcc-network" value="${escapeAttr(f.network)}" placeholder="Visa, Mastercard...">
+              <label>Network</label>
+              <select id="vcc-network">
+                <option value="" ${!f.network?"selected":""}>—</option>
+                <option value="Visa" ${f.network==="Visa"?"selected":""}>Visa</option>
+                <option value="Mastercard" ${f.network==="Mastercard"?"selected":""}>Mastercard</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Provider</label>
+              <select id="vcc-provider">
+                <option value="" ${!f.provider?"selected":""}>—</option>
+                ${CARD_PROVIDERS.map(p=>`<option value="${escapeAttr(p)}" ${f.provider===p?"selected":""}>${escapeHTML(p)}</option>`).join("")}
+              </select>
             </div>
           </div>
-          <div class="field" style="max-width:120px;">
-            <label>Cvv</label>
-            <input type="text" id="vcc-cvv" value="${escapeAttr(f.cvv)}" placeholder="What this card is usually used for">
+          <div class="field">
+            <label>Card type</label>
+            <div class="segmented" style="max-width:280px;">
+              <button type="button" class="${f.cardType==="virtual"?"active":""}" data-card-type="virtual">Virtual</button>
+              <button type="button" class="${f.cardType==="physical"?"active":""}" data-card-type="physical">Physical</button>
+            </div>
           </div>
           <div style="height:6px;"></div>
           <button class="btn-primary block" id="saveVccBtn">${isEdit ? "Save Changes" : "Add Card"}</button>
@@ -2754,14 +2815,18 @@ function renderVccModal(){
     f.expiry = v;
     e.target.value = v;
   });
-  document.getElementById("vcc-network").addEventListener("input", e=>{ f.network = e.target.value; });
+  document.getElementById("vcc-network").addEventListener("change", e=>{ f.network = e.target.value; });
+  document.getElementById("vcc-provider").addEventListener("change", e=>{ f.provider = e.target.value; });
   document.getElementById("vcc-cvv").addEventListener("input", e=>{ f.cvv = e.target.value; });
+  document.querySelectorAll("[data-card-type]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ f.cardType = btn.dataset.cardType; renderVccModal(); });
+  });
 
   document.getElementById("saveVccBtn").addEventListener("click", ()=>{
     const nickname = f.nickname.trim();
     if(!nickname){ showToast("Enter a nickname for this card", "close"); return; }
     if(f.expiry && !/^\d{2}\/\d{2}$/.test(f.expiry)){ showToast("Expiry should be in MM/YY format", "close"); return; }
-    const payload = { nickname, number: f.number.trim(), expiry: f.expiry.trim(), network: f.network.trim(), cvv: f.cvv.trim() };
+    const payload = { nickname, number: f.number.trim(), expiry: f.expiry.trim(), network: f.network.trim(), cvv: f.cvv.trim(), provider: f.provider.trim(), cardType: f.cardType };
     if(f.id){
       const card = state.vccs.find(c=>c.id===f.id);
       Object.assign(card, payload);
@@ -3178,6 +3243,16 @@ function invoiceCreateHTML(){
           <input type="number" id="inv-vat-rate" value="${escapeAttr(d.vatRate)}" step="0.1" min="0" max="100" ${d.vatEnabled?"":"disabled"} style="margin-top:8px;">
         </div>
       </div>
+      <div class="form-grid" style="margin-top:14px;">
+        <div class="field">
+          <label>Payment due by (optional)</label>
+          <input type="date" id="inv-payment-deadline" value="${escapeAttr(d.paymentDeadline)}">
+        </div>
+        <div class="field">
+          <label>Bank details for payment (optional)</label>
+          <input type="text" id="inv-bank-details" value="${escapeAttr(d.bankDetails)}" placeholder="Sort code, account number, or payment link">
+        </div>
+      </div>
       <div class="field">
         <label>Notes (optional)</label>
         <input type="text" id="inv-notes" value="${escapeAttr(d.notes)}" placeholder="Payment terms, thank-you note, etc.">
@@ -3262,7 +3337,13 @@ function buildInvoiceHTML(invoice){
         ${invoice.vatEnabled ? `<div><span>VAT (${invoice.vatRate||0}%)</span><span>${fmtMoney(totals.vatAmount)}</span></div>` : ""}
         <div class="grand"><span>Total</span><span>${fmtMoney(totals.total)}</span></div>
       </div>
-      ${invoice.notes ? `<div style="margin-top:30px;" class="muted">${escapeHTML(invoice.notes)}</div>` : ""}
+      ${invoice.paymentDeadline || invoice.bankDetails ? `
+        <div style="margin-top:24px;padding-top:16px;border-top:1px solid #ddd;">
+          ${invoice.paymentDeadline ? `<div><strong>Payment due by:</strong> ${formatDate(invoice.paymentDeadline)}</div>` : ""}
+          ${invoice.bankDetails ? `<div style="margin-top:4px;"><strong>Payment details:</strong> ${escapeHTML(invoice.bankDetails)}</div>` : ""}
+        </div>
+      ` : ""}
+      ${invoice.notes ? `<div style="margin-top:16px;" class="muted">${escapeHTML(invoice.notes)}</div>` : ""}
     </body></html>
   `;
 }
@@ -3400,6 +3481,8 @@ function attachInvoiceGeneratorEvents(){
     document.getElementById("inv-vat-toggle").addEventListener("change", e=>{ d.vatEnabled = e.target.checked; renderView(); });
     document.getElementById("inv-vat-rate").addEventListener("input", e=>{ d.vatRate = e.target.value; updateInvoiceTotalsCard(); });
     document.getElementById("inv-notes").addEventListener("input", e=>{ d.notes = e.target.value; });
+    document.getElementById("inv-payment-deadline").addEventListener("change", e=>{ d.paymentDeadline = e.target.value; });
+    document.getElementById("inv-bank-details").addEventListener("input", e=>{ d.bankDetails = e.target.value; });
 
     bindInvoiceItemPickerEvents();
     document.querySelectorAll(".inv-line-qty").forEach(input=>{
@@ -5479,8 +5562,14 @@ function openSettings(){
           <div class="field" style="margin-bottom:0;">
             <textarea id="pbNewEmailInput" rows="2" placeholder="you@example.com, you2@example.com"></textarea>
           </div>
-          <button class="btn-small" id="addPbEmailBtn" style="margin-top:8px;">${ICONS.plus} Add</button>
-          <div class="hint" style="margin-top:8px;">To import several at once, paste a comma or newline-separated list into the field above and click Add.</div>
+          <div style="display:flex;gap:8px;margin-top:8px;">
+            <button class="btn-small" id="addPbEmailBtn">${ICONS.plus} Add</button>
+            <label class="btn-small" style="cursor:pointer;margin:0;">
+              ${ICONS.download} Import CSV
+              <input type="file" id="pbEmailCsvInput" accept=".csv,.txt" style="display:none;">
+            </label>
+          </div>
+          <div class="hint" style="margin-top:8px;">To import several at once, paste a comma or newline-separated list above and click Add, or import a CSV file — any column containing email addresses is picked up automatically.</div>
 
           <div style="height:20px;"></div>
           <div class="panel-title" style="margin-bottom:10px;">Data</div>
@@ -5508,6 +5597,32 @@ function openSettings(){
     if(addedCount) saveState();
     input.value = "";
     refreshSettingsIfOpen();
+  });
+  document.getElementById("pbEmailCsvInput").addEventListener("change", e=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      // Doesn't assume a specific column layout — just pulls out
+      // anything in the file that looks like an email address, so it
+      // works whether it's a single column of addresses, a full contacts
+      // export with several other columns, or a plain text list.
+      const text = reader.result;
+      const found = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || [];
+      const unique = Array.from(new Set(found));
+      let addedCount = 0;
+      unique.forEach(email=>{
+        if(!state.profileBuilderSettings.emailList.includes(email)){
+          state.profileBuilderSettings.emailList.push(email);
+          addedCount++;
+        }
+      });
+      if(addedCount) saveState();
+      e.target.value = "";
+      refreshSettingsIfOpen();
+      showToast(addedCount ? `${addedCount} address${addedCount===1?"":"es"} imported` : "No email addresses found in that file", addedCount ? "check" : "close");
+    };
+    reader.readAsText(file);
   });
   document.querySelectorAll("[data-remove-pb-email]").forEach(btn=>{
     btn.addEventListener("click", ()=>{
