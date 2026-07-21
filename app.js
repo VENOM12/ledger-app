@@ -2736,7 +2736,7 @@ function openVccModal(vccId){
     number: existing ? existing.number || "" : "",
     expiry: existing ? existing.expiry || "" : "",
     network: normalizedNetwork,
-    cvv: existing ? existing.ccv || "" : "",
+    cvv: existing ? existing.cvv || "" : "",
     provider: existing ? existing.provider || "" : "",
     cardType: existing ? existing.cardType || "virtual" : "virtual"
   };
