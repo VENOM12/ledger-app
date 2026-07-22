@@ -826,7 +826,14 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // emails include a static "Out for delivery" stage label regardless of
   // the order's real status, so this needs fuller phrasing to trigger.
   else if (/(?:is out for delivery|out for delivery today|now out for delivery|will arrive soon|package will arrive|arriving today|arrives today)/i.test(hay)) status = 'out_for_delivery';
-  else if (/shipped|on its way|tracking number|has shipped/.test(hay)) status = 'shipped';
+  // Confirmed directly against a real email: a plain order confirmation
+  // saying "your order... will be shipped after [future date]" was
+  // matching the bare word "shipped" here and getting misclassified as
+  // an actual shipping notification — the exact same false-positive
+  // pattern already fixed once for delivered/out_for_delivery above.
+  // Excluding that specific future-tense construction while still
+  // catching genuine shipped notifications.
+  else if (/shipped|on its way|tracking number|has shipped/.test(hay) && !/will\s+be\s+shipped|will\s+ship\b|be\s+shipped\s+after/i.test(hay)) status = 'shipped';
   // Real order confirmations often say "Thanks for your order" rather than
   // the "Thank you for your order" this used to require exactly.
   else if (/order confirmation|thanks?\s*(?:you\s*)?for\s*(?:your|placing)|order received|we.ve received your order|your order has been placed|order summary|order details/i.test(hay)) status = 'confirmed';
@@ -918,7 +925,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // with the actual number) and caused a real false match. Word boundary
   // keeps this from matching inside "preorder"/"reorder" too.
   const orderNumMatch =
-    bodyText.match(/\border\s*(?:number|no\.?|#)\s*[:#]?\s*\n?\s*([A-Z0-9-]{5,20})/i) ||
+    bodyText.match(/\border\s*(?:number|no\.?|#)\s*(?:is)?\s*[:#]?\s*\n?\s*([A-Z0-9-]{5,20})/i) ||
     subject.match(/#\s?([A-Z0-9-]{5,20})/);
   const orderNumber = orderNumMatch ? orderNumMatch[1] : null;
 
@@ -1047,8 +1054,17 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
     const simpleLineRe = /([A-Za-z0-9][^\n$£€]{4,70}?)\s*(?:Qty|Quantity)[:\s]*(\d{1,3})[^\n$£€]{0,20}[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/gi;
     let lm;
     while ((lm = simpleLineRe.exec(bodyText)) !== null && lineItems.length < 20) {
+      // When the source email has no real text/plain part, newlines get
+      // collapsed to spaces before this regex ever runs, so a preceding
+      // heading like "ORDER SUMMARY" or a trailing "Pre-order: [date]"
+      // label can bleed into the captured name — confirmed directly
+      // against a real email. Cleaned up here since this name becomes
+      // the actual stock item name later if the order gets delivered.
+      let cleanName = lm[1].trim().replace(/\s{2,}/g, ' ');
+      cleanName = cleanName.replace(/^(?:[A-Z][A-Z\s]{2,20}SUMMARY|ORDER\s+DETAILS|ITEMS?\s+ORDERED|YOUR\s+ITEMS?)\s+/i, '');
+      cleanName = cleanName.replace(/\s*Pre-?order\s*:\s*[\d/.\-]+\s*$/i, '');
       lineItems.push({
-        name: lm[1].trim().replace(/\s{2,}/g, ' '),
+        name: cleanName,
         quantity: parseInt(lm[2], 10) || 1,
         price: parseFloat(lm[3].replace(',', ''))
       });
