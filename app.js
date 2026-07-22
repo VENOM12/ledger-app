@@ -245,6 +245,7 @@ if(!state.pendingSales) state.pendingSales = [];
 if(!state.displayCurrency) state.displayCurrency = "USD";
 if(!state.emailFilters) state.emailFilters = { blockPromotions: true, excludedSenders: [] };
 if(!Array.isArray(state.vccs)) state.vccs = [];
+if(!Array.isArray(state.addresses)) state.addresses = [];
 if(!Array.isArray(state.generatedProfiles)) state.generatedProfiles = [];
 if(!state.profileBuilderSettings) state.profileBuilderSettings = { catchallDomains: [], emailList: [] };
 if(!Array.isArray(state.profileBuilderSettings.catchallDomains)) state.profileBuilderSettings.catchallDomains = [];
@@ -357,6 +358,7 @@ const ICONS = {
   card: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>`,
   tools: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>`,
   warning: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
+  pin: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>`,
   check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>`,
   close: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>`,
   search: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>`,
@@ -468,6 +470,7 @@ function render(){
       <div class="navlabel">Tools</div>
       <div class="nav">
         ${navBtn("vcc-tracker","card","Card Tracker")}
+        ${navBtn("address-tracker","pin","Address Tracker")}
         ${navBtn("profile-builder","tools","Profile Builder")}
         ${navBtn("invoices","cash","Invoice Generator")}
       </div>
@@ -517,7 +520,7 @@ function setTab(tab){
 function renderTopbar(){
   const bar = document.getElementById("topbar");
   if(!bar) return;
-  const titles = { dashboard: "Dashboard", stock: "Stock", add: "Add Stock", sold: "Sold", orders: "Confirmed Orders", expenses: "Expenses", "vcc-tracker": "Card Tracker", "profile-builder": "Profile Builder", "invoices": "Invoice Generator" };
+  const titles = { dashboard: "Dashboard", stock: "Stock", add: "Add Stock", sold: "Sold", orders: "Confirmed Orders", expenses: "Expenses", "vcc-tracker": "Card Tracker", "address-tracker": "Address Tracker", "profile-builder": "Profile Builder", "invoices": "Invoice Generator" };
   let heading;
   if(ui.detailItemId){
     const item = state.items.find(i=>i.id===ui.detailItemId);
@@ -570,6 +573,7 @@ function renderView(){
   else if(ui.tab==="sold"){ view.innerHTML = soldHTML(); attachSoldEvents(); }
   else if(ui.tab==="expenses"){ view.innerHTML = expensesHTML(); attachExpensesEvents(); }
   else if(ui.tab==="vcc-tracker"){ view.innerHTML = vccTrackerHTML(); attachVccTrackerEvents(); }
+  else if(ui.tab==="address-tracker"){ view.innerHTML = addressTrackerHTML(); attachAddressTrackerEvents(); }
   else if(ui.tab==="profile-builder"){ view.innerHTML = profileBuilderHTML(); attachProfileBuilderEvents(); }
   else if(ui.tab==="invoices"){ view.innerHTML = invoiceGeneratorHTML(); attachInvoiceGeneratorEvents(); }
 }
@@ -2548,6 +2552,7 @@ function attachSoldEvents(){
 
 /* ---------------- VCC Tracker ---------------- */
 
+let settingsUI = { emailsExpanded: false };
 let vccUI = { statusFilter: "All", providerFilter: "All", networkFilter: "All", typeFilter: "All", search: "" };
 
 // Status is computed from the expiry date, not stored/set manually —
@@ -2611,6 +2616,7 @@ function vccTrackerHTML(){
         ${ICONS.search}
         <input type="text" id="vccSearchInput" placeholder="Search by nickname or last 4" value="${escapeAttr(vccUI.search)}">
       </div>
+      <button class="btn-small" id="exportVccCsvBtn">${ICONS.download} Export CSV</button>
     </div>
     <div id="vccResultsContainer">${vccResultsHTML(cards)}</div>
     <div style="margin-top:14px;padding:6px 10px;background:var(--red-bg);border:1px solid var(--red);border-radius:var(--radius-sm);color:var(--red);font-size:11px;line-height:1.4;display:flex;align-items:flex-start;gap:6px;">
@@ -2697,6 +2703,13 @@ function attachVccTrackerEvents(){
   });
   const search = document.getElementById("vccSearchInput");
   search.addEventListener("input", e=>{ vccUI.search = e.target.value; renderVccResults(); });
+  document.getElementById("exportVccCsvBtn").addEventListener("click", ()=>{
+    const cardsWithStatus = state.vccs.map(c=>({...c, computedStatus: vccStatus(c)}));
+    downloadCSV(`cards-${todayISO()}.csv`,
+      ["Nickname","Provider","Network","Type","Last 4","Expiry","Status"],
+      cardsWithStatus.map(c=>[c.nickname, c.provider||"", c.network||"", c.cardType||"", (c.number||"").slice(-4), c.expiry||"", c.computedStatus])
+    );
+  });
   bindVccResultEvents();
 }
 
@@ -2847,6 +2860,203 @@ function renderVccModal(){
     document.getElementById("modalRoot").innerHTML = "";
     showToast("Card deleted");
     if(ui.tab==="vcc-tracker") renderView();
+  });
+}
+
+/* ---------------- Address Tracker ---------------- */
+// A straightforward reference list of real addresses — same idea as
+// Card Tracker, just for addresses instead of cards. Deliberately not
+// wired into Profile Builder's generation flow.
+
+const ADDRESS_TYPES = ["Home","Business","Warehouse","Family/Friend","Other"];
+
+let addressUI = { typeFilter: "All", search: "" };
+
+function addressTrackerHTML(){
+  const addresses = state.addresses
+    .filter(a => addressUI.typeFilter==="All" || a.type===addressUI.typeFilter)
+    .filter(a => !addressUI.search || a.nickname.toLowerCase().includes(addressUI.search.toLowerCase()) || a.address.toLowerCase().includes(addressUI.search.toLowerCase()));
+
+  return `
+    <div class="stat-grid" style="margin-bottom:16px;">
+      ${statCard("pin", "Total Addresses", ""+state.addresses.length, "var(--blue)", "var(--blue-bg)")}
+      ${ADDRESS_TYPES.slice(0,3).map(t=>statCard("pin", t, ""+state.addresses.filter(a=>a.type===t).length, "var(--violet)", "var(--violet-bg)")).join("")}
+    </div>
+    <div class="toolbar-row" style="flex-wrap:wrap;">
+      <button class="btn-primary" id="addAddressBtn">${ICONS.plus} Add Address</button>
+      <select id="addressTypeFilterSelect" style="width:auto;">
+        <option value="All" ${addressUI.typeFilter==="All"?"selected":""}>All Types</option>
+        ${ADDRESS_TYPES.map(t=>`<option value="${t}" ${addressUI.typeFilter===t?"selected":""}>${t}</option>`).join("")}
+      </select>
+      <div class="search-bar">
+        ${ICONS.search}
+        <input type="text" id="addressSearchInput" placeholder="Search by nickname or address" value="${escapeAttr(addressUI.search)}">
+      </div>
+      <button class="btn-small" id="exportAddressCsvBtn">${ICONS.download} Export CSV</button>
+    </div>
+    <div id="addressResultsContainer">${addressResultsHTML(addresses)}</div>
+    <div style="height:20px;"></div>
+  `;
+}
+
+function addressResultsHTML(addresses){
+  if(addresses.length===0){
+    return `
+      <div class="empty-state">
+        ${ICONS.pin}
+        <div class="t">No addresses yet</div>
+        <div class="d">Save real addresses you have legitimate access to, so they're all in one place for quick reference.</div>
+      </div>
+    `;
+  }
+  return `
+    <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));gap:14px;">
+      ${addresses.map(a=>`
+        <div class="card" style="padding:16px 18px;">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px;">
+            <div style="min-width:0;">
+              <div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(a.nickname)}</div>
+              <div class="hint" style="margin:2px 0 0;">${escapeHTML(a.type||"Other")}</div>
+            </div>
+            <div style="display:flex;gap:6px;flex-shrink:0;">
+              <button class="icon-btn" data-edit-address="${a.id}" title="Edit">${ICONS.pencil}</button>
+              <button class="icon-btn" data-delete-address="${a.id}" title="Delete">${ICONS.trash}</button>
+            </div>
+          </div>
+          <div class="hint" style="white-space:pre-line;line-height:1.5;">${escapeHTML(a.address)}</div>
+          ${a.notes ? `<div class="hint" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft);">${escapeHTML(a.notes)}</div>` : ""}
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderAddressResults(){
+  const container = document.getElementById("addressResultsContainer");
+  if(!container) return;
+  const addresses = state.addresses
+    .filter(a => addressUI.typeFilter==="All" || a.type===addressUI.typeFilter)
+    .filter(a => !addressUI.search || a.nickname.toLowerCase().includes(addressUI.search.toLowerCase()) || a.address.toLowerCase().includes(addressUI.search.toLowerCase()));
+  container.innerHTML = addressResultsHTML(addresses);
+  bindAddressResultEvents();
+}
+
+function attachAddressTrackerEvents(){
+  document.getElementById("addAddressBtn").addEventListener("click", ()=>openAddressModal(null));
+  document.getElementById("addressTypeFilterSelect").addEventListener("change", e=>{
+    addressUI.typeFilter = e.target.value; renderAddressResults();
+  });
+  document.getElementById("addressSearchInput").addEventListener("input", e=>{
+    addressUI.search = e.target.value; renderAddressResults();
+  });
+  document.getElementById("exportAddressCsvBtn").addEventListener("click", ()=>{
+    downloadCSV(`addresses-${todayISO()}.csv`,
+      ["Nickname","Type","Address","Notes"],
+      state.addresses.map(a=>[a.nickname, a.type||"", a.address.replace(/\n/g," / "), a.notes||""])
+    );
+  });
+  bindAddressResultEvents();
+}
+
+function bindAddressResultEvents(){
+  document.querySelectorAll("[data-edit-address]").forEach(btn=>{
+    btn.addEventListener("click", ()=>openAddressModal(btn.dataset.editAddress));
+  });
+  document.querySelectorAll("[data-delete-address]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const address = state.addresses.find(a=>a.id===btn.dataset.deleteAddress);
+      if(!address) return;
+      if(!confirm(`Delete "${address.nickname}"? This can't be undone.`)) return;
+      state.addresses = state.addresses.filter(a=>a.id!==address.id);
+      saveState();
+      renderAddressResults();
+      showToast("Address deleted");
+    });
+  });
+}
+
+let addressFormState = null;
+
+function openAddressModal(addressId){
+  const existing = addressId ? state.addresses.find(a=>a.id===addressId) : null;
+  addressFormState = {
+    id: existing ? existing.id : null,
+    nickname: existing ? existing.nickname : "",
+    type: existing ? existing.type || "Home" : "Home",
+    address: existing ? existing.address : "",
+    notes: existing ? existing.notes || "" : ""
+  };
+  renderAddressModal();
+}
+
+function renderAddressModal(){
+  const f = addressFormState;
+  const isEdit = !!f.id;
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open">
+      <div class="modal" style="width:460px;">
+        <div class="modal-header">
+          <h2>${isEdit ? "Edit Address" : "Add Address"}</h2>
+          <button class="icon-btn" id="closeAddressModal">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          <div class="field">
+            <label>Nickname</label>
+            <input type="text" id="addr-nickname" value="${escapeAttr(f.nickname)}" placeholder="e.g. Home, Warehouse">
+          </div>
+          <div class="field">
+            <label>Type</label>
+            <select id="addr-type">
+              ${ADDRESS_TYPES.map(t=>`<option value="${t}" ${f.type===t?"selected":""}>${t}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field">
+            <label>Address</label>
+            <textarea id="addr-address" rows="3">${escapeHTML(f.address)}</textarea>
+          </div>
+          <div class="field">
+            <label>Notes (optional)</label>
+            <input type="text" id="addr-notes" value="${escapeAttr(f.notes)}">
+          </div>
+          <div style="height:6px;"></div>
+          <button class="btn-primary block" id="saveAddressBtn">${isEdit ? "Save Changes" : "Add Address"}</button>
+          ${isEdit ? `<button class="btn-secondary block" id="deleteAddressBtn" style="margin-top:10px;border-color:var(--red);color:var(--red);">${ICONS.trash} Delete Address</button>` : ""}
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("closeAddressModal").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
+  document.getElementById("addr-nickname").addEventListener("input", e=>{ f.nickname = e.target.value; });
+  document.getElementById("addr-type").addEventListener("change", e=>{ f.type = e.target.value; });
+  document.getElementById("addr-address").addEventListener("input", e=>{ f.address = e.target.value; });
+  document.getElementById("addr-notes").addEventListener("input", e=>{ f.notes = e.target.value; });
+
+  document.getElementById("saveAddressBtn").addEventListener("click", ()=>{
+    const nickname = f.nickname.trim();
+    if(!nickname){ showToast("Enter a nickname for this address", "close"); return; }
+    if(!f.address.trim()){ showToast("Enter the address", "close"); return; }
+    const payload = { nickname, type: f.type, address: f.address.trim(), notes: f.notes.trim() };
+    if(f.id){
+      const address = state.addresses.find(a=>a.id===f.id);
+      Object.assign(address, payload);
+    } else {
+      state.addresses.unshift({ id: uid(), ...payload });
+    }
+    saveState();
+    document.getElementById("modalRoot").innerHTML = "";
+    showToast(f.id ? "Address updated" : "Address added");
+    if(ui.tab==="address-tracker") renderView();
+  });
+
+  const deleteBtn = document.getElementById("deleteAddressBtn");
+  if(deleteBtn) deleteBtn.addEventListener("click", ()=>{
+    if(!confirm(`Delete "${f.nickname}"? This can't be undone.`)) return;
+    state.addresses = state.addresses.filter(a=>a.id!==f.id);
+    saveState();
+    document.getElementById("modalRoot").innerHTML = "";
+    showToast("Address deleted");
+    if(ui.tab==="address-tracker") renderView();
   });
 }
 
@@ -5553,7 +5763,11 @@ function openSettings(){
           <div class="panel-title" style="margin-bottom:6px;">Profile Builder</div>
           <div class="hint" style="margin-bottom:10px;">Catch-all domains for Profile Builder come from your Email Sync accounts above — add them there. Your own email addresses (for the "my own addresses" mode) are managed here.</div>
 
-          <div style="font-weight:700;font-size:12.5px;color:var(--text-dim);margin-bottom:6px;">Your own email addresses</div>
+          <div style="font-weight:700;font-size:12.5px;color:var(--text-dim);margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;" id="toggleOwnedEmails">
+            <span>Your own email addresses (${state.profileBuilderSettings.emailList.length})</span>
+            <span style="display:inline-flex;width:14px;height:14px;transform:rotate(${settingsUI.emailsExpanded?'90deg':'-90deg'});transition:transform 0.15s;">${ICONS.chev}</span>
+          </div>
+          ${settingsUI.emailsExpanded ? `
           <div class="chip-list" id="ownedEmailsChips" style="margin-bottom:10px;">
             ${state.profileBuilderSettings.emailList.length===0 ? `<span class="hint" style="margin:0;">None added yet.</span>` : state.profileBuilderSettings.emailList.map(e=>`
               <span class="excl-chip">${escapeHTML(e)}<button data-remove-pb-email="${escapeAttr(e)}">${ICONS.close}</button></span>
@@ -5570,6 +5784,7 @@ function openSettings(){
             </label>
           </div>
           <div class="hint" style="margin-top:8px;">To import several at once, paste a comma or newline-separated list above and click Add, or import a CSV file — any column containing email addresses is picked up automatically.</div>
+          ` : ""}
 
           <div style="height:20px;"></div>
           <div class="panel-title" style="margin-bottom:10px;">Data</div>
@@ -5582,7 +5797,13 @@ function openSettings(){
     </div>
   `;
   document.getElementById("closeSettings").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; render(); });
-  document.getElementById("addPbEmailBtn").addEventListener("click", ()=>{
+  const toggleEmailsBtn = document.getElementById("toggleOwnedEmails");
+  if(toggleEmailsBtn) toggleEmailsBtn.addEventListener("click", ()=>{
+    settingsUI.emailsExpanded = !settingsUI.emailsExpanded;
+    refreshSettingsIfOpen();
+  });
+  const addPbEmailBtn = document.getElementById("addPbEmailBtn");
+  if(addPbEmailBtn) addPbEmailBtn.addEventListener("click", ()=>{
     const input = document.getElementById("pbNewEmailInput");
     // Supports pasting several at once, comma or newline separated, not
     // just one address per click.
@@ -5598,7 +5819,8 @@ function openSettings(){
     input.value = "";
     refreshSettingsIfOpen();
   });
-  document.getElementById("pbEmailCsvInput").addEventListener("change", e=>{
+  const pbEmailCsvInput = document.getElementById("pbEmailCsvInput");
+  if(pbEmailCsvInput) pbEmailCsvInput.addEventListener("change", e=>{
     const file = e.target.files[0];
     if(!file) return;
     const reader = new FileReader();
