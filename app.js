@@ -2864,228 +2864,83 @@ function renderVccModal(){
 }
 
 /* ---------------- Address Tracker ---------------- */
-// A straightforward reference list of real addresses — same idea as
-// Card Tracker, just for addresses instead of cards. Deliberately not
-// wired into Profile Builder's generation flow.
 
 const ADDRESS_TYPES = ["Home","Business","Warehouse","Family/Friend","Other"];
-
+const ADDRESS_COUNTRIES = [["GB","United Kingdom"],["US","United States"],["IE","Ireland"],["CA","Canada"],["AU","Australia"],["DE","Germany"],["FR","France"],["NL","Netherlands"],["ES","Spain"],["IT","Italy"],["Other","Other"]];
 let addressUI = { typeFilter: "All", search: "" };
 
 function addressTrackerHTML(){
-  const addresses = state.addresses
-    .filter(a => addressUI.typeFilter==="All" || a.type===addressUI.typeFilter)
-    .filter(a => !addressUI.search || a.nickname.toLowerCase().includes(addressUI.search.toLowerCase()) || a.address.toLowerCase().includes(addressUI.search.toLowerCase()));
-
-  return `
-    <div class="stat-grid" style="margin-bottom:16px;">
-      ${statCard("pin", "Total Addresses", ""+state.addresses.length, "var(--blue)", "var(--blue-bg)")}
-      ${ADDRESS_TYPES.slice(0,3).map(t=>statCard("pin", t, ""+state.addresses.filter(a=>a.type===t).length, "var(--violet)", "var(--violet-bg)")).join("")}
-    </div>
-    <div class="toolbar-row" style="flex-wrap:wrap;">
-      <button class="btn-primary" id="addAddressBtn">${ICONS.plus} Add Address</button>
-      <select id="addressTypeFilterSelect" style="width:auto;">
-        <option value="All" ${addressUI.typeFilter==="All"?"selected":""}>All Types</option>
-        ${ADDRESS_TYPES.map(t=>`<option value="${t}" ${addressUI.typeFilter===t?"selected":""}>${t}</option>`).join("")}
-      </select>
-      <div class="search-bar">
-        ${ICONS.search}
-        <input type="text" id="addressSearchInput" placeholder="Search by nickname or address" value="${escapeAttr(addressUI.search)}">
-      </div>
-      <button class="btn-small" id="exportAddressCsvBtn">${ICONS.download} Export CSV</button>
-    </div>
-    <div id="addressResultsContainer">${addressResultsHTML(addresses)}</div>
-    <div style="height:20px;"></div>
-  `;
+  const addresses = state.addresses.filter(a=>addressUI.typeFilter==="All"||a.type===addressUI.typeFilter).filter(a=>!addressUI.search||`${a.nickname} ${trackedAddressText(a)}`.toLowerCase().includes(addressUI.search.toLowerCase()));
+  return `<div class="stat-grid" style="margin-bottom:16px;">${statCard("pin","Total Addresses",""+state.addresses.length,"var(--blue)","var(--blue-bg)")}${ADDRESS_TYPES.slice(0,3).map(t=>statCard("pin",t,""+state.addresses.filter(a=>a.type===t).length,"var(--violet)","var(--violet-bg)")).join("")}</div>
+  <div class="toolbar-row" style="flex-wrap:wrap;"><button class="btn-primary" id="addAddressBtn">${ICONS.plus} Add Address</button><select id="addressTypeFilterSelect" style="width:auto;"><option value="All" ${addressUI.typeFilter==="All"?"selected":""}>All Types</option>${ADDRESS_TYPES.map(t=>`<option value="${t}" ${addressUI.typeFilter===t?"selected":""}>${t}</option>`).join("")}</select><div class="search-bar">${ICONS.search}<input type="text" id="addressSearchInput" placeholder="Search by nickname or address" value="${escapeAttr(addressUI.search)}"></div><button class="btn-small" id="exportAddressCsvBtn">${ICONS.download} Export CSV</button></div>
+  <div id="addressResultsContainer">${addressResultsHTML(addresses)}</div><div style="height:20px;"></div>`;
 }
-
 function addressResultsHTML(addresses){
-  if(addresses.length===0){
-    return `
-      <div class="empty-state">
-        ${ICONS.pin}
-        <div class="t">No addresses yet</div>
-        <div class="d">Save real addresses you have legitimate access to, so they're all in one place for quick reference.</div>
-      </div>
-    `;
-  }
-  return `
-    <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));gap:14px;">
-      ${addresses.map(a=>`
-        <div class="card" style="padding:16px 18px;">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px;">
-            <div style="min-width:0;">
-              <div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(a.nickname)}</div>
-              <div class="hint" style="margin:2px 0 0;">${escapeHTML(a.type||"Other")}</div>
-            </div>
-            <div style="display:flex;gap:6px;flex-shrink:0;">
-              <button class="icon-btn" data-edit-address="${a.id}" title="Edit">${ICONS.pencil}</button>
-              <button class="icon-btn" data-delete-address="${a.id}" title="Delete">${ICONS.trash}</button>
-            </div>
-          </div>
-          <div class="hint" style="white-space:pre-line;line-height:1.5;">${escapeHTML(a.address)}</div>
-          ${a.notes ? `<div class="hint" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft);">${escapeHTML(a.notes)}</div>` : ""}
-        </div>
-      `).join("")}
-    </div>
-  `;
+  if(!addresses.length) return `<div class="empty-state">${ICONS.pin}<div class="t">No addresses yet</div><div class="d">Save addresses using separate fields so every part exports correctly.</div></div>`;
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;">${addresses.map(a=>`<div class="card" style="padding:16px 18px;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px;"><div style="min-width:0;"><div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(a.nickname)}</div><div class="hint" style="margin:2px 0 0;">${escapeHTML(a.type||"Other")}</div></div><div style="display:flex;gap:6px;flex-shrink:0;"><button class="icon-btn" data-edit-address="${a.id}" title="Edit">${ICONS.pencil}</button><button class="icon-btn" data-delete-address="${a.id}" title="Delete">${ICONS.trash}</button></div></div><div class="hint" style="white-space:pre-line;line-height:1.5;">${escapeHTML(trackedAddressText(a))}</div>${a.notes?`<div class="hint" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft);">${escapeHTML(a.notes)}</div>`:""}</div>`).join("")}</div>`;
 }
-
-function renderAddressResults(){
-  const container = document.getElementById("addressResultsContainer");
-  if(!container) return;
-  const addresses = state.addresses
-    .filter(a => addressUI.typeFilter==="All" || a.type===addressUI.typeFilter)
-    .filter(a => !addressUI.search || a.nickname.toLowerCase().includes(addressUI.search.toLowerCase()) || a.address.toLowerCase().includes(addressUI.search.toLowerCase()));
-  container.innerHTML = addressResultsHTML(addresses);
-  bindAddressResultEvents();
-}
-
+function renderAddressResults(){ const c=document.getElementById("addressResultsContainer"); if(!c)return; const a=state.addresses.filter(x=>addressUI.typeFilter==="All"||x.type===addressUI.typeFilter).filter(x=>!addressUI.search||`${x.nickname} ${trackedAddressText(x)}`.toLowerCase().includes(addressUI.search.toLowerCase())); c.innerHTML=addressResultsHTML(a); bindAddressResultEvents(); }
 function attachAddressTrackerEvents(){
-  document.getElementById("addAddressBtn").addEventListener("click", ()=>openAddressModal(null));
-  document.getElementById("addressTypeFilterSelect").addEventListener("change", e=>{
-    addressUI.typeFilter = e.target.value; renderAddressResults();
-  });
-  document.getElementById("addressSearchInput").addEventListener("input", e=>{
-    addressUI.search = e.target.value; renderAddressResults();
-  });
-  document.getElementById("exportAddressCsvBtn").addEventListener("click", ()=>{
-    downloadCSV(`addresses-${todayISO()}.csv`,
-      ["Nickname","Type","Address","Notes"],
-      state.addresses.map(a=>[a.nickname, a.type||"", a.address.replace(/\n/g," / "), a.notes||""])
-    );
-  });
+  document.getElementById("addAddressBtn").addEventListener("click",()=>openAddressModal(null));
+  document.getElementById("addressTypeFilterSelect").addEventListener("change",e=>{addressUI.typeFilter=e.target.value;renderAddressResults();});
+  document.getElementById("addressSearchInput").addEventListener("input",e=>{addressUI.search=e.target.value;renderAddressResults();});
+  document.getElementById("exportAddressCsvBtn").addEventListener("click",()=>downloadCSV(`addresses-${todayISO()}.csv`,["Nickname","Type","First Name","Last Name","Address 1","Address 2","City","Postcode / ZIP","State","Country","Notes"],state.addresses.map(a=>{const x=trackedAddressParts(a);return[a.nickname,a.type||"",x.firstName,x.lastName,x.address1,x.address2,x.city,x.zip,x.state,x.country,a.notes||""];})));
   bindAddressResultEvents();
 }
-
 function bindAddressResultEvents(){
-  document.querySelectorAll("[data-edit-address]").forEach(btn=>{
-    btn.addEventListener("click", ()=>openAddressModal(btn.dataset.editAddress));
-  });
-  document.querySelectorAll("[data-delete-address]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{
-      const address = state.addresses.find(a=>a.id===btn.dataset.deleteAddress);
-      if(!address) return;
-      if(!confirm(`Delete "${address.nickname}"? This can't be undone.`)) return;
-      state.addresses = state.addresses.filter(a=>a.id!==address.id);
-      saveState();
-      renderAddressResults();
-      showToast("Address deleted");
-    });
-  });
+  document.querySelectorAll("[data-edit-address]").forEach(b=>b.addEventListener("click",()=>openAddressModal(b.dataset.editAddress)));
+  document.querySelectorAll("[data-delete-address]").forEach(b=>b.addEventListener("click",()=>{const a=state.addresses.find(x=>x.id===b.dataset.deleteAddress);if(!a||!confirm(`Delete "${a.nickname}"? This can't be undone.`))return;state.addresses=state.addresses.filter(x=>x.id!==a.id);saveState();renderAddressResults();showToast("Address deleted");}));
 }
-
-let addressFormState = null;
-
-function openAddressModal(addressId){
-  const existing = addressId ? state.addresses.find(a=>a.id===addressId) : null;
-  addressFormState = {
-    id: existing ? existing.id : null,
-    nickname: existing ? existing.nickname : "",
-    type: existing ? existing.type || "Home" : "Home",
-    address: existing ? existing.address : "",
-    notes: existing ? existing.notes || "" : ""
-  };
-  renderAddressModal();
-}
-
+let addressFormState=null;
+function openAddressModal(addressId){ const e=addressId?state.addresses.find(a=>a.id===addressId):null; const x=trackedAddressParts(e); addressFormState={id:e?e.id:null,nickname:e?e.nickname:"",type:e?e.type||"Home":"Home",firstName:x.firstName,lastName:x.lastName,address1:x.address1,address2:x.address2,city:x.city,zip:x.zip,state:x.state,country:x.country||"GB",notes:e?e.notes||"":""}; renderAddressModal(); }
 function renderAddressModal(){
-  const f = addressFormState;
-  const isEdit = !!f.id;
-  const root = document.getElementById("modalRoot");
-  root.innerHTML = `
-    <div class="modal-backdrop open">
-      <div class="modal" style="width:460px;">
-        <div class="modal-header">
-          <h2>${isEdit ? "Edit Address" : "Add Address"}</h2>
-          <button class="icon-btn" id="closeAddressModal">${ICONS.close}</button>
-        </div>
-        <div class="modal-body">
-          <div class="field">
-            <label>Nickname</label>
-            <input type="text" id="addr-nickname" value="${escapeAttr(f.nickname)}" placeholder="e.g. Home, Warehouse">
-          </div>
-          <div class="field">
-            <label>Type</label>
-            <select id="addr-type">
-              ${ADDRESS_TYPES.map(t=>`<option value="${t}" ${f.type===t?"selected":""}>${t}</option>`).join("")}
-            </select>
-          </div>
-          <div class="field">
-            <label>Address</label>
-            <textarea id="addr-address" rows="3">${escapeHTML(f.address)}</textarea>
-          </div>
-          <div class="field">
-            <label>Notes (optional)</label>
-            <input type="text" id="addr-notes" value="${escapeAttr(f.notes)}">
-          </div>
-          <div style="height:6px;"></div>
-          <button class="btn-primary block" id="saveAddressBtn">${isEdit ? "Save Changes" : "Add Address"}</button>
-          ${isEdit ? `<button class="btn-secondary block" id="deleteAddressBtn" style="margin-top:10px;border-color:var(--red);color:var(--red);">${ICONS.trash} Delete Address</button>` : ""}
-        </div>
-      </div>
-    </div>
-  `;
-  document.getElementById("closeAddressModal").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
-  document.getElementById("addr-nickname").addEventListener("input", e=>{ f.nickname = e.target.value; });
-  document.getElementById("addr-type").addEventListener("change", e=>{ f.type = e.target.value; });
-  document.getElementById("addr-address").addEventListener("input", e=>{ f.address = e.target.value; });
-  document.getElementById("addr-notes").addEventListener("input", e=>{ f.notes = e.target.value; });
-
-  document.getElementById("saveAddressBtn").addEventListener("click", ()=>{
-    const nickname = f.nickname.trim();
-    if(!nickname){ showToast("Enter a nickname for this address", "close"); return; }
-    if(!f.address.trim()){ showToast("Enter the address", "close"); return; }
-    const payload = { nickname, type: f.type, address: f.address.trim(), notes: f.notes.trim() };
-    if(f.id){
-      const address = state.addresses.find(a=>a.id===f.id);
-      Object.assign(address, payload);
-    } else {
-      state.addresses.unshift({ id: uid(), ...payload });
-    }
-    saveState();
-    document.getElementById("modalRoot").innerHTML = "";
-    showToast(f.id ? "Address updated" : "Address added");
-    if(ui.tab==="address-tracker") renderView();
-  });
-
-  const deleteBtn = document.getElementById("deleteAddressBtn");
-  if(deleteBtn) deleteBtn.addEventListener("click", ()=>{
-    if(!confirm(`Delete "${f.nickname}"? This can't be undone.`)) return;
-    state.addresses = state.addresses.filter(a=>a.id!==f.id);
-    saveState();
-    document.getElementById("modalRoot").innerHTML = "";
-    showToast("Address deleted");
-    if(ui.tab==="address-tracker") renderView();
-  });
+  const f=addressFormState,isEdit=!!f.id,root=document.getElementById("modalRoot");
+  root.innerHTML=`<div class="modal-backdrop open"><div class="modal" style="width:620px;max-width:calc(100vw - 28px);"><div class="modal-header"><h2>${isEdit?"Edit Address":"Add Address"}</h2><button class="icon-btn" id="closeAddressModal">${ICONS.close}</button></div><div class="modal-body">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="field"><label>Nickname</label><input type="text" id="addr-nickname" value="${escapeAttr(f.nickname)}" placeholder="e.g. Home"></div><div class="field"><label>Type</label><select id="addr-type">${ADDRESS_TYPES.map(t=>`<option value="${t}" ${f.type===t?"selected":""}>${t}</option>`).join("")}</select></div><div class="field"><label>First name</label><input type="text" id="addr-first-name" value="${escapeAttr(f.firstName)}"></div><div class="field"><label>Last name</label><input type="text" id="addr-last-name" value="${escapeAttr(f.lastName)}"></div></div>
+  <div class="field"><label>Address line 1</label><input type="text" id="addr-line1" value="${escapeAttr(f.address1)}" placeholder="House number and street"></div><div class="field"><label>Address line 2 / House name (optional)</label><input type="text" id="addr-line2" value="${escapeAttr(f.address2)}"></div>
+  <div style="display:grid;grid-template-columns:1.15fr .85fr;gap:12px;"><div class="field"><label>Country</label><select id="addr-country">${ADDRESS_COUNTRIES.map(([c,l])=>`<option value="${c}" ${f.country===c?"selected":""}>${l}</option>`).join("")}</select></div><div class="field"><label>State / County (optional)</label><input type="text" id="addr-state" value="${escapeAttr(f.state)}"></div><div class="field"><label>City</label><input type="text" id="addr-city" value="${escapeAttr(f.city)}"></div><div class="field"><label>Postcode / ZIP</label><input type="text" id="addr-zip" value="${escapeAttr(f.zip)}"></div></div>
+  <div class="field"><label>Notes (optional)</label><input type="text" id="addr-notes" value="${escapeAttr(f.notes)}"></div><div style="display:flex;gap:10px;margin-top:8px;"><button class="btn-primary" id="saveAddressBtn" style="flex:1;">${isEdit?"Save Changes":"Add Address"}</button>${isEdit?`<button class="btn-secondary" id="deleteAddressBtn" style="flex:1;border-color:var(--red);color:var(--red);">${ICONS.trash} Delete Address</button>`:""}</div></div></div></div>`;
+  const bind=(id,key,event="input")=>document.getElementById(id).addEventListener(event,e=>{f[key]=e.target.value;});
+  document.getElementById("closeAddressModal").addEventListener("click",()=>{root.innerHTML="";}); bind("addr-nickname","nickname");bind("addr-type","type","change");bind("addr-first-name","firstName");bind("addr-last-name","lastName");bind("addr-line1","address1");bind("addr-line2","address2");bind("addr-country","country","change");bind("addr-state","state");bind("addr-city","city");bind("addr-zip","zip");bind("addr-notes","notes");
+  document.getElementById("saveAddressBtn").addEventListener("click",()=>{const nickname=f.nickname.trim(),address1=f.address1.trim(),city=f.city.trim(),zip=f.zip.trim();if(!nickname){showToast("Enter a nickname for this address","close");return;}if(!address1){showToast("Enter address line 1","close");return;}if(!city){showToast("Enter the city","close");return;}if(!zip){showToast("Enter the postcode or ZIP","close");return;}const payload={nickname,type:f.type,firstName:f.firstName.trim(),lastName:f.lastName.trim(),address1,address2:f.address2.trim(),city,zip:zip.toUpperCase(),state:f.state.trim(),country:f.country,notes:f.notes.trim()};payload.address=trackedAddressText(payload);if(f.id)Object.assign(state.addresses.find(a=>a.id===f.id),payload);else state.addresses.unshift({id:uid(),...payload});saveState();root.innerHTML="";showToast(f.id?"Address updated":"Address added");if(ui.tab==="address-tracker")renderView();});
+  const d=document.getElementById("deleteAddressBtn");if(d)d.addEventListener("click",()=>{if(!confirm(`Delete "${f.nickname}"? This can't be undone.`))return;state.addresses=state.addresses.filter(a=>a.id!==f.id);saveState();root.innerHTML="";showToast("Address deleted");if(ui.tab==="address-tracker")renderView();});
 }
 
 /* ---------------- Profile Builder ---------------- */
-// Generates a random name, phone number, and email only — deliberately
-// no address generation and no automatic card attachment. See the app's
-// notes on this: varying a delivery address while preserving its actual
-// routing information is a different thing from not sharing your real
-// name with a site, and attaching a real payment card to a randomly
-// generated identity is a different thing again. This tool sticks to
-// the part that's genuinely just "don't hand my real contact details to
-// somewhere I don't trust."
+// Builds complete checkout profiles from the user's saved addresses and cards.
+// Addresses are distributed evenly; cards are shuffled and used at most once
+// in each generation batch.
 
 const PROFILE_FIRST_NAMES = ["James","Emma","Oliver","Amelia","Liam","Isla","Noah","Ava","Ethan","Mia","Lucas","Sophie","Jack","Grace","Harry","Ruby","George","Chloe","Charlie","Freya","Thomas","Lily","Oscar","Ella","Henry","Poppy","Leo","Evie","Jacob","Alice"];
 const PROFILE_LAST_NAMES = ["Smith","Jones","Taylor","Williams","Brown","Davies","Evans","Wilson","Thomas","Roberts","Johnson","Walker","Wright","Robinson","Thompson","White","Edwards","Hughes","Green","Hall","Wood","Harris","Clarke","Patel","Turner","Cooper","Ward","Morris","Bell","Kelly"];
 
+const PROFILE_CSV_HEADERS = [
+  "PROFILE_NAME","EMAIL","PHONE","SHIPPING_FIRST_NAME","SHIPPING_LAST_NAME",
+  "SHIPPING_ADDRESS","SHIPPING_ADDRESS_2","SHIPPING_CITY","SHIPPING_ZIP",
+  "SHIPPING_STATE","SHIPPING_COUNTRY","BILLING_FIRST_NAME","BILLING_LAST_NAME",
+  "BILLING_ADDRESS","BILLING_ADDRESS_2","BILLING_CITY","BILLING_ZIP",
+  "BILLING_STATE","BILLING_COUNTRY","BILLING_SAME_AS_SHIPPING",
+  "CARD_HOLDER_NAME","CARD_TYPE","CARD_NUMBER","CARD_MONTH","CARD_YEAR",
+  "CARD_CVV","ONE_CHECKOUT_PER_PROFILE"
+];
+
 function randomFrom(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
 
+function shuffledCopy(arr){
+  const copy = arr.slice();
+  for(let i=copy.length-1;i>0;i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
 function generatePhoneNumber(){
-  // Standard UK mobile format — 07 followed by 9 digits.
   let digits = "";
   for(let i=0;i<9;i++) digits += Math.floor(Math.random()*10);
   return "07"+digits;
 }
 
-// Takes the chosen mode/domain explicitly rather than reading a single
-// stored setting — catch-all domains are now managed as a list in
-// Settings, and which one to use (or whether to use the owned-addresses
-// list instead) is chosen per generation.
 function generateEmail(firstName, lastName, mode, catchallDomain){
   if(mode==="list" && state.profileBuilderSettings.emailList.length){
     return randomFrom(state.profileBuilderSettings.emailList);
@@ -3096,11 +2951,106 @@ function generateEmail(firstName, lastName, mode, catchallDomain){
   return null;
 }
 
-let profileGenUI = { mode: "catchall", selectedCatchall: "", count: 1 };
+function usableProfileCards(provider="All", cardType="All"){
+  return state.vccs.filter(c=>{
+    const number = (c.number||"").replace(/\D/g,"");
+    const complete = number && /^\d{2}\/\d{2}$/.test(c.expiry||"") && (c.cvv||"").trim();
+    return complete && (provider==="All" || c.provider===provider) && (cardType==="All" || c.cardType===cardType);
+  });
+}
 
-// Pulls from the same catch-all domains already configured for email
-// sync, rather than keeping a separate list — avoids entering the same
-// domains twice, and stays in sync automatically if those change.
+function parseTrackedAddress(raw){
+  let text = String(raw||"").trim();
+  let lines = text.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+  if(lines.length===1 && lines[0].includes(",")) lines = lines[0].split(",").map(x=>x.trim()).filter(Boolean);
+
+  let country = "";
+  const countryMap = {
+    "united kingdom":"GB", "uk":"GB", "great britain":"GB", "gb":"GB",
+    "united states":"US", "united states of america":"US", "usa":"US", "us":"US"
+  };
+  if(lines.length){
+    const maybeCountry = lines[lines.length-1].toLowerCase();
+    if(countryMap[maybeCountry]) country = countryMap[maybeCountry], lines.pop();
+  }
+
+  let zip = "";
+  const ukPostcode = /\b([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b/i;
+  const usZip = /\b(\d{5}(?:-\d{4})?)\b/;
+  for(let i=lines.length-1;i>=0;i--){
+    const match = lines[i].match(ukPostcode) || lines[i].match(usZip);
+    if(match){
+      zip = match[1].toUpperCase().replace(/\s+/g," ");
+      if(ukPostcode.test(match[1])) country = country || "GB";
+      else country = country || "US";
+      lines[i] = lines[i].replace(match[0],"").replace(/^\s*[,\-]\s*|\s*[,\-]\s*$/g,"").trim();
+      if(!lines[i]) lines.splice(i,1);
+      break;
+    }
+  }
+
+  let stateCode = "";
+  if(country==="US" && lines.length){
+    const last = lines[lines.length-1];
+    const stateMatch = last.match(/(?:,|\s)\s*([A-Z]{2})$/i);
+    if(stateMatch){
+      stateCode = stateMatch[1].toUpperCase();
+      lines[lines.length-1] = last.slice(0,stateMatch.index).replace(/,$/,"").trim();
+    }
+  }
+
+  const address1 = lines[0] || text;
+  let address2 = "";
+  let city = "";
+  if(lines.length>=3){
+    address2 = lines.slice(1,-1).join(", ");
+    city = lines[lines.length-1];
+  } else if(lines.length===2){
+    city = lines[1];
+  }
+
+  return { firstName:"", lastName:"", address1, address2, city, zip, state: stateCode, country };
+}
+
+function trackedAddressParts(address){
+  if(!address) return { firstName:"", lastName:"", address1:"", address2:"", city:"", zip:"", state:"", country:"" };
+  const fallback = parseTrackedAddress(address.address || "");
+  return {
+    firstName: address.firstName || fallback.firstName || "",
+    lastName: address.lastName || fallback.lastName || "",
+    address1: address.address1 || fallback.address1 || "",
+    address2: address.address2 || fallback.address2 || "",
+    city: address.city || fallback.city || "",
+    zip: address.zip || address.postcode || fallback.zip || "",
+    state: address.state || fallback.state || "",
+    country: address.country || fallback.country || ""
+  };
+}
+
+function trackedAddressText(address){
+  const a = trackedAddressParts(address);
+  return [a.address1, a.address2, [a.city, a.state, a.zip].filter(Boolean).join(" "), a.country].filter(Boolean).join("\n");
+}
+
+function profileCsvRow(p){
+  const address = state.addresses.find(a=>a.id===p.addressId);
+  const card = state.vccs.find(c=>c.id===p.cardId);
+  const parsed = address ? trackedAddressParts(address) : parseTrackedAddress(p.addressSnapshot||"");
+  const expiry = String(card ? card.expiry||"" : p.cardExpiry||"").split("/");
+  const cardNumber = (card ? card.number||"" : p.cardNumber||"").replace(/\D/g,"");
+  const cardType = card ? card.network||"" : p.cardNetwork||"";
+  const cardCvv = card ? card.cvv||"" : p.cardCvv||"";
+  const fullName = `${p.firstName} ${p.lastName}`;
+  return [
+    p.profileName || fullName, p.email||"", p.phone||"", parsed.firstName || p.firstName, parsed.lastName || p.lastName,
+    parsed.address1, parsed.address2, parsed.city, parsed.zip, parsed.state, parsed.country,
+    "","","","","","","","","true",
+    fullName, cardType, cardNumber, expiry[0]||"", expiry[1]||"", cardCvv, "false"
+  ];
+}
+
+let profileGenUI = { mode: "catchall", selectedCatchall: "", count: 1, selectedAddressIds: [], provider: "All", cardType: "All" };
+
 function allImapCatchallDomains(){
   const all = (emailUI.accounts || []).flatMap(acc => acc.catchAllDomains || []);
   return Array.from(new Set(all));
@@ -3110,11 +3060,12 @@ function profileBuilderHTML(){
   const s = state.profileBuilderSettings;
   const catchallDomains = allImapCatchallDomains();
   if(!profileGenUI.selectedCatchall && catchallDomains.length) profileGenUI.selectedCatchall = catchallDomains[0];
+  profileGenUI.selectedAddressIds = profileGenUI.selectedAddressIds.filter(id=>state.addresses.some(a=>a.id===id));
 
   return `
     <div class="card panel" style="margin-bottom:20px;">
       <div class="panel-title" style="margin-bottom:6px;">Email Source</div>
-      <div class="hint" style="margin-bottom:12px;">Catch-all domains come from your Email Sync accounts, and your own addresses from <strong style="color:var(--text);">Settings</strong> — pick which to use for the next profile here.</div>
+      <div class="hint" style="margin-bottom:12px;">Choose the email source for this batch.</div>
       <div class="segmented" style="margin-bottom:14px;max-width:360px;">
         <button class="${profileGenUI.mode==='catchall'?'active':''}" data-gen-mode="catchall">Catch-all domain</button>
         <button class="${profileGenUI.mode==='list'?'active':''}" data-gen-mode="list">My own addresses</button>
@@ -3127,10 +3078,45 @@ function profileBuilderHTML(){
               ${catchallDomains.map(d=>`<option value="${escapeAttr(d)}" ${profileGenUI.selectedCatchall===d?"selected":""}>${escapeHTML(d)}</option>`).join("")}
             </select>
           </div>
-        ` : `<div class="hint">No catch-all domains set up yet — add one to an email account under Settings → Email Sync first.</div>`
+        ` : `<div class="hint">No catch-all domains set up yet — add one under Settings → Email Sync first.</div>`
       ) : (
-        s.emailList.length ? `<div class="hint">Picks randomly from the ${s.emailList.length} address${s.emailList.length===1?"":"es"} saved in Settings.</div>` : `<div class="hint">No addresses saved yet — add some in Settings first.</div>`
+        s.emailList.length ? `<div class="hint">Picks randomly from the ${s.emailList.length} address${s.emailList.length===1?"":"es"} saved in Settings.</div>` : `<div class="hint">No email addresses saved yet — add some in Settings first.</div>`
       )}
+    </div>
+
+    <div class="card panel" style="margin-bottom:20px;">
+      <div class="panel-title" style="margin-bottom:6px;">Addresses</div>
+      <div class="hint" style="margin-bottom:12px;">Select the saved addresses to distribute evenly across this batch.</div>
+      ${state.addresses.length ? `
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;">
+          ${state.addresses.map(a=>`
+            <label class="card" style="padding:10px 12px;display:flex;gap:9px;align-items:flex-start;cursor:pointer;">
+              <input type="checkbox" data-pb-address="${a.id}" ${profileGenUI.selectedAddressIds.includes(a.id)?"checked":""}>
+              <span style="min-width:0;">
+                <strong style="display:block;font-size:13px;">${escapeHTML(a.nickname)}</strong>
+                <span class="hint" style="display:block;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(trackedAddressText(a).replace(/\n/g,", "))}</span>
+              </span>
+            </label>
+          `).join("")}
+        </div>
+      ` : `<div class="hint">No saved addresses — add at least one in Address Tracker first.</div>`}
+    </div>
+
+    <div class="card panel" style="margin-bottom:20px;">
+      <div class="panel-title" style="margin-bottom:6px;">Cards</div>
+      <div class="hint" style="margin-bottom:12px;">Cards are selected randomly and each card is used no more than once in the batch.</div>
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(180px,280px));gap:12px;">
+        <div class="field" style="margin:0;"><label>Card provider</label><select id="pb-card-provider">
+          <option value="All" ${profileGenUI.provider==="All"?"selected":""}>All providers</option>
+          ${Array.from(new Set(state.vccs.map(c=>c.provider).filter(Boolean))).sort().map(provider=>`<option value="${escapeAttr(provider)}" ${profileGenUI.provider===provider?"selected":""}>${escapeHTML(provider)}</option>`).join("")}
+        </select></div>
+        <div class="field" style="margin:0;"><label>Card type</label><select id="pb-card-type">
+          <option value="All" ${profileGenUI.cardType==="All"?"selected":""}>Virtual &amp; physical</option>
+          <option value="virtual" ${profileGenUI.cardType==="virtual"?"selected":""}>Virtual only</option>
+          <option value="physical" ${profileGenUI.cardType==="physical"?"selected":""}>Physical only</option>
+        </select></div>
+      </div>
+      <div class="hint" style="margin-top:10px;">${usableProfileCards(profileGenUI.provider, profileGenUI.cardType).length} matching complete card${usableProfileCards(profileGenUI.provider, profileGenUI.cardType).length===1?"":"s"} available.</div>
     </div>
 
     <div class="toolbar-row">
@@ -3139,6 +3125,7 @@ function profileBuilderHTML(){
         <input type="number" id="pb-genCount" value="${profileGenUI.count}" min="1" max="100" step="1">
       </div>
       <div class="hint" style="margin:0;">profile${profileGenUI.count===1?"":"s"} at once</div>
+      ${state.generatedProfiles.length ? `<button class="btn-small" id="exportProfilesCsvBtn" style="margin-left:auto;">${ICONS.download} Export CSV</button>` : ""}
     </div>
     <div id="profilesResultsContainer">${profilesResultsHTML()}</div>
     <div style="height:20px;"></div>
@@ -3153,7 +3140,7 @@ function profilesResultsHTML(){
       <div class="empty-state">
         ${ICONS.tools}
         <div class="t">No profiles yet</div>
-        <div class="d">Generate a name, phone number, and email for sites you don't want to hand your real details to.</div>
+        <div class="d">Choose addresses, enter a quantity, and generate complete profiles with randomly assigned unique cards.</div>
       </div>
     `;
   }
@@ -3167,21 +3154,25 @@ function profilesResultsHTML(){
       ${profileSelection.size>0 ? `<button class="btn-small" id="deleteSelectedProfilesBtn" style="border-color:var(--red);color:var(--red);">${ICONS.trash} Delete Selected (${profileSelection.size})</button>` : ""}
     </div>
     <div style="display:flex;flex-direction:column;gap:8px;">
-      ${state.generatedProfiles.map(p=>`
+      ${state.generatedProfiles.map(p=>{
+        const address = state.addresses.find(a=>a.id===p.addressId);
+        const card = state.vccs.find(c=>c.id===p.cardId);
+        return `
         <div class="card" style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
           <div style="display:flex;align-items:center;gap:12px;min-width:0;">
             <input type="checkbox" class="profile-select-checkbox" data-select-profile="${p.id}" ${profileSelection.has(p.id)?"checked":""}>
             <div style="min-width:0;">
               <div style="font-weight:700;font-size:14px;">${escapeHTML(p.firstName)} ${escapeHTML(p.lastName)}</div>
               <div class="hint mono" style="margin:3px 0 0;">${escapeHTML(p.phone)}${p.email ? " · "+escapeHTML(p.email) : ""}</div>
+              <div class="hint" style="margin:3px 0 0;">${escapeHTML(address ? address.nickname : "Address unavailable")} · ${escapeHTML(card ? card.nickname : "Card unavailable")}${card&&card.number ? " •••• "+escapeHTML(card.number.replace(/\D/g,"").slice(-4)) : ""}</div>
             </div>
           </div>
           <div style="display:flex;gap:6px;flex-shrink:0;">
             <button class="btn-small" data-copy-profile="${p.id}">Copy</button>
             <button class="icon-btn" data-delete-profile="${p.id}">${ICONS.trash}</button>
           </div>
-        </div>
-      `).join("")}
+        </div>`;
+      }).join("")}
     </div>
   `;
 }
@@ -3195,38 +3186,66 @@ function renderProfilesResults(){
 
 function attachProfileBuilderEvents(){
   document.querySelectorAll("[data-gen-mode]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{
-      profileGenUI.mode = btn.dataset.genMode;
-      renderView();
-    });
+    btn.addEventListener("click", ()=>{ profileGenUI.mode = btn.dataset.genMode; renderView(); });
   });
   const catchallSelect = document.getElementById("pb-select-catchall");
   if(catchallSelect) catchallSelect.addEventListener("change", e=>{ profileGenUI.selectedCatchall = e.target.value; });
+  const providerSelect = document.getElementById("pb-card-provider");
+  if(providerSelect) providerSelect.addEventListener("change", e=>{ profileGenUI.provider = e.target.value; renderView(); });
+  const cardTypeSelect = document.getElementById("pb-card-type");
+  if(cardTypeSelect) cardTypeSelect.addEventListener("change", e=>{ profileGenUI.cardType = e.target.value; renderView(); });
+  document.querySelectorAll("[data-pb-address]").forEach(cb=>{
+    cb.addEventListener("change", ()=>{
+      const id = cb.dataset.pbAddress;
+      if(cb.checked && !profileGenUI.selectedAddressIds.includes(id)) profileGenUI.selectedAddressIds.push(id);
+      if(!cb.checked) profileGenUI.selectedAddressIds = profileGenUI.selectedAddressIds.filter(x=>x!==id);
+    });
+  });
   document.getElementById("pb-genCount").addEventListener("input", e=>{
     profileGenUI.count = Math.max(1, Math.min(100, parseInt(e.target.value,10)||1));
   });
 
   document.getElementById("generateProfileBtn").addEventListener("click", ()=>{
     const s = state.profileBuilderSettings;
-    if(profileGenUI.mode==="catchall" && !allImapCatchallDomains().length){ showToast("Add a catch-all domain to an email account under Settings first", "close"); return; }
-    if(profileGenUI.mode==="list" && !s.emailList.length){ showToast("Add some addresses in Settings first", "close"); return; }
+    if(profileGenUI.mode==="catchall" && !allImapCatchallDomains().length){ showToast("Add a catch-all domain under Settings first", "close"); return; }
+    if(profileGenUI.mode==="list" && !s.emailList.length){ showToast("Add some email addresses in Settings first", "close"); return; }
+    const selectedAddresses = profileGenUI.selectedAddressIds.map(id=>state.addresses.find(a=>a.id===id)).filter(Boolean);
+    if(!selectedAddresses.length){ showToast("Select at least one address", "close"); return; }
     const countInput = document.getElementById("pb-genCount");
     const count = Math.max(1, Math.min(100, parseInt(countInput.value,10)||1));
+    const cards = shuffledCopy(usableProfileCards(profileGenUI.provider, profileGenUI.cardType));
+    if(cards.length<count){
+      showToast(`${count} complete cards are required; only ${cards.length} are available`, "close");
+      return;
+    }
     const newProfiles = [];
     for(let i=0; i<count; i++){
       const firstName = randomFrom(PROFILE_FIRST_NAMES);
       const lastName = randomFrom(PROFILE_LAST_NAMES);
+      const address = selectedAddresses[i % selectedAddresses.length];
+      const card = cards[i];
       newProfiles.push({
-        id: uid(),
-        firstName, lastName,
+        id: uid(), profileName: `${firstName} ${lastName}`, firstName, lastName,
         phone: generatePhoneNumber(),
-        email: generateEmail(firstName, lastName, profileGenUI.mode, profileGenUI.selectedCatchall)
+        email: generateEmail(firstName, lastName, profileGenUI.mode, profileGenUI.selectedCatchall),
+        addressId: address.id, addressSnapshot: trackedAddressText(address),
+        cardId: card.id, cardNumber: card.number||"", cardExpiry: card.expiry||"",
+        cardNetwork: card.network||"", cardCvv: card.cvv||""
       });
     }
     state.generatedProfiles.unshift(...newProfiles);
     saveState();
-    renderProfilesResults();
+    renderView();
     showToast(`${count} profile${count===1?"":"s"} generated`);
+  });
+
+  const exportBtn = document.getElementById("exportProfilesCsvBtn");
+  if(exportBtn) exportBtn.addEventListener("click", ()=>{
+    const profiles = profileSelection.size
+      ? state.generatedProfiles.filter(p=>profileSelection.has(p.id))
+      : state.generatedProfiles;
+    downloadCSV(`profiles-${todayISO()}.csv`, PROFILE_CSV_HEADERS, profiles.map(profileCsvRow));
+    showToast(`${profiles.length} profile${profiles.length===1?"":"s"} exported`);
   });
   bindProfilesResultEvents();
 }
@@ -3236,7 +3255,9 @@ function bindProfilesResultEvents(){
     btn.addEventListener("click", ()=>{
       const p = state.generatedProfiles.find(x=>x.id===btn.dataset.copyProfile);
       if(!p) return;
-      const text = `${p.firstName} ${p.lastName}\n${p.phone}${p.email ? "\n"+p.email : ""}`;
+      const address = state.addresses.find(a=>a.id===p.addressId);
+      const card = state.vccs.find(c=>c.id===p.cardId);
+      const text = `${p.firstName} ${p.lastName}\n${p.phone}${p.email ? "\n"+p.email : ""}${address ? "\n"+trackedAddressText(address) : ""}${card ? "\n"+card.network+" •••• "+(card.number||"").replace(/\D/g,"").slice(-4) : ""}`;
       navigator.clipboard.writeText(text).then(()=>showToast("Copied to clipboard"));
     });
   });
@@ -3244,24 +3265,19 @@ function bindProfilesResultEvents(){
     btn.addEventListener("click", ()=>{
       state.generatedProfiles = state.generatedProfiles.filter(p=>p.id!==btn.dataset.deleteProfile);
       profileSelection.delete(btn.dataset.deleteProfile);
-      saveState();
-      renderProfilesResults();
+      saveState(); renderView();
     });
   });
   const selectAllCheckbox = document.getElementById("selectAllProfilesCheckbox");
   if(selectAllCheckbox) selectAllCheckbox.addEventListener("change", e=>{
-    if(e.target.checked){
-      state.generatedProfiles.forEach(p=>profileSelection.add(p.id));
-    } else {
-      profileSelection.clear();
-    }
+    if(e.target.checked) state.generatedProfiles.forEach(p=>profileSelection.add(p.id));
+    else profileSelection.clear();
     renderProfilesResults();
   });
   document.querySelectorAll("[data-select-profile]").forEach(cb=>{
     cb.addEventListener("change", e=>{
       const id = cb.dataset.selectProfile;
-      if(e.target.checked) profileSelection.add(id);
-      else profileSelection.delete(id);
+      if(e.target.checked) profileSelection.add(id); else profileSelection.delete(id);
       renderProfilesResults();
     });
   });
@@ -3270,9 +3286,7 @@ function bindProfilesResultEvents(){
     const count = profileSelection.size;
     if(!confirm(`Delete ${count} selected profile${count===1?"":"s"}? This can't be undone.`)) return;
     state.generatedProfiles = state.generatedProfiles.filter(p=>!profileSelection.has(p.id));
-    profileSelection.clear();
-    saveState();
-    renderProfilesResults();
+    profileSelection.clear(); saveState(); renderView();
     showToast(`${count} profile${count===1?"":"s"} deleted`);
   });
 }

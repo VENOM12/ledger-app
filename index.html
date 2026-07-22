@@ -278,7 +278,18 @@ table.data-table tbody tr:hover{background:var(--card-hover);cursor:pointer;}
 .field input::placeholder{color:var(--text-mute);}
 .field input:focus,.field select:focus,.field textarea:focus{border-color:var(--violet);box-shadow:0 0 0 3px var(--violet-bg);}
 .field textarea{resize:vertical;min-height:64px;font-family:var(--sans);}
-input[type=checkbox]{accent-color:var(--violet);width:16px;height:16px;cursor:pointer;flex-shrink:0;}
+input[type=checkbox]{
+  appearance:none;-webkit-appearance:none;
+  width:16px;height:16px;border-radius:4px;
+  border:1px solid var(--border);background:var(--card-2);
+  cursor:pointer;flex-shrink:0;position:relative;display:inline-block;vertical-align:middle;
+}
+input[type=checkbox]:hover{border-color:var(--violet);}
+input[type=checkbox]:checked{background:var(--violet);border-color:var(--violet);}
+input[type=checkbox]:checked::after{
+  content:"";position:absolute;left:4px;top:1px;width:4px;height:8px;
+  border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg);
+}
 select{background:var(--card-2);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 13px;}
 option{background:var(--card-2);color:var(--text);}
 .stepper{display:flex;align-items:center;justify-content:space-between;border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 6px 6px 14px;background:var(--card-2);gap:8px;}
