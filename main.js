@@ -981,14 +981,28 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // Grabbing a raw chunk after the label and filtering blank lines in JS
   // handles that reliably, and stops at the next section heading so it
   // doesn't run on into unrelated content.
-  const addrLabelMatch = bodyText.match(/(?:shipping address|ship(?:ping)? to|delivery address|delivered to)\s*[:\n]/i);
+  //
+  // Confirmed directly against a real email with an empty text/plain
+  // part: stripHtmlToText collapses ALL whitespace (including every
+  // newline) into single spaces, which broke this in two ways at once —
+  // the label match required a literal newline that no longer existed,
+  // and the stop-word check only ever looked at the start of each line,
+  // which is meaningless once the whole block is one continuous line.
+  // Made the label separator optional, and added a global truncation
+  // pass that finds the stop phrase wherever it actually appears, not
+  // just at a line's start.
+  const addrLabelMatch = bodyText.match(/(?:shipping address|ship(?:ping)? to|delivery address|delivered to)\s*[:\n]?/i);
   if (addrLabelMatch) {
-    const afterLabel = bodyText.slice(addrLabelMatch.index + addrLabelMatch[0].length, addrLabelMatch.index + addrLabelMatch[0].length + 300);
+    let afterLabel = bodyText.slice(addrLabelMatch.index + addrLabelMatch[0].length, addrLabelMatch.index + addrLabelMatch[0].length + 300);
     // Broad enough to catch the sign-off/next-section text that follows an
     // address block in real emails — without these, a real "delivered to"
     // email ran the address straight into "Thank you for shopping..." and
     // "Sincerely," as if they were address lines.
-    const stopWords = /^(order summary|subtotal|discount|shipping\b|total|payment|customer support|billing address|thank you|sincerely|fulfillment|delivered items|order details|order number)/i;
+    const stopWordsAnchored = /^(order summary|subtotal|discount|shipping\b|total|payment|customer support|billing address|thank you|sincerely|fulfillment|delivered items|order details|order number)/i;
+    const stopWordsGlobal = /\b(order summary|subtotal|discount|delivery options|customer support|billing address|thank you for|sincerely|fulfillment|delivered items|order details|order number|need to return|returns\b)/i;
+    const globalStop = afterLabel.match(stopWordsGlobal);
+    if (globalStop) afterLabel = afterLabel.slice(0, globalStop.index);
+
     const addrLines = [];
     for (const rawLine of afterLabel.split('\n')) {
       // Strip a trailing comma from each line — many real address blocks
@@ -996,7 +1010,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       // that produces "Terrace,, Roslin,," style double commas otherwise.
       const line = rawLine.trim().replace(/,\s*$/, '');
       if (!line) continue;
-      if (stopWords.test(line)) break;
+      if (stopWordsAnchored.test(line)) break;
       addrLines.push(line);
       if (addrLines.length >= 6) break;
     }
@@ -1005,8 +1019,17 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
     // name — a real delivery email went straight to the street address
     // with no name line at all. Only trust the first line as a name if it
     // actually looks like one (no digits, reasonable length).
-    const firstLineLooksLikeName = addrLines.length && /^[A-Za-z][A-Za-z' -]{2,40}$/.test(addrLines[0]) && !/\d/.test(addrLines[0]);
+    let firstLineLooksLikeName = addrLines.length && /^[A-Za-z][A-Za-z' -]{2,40}$/.test(addrLines[0]) && !/\d/.test(addrLines[0]);
     result.recipientName = firstLineLooksLikeName ? addrLines[0] : null;
+    // When the whole address collapsed into a single line (no real
+    // newlines survived), the check above never matches since that one
+    // line contains the house number and postcode too. The first digit
+    // reliably marks where a house number starts, so whatever comes
+    // before it is the name, if that portion looks like one.
+    if (!result.recipientName && addrLines.length === 1) {
+      const digitSplit = addrLines[0].match(/^([A-Za-z][A-Za-z' .-]{2,40}?)\s+\d/);
+      if (digitSplit) result.recipientName = digitSplit[1].trim();
+    }
   } else {
     result.deliveryAddress = null;
     result.recipientName = null;

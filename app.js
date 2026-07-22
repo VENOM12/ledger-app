@@ -586,17 +586,32 @@ function dashboardHTML(){
   const start = periodStart(ui.period);
   const inPeriod = d => !start || new Date(d) >= start;
 
-  // Preorders excluded here deliberately — no money has actually been
-  // charged for these yet (Pokémon Center's own emails say they charge
-  // once the order ships, not at confirmation), so counting them as
-  // "spent" would overstate real money out. They start counting the
-  // moment they're no longer a preorder (arrived/charged).
-  const purchasesInPeriod = state.items.filter(i => !i.isPreorder && inPeriod(i.purchaseDate));
+  // Pokémon Center preorders specifically wait until they're actually
+  // received — confirmed directly from their own emails that they charge
+  // once the order ships, not at confirmation, so counting them as
+  // "spent" immediately would overstate real money out. This is NOT true
+  // of every retailer, though — confirmed directly that Arsenal Direct
+  // charges preorders straight away, and there's no reliable way to know
+  // a given retailer's billing timing in general, so anything other than
+  // Pokémon Center is treated as charged at confirmation, which is the
+  // more common default for online orders anyway.
+  const purchasesInPeriod = state.items.filter(i => !(i.isPreorder && i.retailer==="Pokemon Center") && inPeriod(i.purchaseDate));
+  // Confirmed orders that haven't been delivered yet don't have a stock
+  // item to show up in the calculation above at all — counted here
+  // instead, for anything that isn't a Pokémon Center preorder. The
+  // addedToStockId check is what prevents this from double-counting
+  // once an order actually arrives: at that point it has a real stock
+  // entry and gets picked up by the block above instead, so it only
+  // ever gets counted once, on one side or the other.
+  const immediateChargeOrdersInPeriod = state.pendingOrders.filter(p =>
+    p.retailer!=="Pokemon Center" && !p.addedToStockId && p.status!=="cancelled" && inPeriod(p.orderDate)
+  );
+  const pendingOrdersSpent = immediateChargeOrdersInPeriod.reduce((s,p)=>s+(p.price||0),0);
   const salesInPeriod = [];
   state.items.forEach(item => item.sales.forEach(s => { if(inPeriod(s.saleDate)) salesInPeriod.push({sale:s, item}); }));
   const expensesInPeriod = (state.expenses||[]).filter(e => inPeriod(e.date));
 
-  const inventorySpent = purchasesInPeriod.reduce((s,i)=>s+totalCost(i),0);
+  const inventorySpent = purchasesInPeriod.reduce((s,i)=>s+totalCost(i),0) + pendingOrdersSpent;
   const totalExpenses = expensesInPeriod.reduce((s,e)=>s+(e.amount||0),0);
   // Total Spent is now the full "money out" picture — inventory purchases
   // plus running costs — not just inventory alone.
