@@ -1178,6 +1178,20 @@ function analyticsHTML(){
     expenseByTag[e.tag||"Other"] = (expenseByTag[e.tag||"Other"]||0) + (e.amount||0);
   });
 
+  // Same retailer-aware "counted at confirmation vs at delivery" logic as
+  // above, just split by purchase method instead of by retailer.
+  // Confirmed-but-undelivered orders are always email-detected, and
+  // there's no such thing as an emailed confirmation for an in-store
+  // purchase, so those always count as online here.
+  const purchaseMethodSpend = { online: 0, "in-store": 0 };
+  state.items.filter(i=>!(i.isPreorder && i.retailer==="Pokemon Center") && inPeriod(i.purchaseDate)).forEach(i=>{
+    const method = i.purchaseMethod==="in-store" ? "in-store" : "online";
+    purchaseMethodSpend[method] += totalCost(i);
+  });
+  state.pendingOrders.filter(p=>p.retailer!=="Pokemon Center" && !p.addedToStockId && p.status!=="cancelled" && inPeriod(p.orderDate)).forEach(p=>{
+    purchaseMethodSpend.online += (p.price||0);
+  });
+
   return `
     <div class="toolbar-row" style="margin-bottom:16px;">
       <div class="segmented">
@@ -1212,6 +1226,11 @@ function analyticsHTML(){
         <div class="panel-title">Running Costs by Type — ${periodQualifier(analyticsUI.period)}</div>
         ${breakdownBarsHTML(expenseByTag, {color:"var(--red)"})}
       </div>
+    </div>
+
+    <div class="card panel" style="margin-bottom:16px;">
+      <div class="panel-title">Online vs In-Store — ${periodQualifier(analyticsUI.period)}</div>
+      ${breakdownBarsHTML({Online: purchaseMethodSpend.online, "In-Store": purchaseMethodSpend["in-store"]}, {color:"var(--green)"})}
     </div>
 
     <div class="card panel" style="margin-bottom:16px;">
@@ -1356,7 +1375,7 @@ function freshAddForm(){
   return {
     name:"", category: CATEGORIES[0], customCategory:"",
     quantity:1, price:"", retailer:"", date: todayISO(), notes:"",
-    isPreorder:false, expectedArrival:"", image:null
+    isPreorder:false, expectedArrival:"", image:null, purchaseMethod:"online"
   };
 }
 
@@ -1425,6 +1444,13 @@ function addFormHTML(){
         <input type="text" id="f-retailer" value="${escapeAttr(f.retailer)}" placeholder="e.g. Target, eBay">
       </div>
       <div class="field">
+        <label>Purchased</label>
+        <div class="segmented">
+          <button type="button" class="${f.purchaseMethod==='online'?'active':''}" data-purchase-method="online">Online</button>
+          <button type="button" class="${f.purchaseMethod==='in-store'?'active':''}" data-purchase-method="in-store">In-Store</button>
+        </div>
+      </div>
+      <div class="field">
         <label>Purchase date</label>
         <input type="date" id="f-date" value="${f.date}" max="${todayISO()}">
       </div>
@@ -1491,6 +1517,9 @@ function attachAddEvents(){
 
   byId("f-price").addEventListener("input", e=>{ f.price = e.target.value; updateAddTotalDisplay(); });
   byId("f-retailer").addEventListener("input", e=>{ f.retailer = e.target.value; });
+  document.querySelectorAll("[data-purchase-method]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ f.purchaseMethod = btn.dataset.purchaseMethod; renderView(); });
+  });
   byId("f-date").addEventListener("change", e=>{ f.date = e.target.value; });
   byId("f-notes").addEventListener("input", e=>{ f.notes = e.target.value; });
   byId("f-preorder").addEventListener("change", e=>{ f.isPreorder = e.target.checked; renderView(); });
@@ -1560,6 +1589,7 @@ function savePurchase(){
     isPreorder: f.isPreorder,
     expectedArrival: f.isPreorder ? (f.expectedArrival || null) : null,
     image: f.image || null,
+    purchaseMethod: f.purchaseMethod || "online",
     orderNumber: null, deliveryAddress: null, recipientName: null, sentToEmail: null, lineItems: [], sourceEmailDetected: false,
     sales: []
   };
@@ -4323,7 +4353,8 @@ function ensureEditState(item){
       retailer: item.retailer,
       purchaseDate: item.purchaseDate,
       notes: item.notes,
-      image: item.image || null
+      image: item.image || null,
+      purchaseMethod: item.purchaseMethod || "online"
     };
   }
 }
@@ -4424,6 +4455,13 @@ function detailHTML(itemId){
           <input type="text" id="e-retailer" value="${escapeAttr(e.retailer)}">
         </div>
         <div class="field">
+          <label>Purchased</label>
+          <div class="segmented">
+            <button type="button" class="${e.purchaseMethod!=='in-store'?'active':''}" data-edit-purchase-method="online">Online</button>
+            <button type="button" class="${e.purchaseMethod==='in-store'?'active':''}" data-edit-purchase-method="in-store">In-Store</button>
+          </div>
+        </div>
+        <div class="field">
           <label>Purchase date</label>
           <input type="date" id="e-date" value="${e.purchaseDate}" max="${todayISO()}">
         </div>
@@ -4499,6 +4537,9 @@ function attachDetailEvents(){
   byId("e-qty").addEventListener("input", e=>{ editState.quantityPurchased = e.target.value; updateEditTotalDisplay(); });
   byId("e-price").addEventListener("input", e=>{ editState.purchasePricePerUnit = e.target.value; updateEditTotalDisplay(); });
   byId("e-retailer").addEventListener("input", e=>{ editState.retailer = e.target.value; });
+  document.querySelectorAll("[data-edit-purchase-method]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ editState.purchaseMethod = btn.dataset.editPurchaseMethod; renderView(); });
+  });
   byId("e-date").addEventListener("change", e=>{ editState.purchaseDate = e.target.value; });
   byId("e-notes").addEventListener("input", e=>{ editState.notes = e.target.value; });
 
@@ -4526,6 +4567,7 @@ function attachDetailEvents(){
     item.purchaseDate = editState.purchaseDate;
     item.notes = editState.notes;
     item.image = editState.image || null;
+    item.purchaseMethod = editState.purchaseMethod || "online";
     saveState();
     showToast("Item updated");
     render();
@@ -5759,6 +5801,7 @@ function createPKCPreorderItem(order){
     retailer: "Pokemon Center",
     purchaseDate: order.date ? order.date.slice(0,10) : todayISO(),
     isPreorder: true,
+    purchaseMethod: "online",
     expectedArrival: order.expectedDelivery || null,
     orderNumber: order.orderNumber || null,
     deliveryAddress: order.deliveryAddress || null,
@@ -5829,6 +5872,7 @@ function createStockItemFromOrder(order){
       expectedArrival: null,
       isCancelled: false,
       image: null,
+      purchaseMethod: "online",
       sales: []
     };
     state.items.unshift(item);
@@ -5871,7 +5915,7 @@ function createStockItemFromOrder(order){
         id: uid(), name: line.name, category: "Other", quantityPurchased: line.quantity || 1,
         purchasePricePerUnit: line.price || 0, retailer: order.retailer, purchaseDate: order.orderDate || todayISO(),
         notes: "Auto-added from email sync — please verify item name, quantity, and price.",
-        isPreorder: false, expectedArrival: null, isCancelled: false, image: null, sales: []
+        isPreorder: false, expectedArrival: null, isCancelled: false, image: null, purchaseMethod: "online", sales: []
       };
       state.items.unshift(item);
       createdItems.push(item);
