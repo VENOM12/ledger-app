@@ -255,7 +255,7 @@ if(!state.invoiceSettings) state.invoiceSettings = { fromName: "", defaultSendAc
 if(state.invoiceSettings.defaultLogo===undefined) state.invoiceSettings.defaultLogo = null;
 if(state.invoiceSettings.defaultBankDetails===undefined) state.invoiceSettings.defaultBankDetails = "";
 
-let ui = { tab: "dashboard", period: "Month", stockFilter: "In Stock", stockCategoryFilter: "All", search: "", detailItemId: null };
+let ui = { tab: "dashboard", period: "Month", stockFilter: "In Stock", stockCategoryFilter: "All", search: "", detailItemId: null, chartType: "line" };
 let licenseExpiresAt = null; // shown next to "Saved locally" in the sidebar once known
 
 /* ---------------- Helpers ---------------- */
@@ -461,6 +461,7 @@ function render(){
       <div class="navlabel">Menu</div>
       <div class="nav">
         ${navBtn("dashboard","dashboard","Dashboard")}
+        ${navBtn("analytics","trend","Analytics")}
         ${navBtn("stock","stock","Stock")}
         ${navBtn("orders","cart","Confirmed Orders")}
         ${navBtn("sold","tag","Sold", state.pendingSales.length)}
@@ -520,7 +521,7 @@ function setTab(tab){
 function renderTopbar(){
   const bar = document.getElementById("topbar");
   if(!bar) return;
-  const titles = { dashboard: "Dashboard", stock: "Stock", add: "Add Stock", sold: "Sold", orders: "Confirmed Orders", expenses: "Expenses", "vcc-tracker": "Card Tracker", "address-tracker": "Address Tracker", "profile-builder": "Profile Builder", "invoices": "Invoice Generator" };
+  const titles = { dashboard: "Dashboard", analytics: "Analytics", stock: "Stock", add: "Add Stock", sold: "Sold", orders: "Confirmed Orders", expenses: "Expenses", "vcc-tracker": "Card Tracker", "address-tracker": "Address Tracker", "profile-builder": "Profile Builder", "invoices": "Invoice Generator" };
   let heading;
   if(ui.detailItemId){
     const item = state.items.find(i=>i.id===ui.detailItemId);
@@ -567,6 +568,7 @@ function renderView(){
   if(existingTooltip) existingTooltip.style.opacity = "0";
   if(ui.detailItemId){ view.innerHTML = detailHTML(ui.detailItemId); attachDetailEvents(); return; }
   if(ui.tab==="dashboard"){ view.innerHTML = dashboardHTML(); attachDashboardEvents(); }
+  else if(ui.tab==="analytics"){ view.innerHTML = analyticsHTML(); attachAnalyticsEvents(); }
   else if(ui.tab==="add"){ view.innerHTML = addFormHTML(); attachAddEvents(); }
   else if(ui.tab==="stock"){ view.innerHTML = stockListHTML(); attachStockEvents(); }
   else if(ui.tab==="orders"){ view.innerHTML = ordersHTML(); attachOrdersEvents(); }
@@ -688,8 +690,14 @@ function dashboardHTML(){
 
     <div class="dash-grid">
       <div class="card panel">
-        <div class="panel-title">Profit — ${periodQualifier(ui.period)}</div>
-        ${sparklineSVG(profitSeriesForPeriod(ui.period))}
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">
+          <div class="panel-title" style="margin-bottom:0;">Profit — ${periodQualifier(ui.period)}</div>
+          <div class="segmented" style="padding:2px;">
+            <button class="${ui.chartType==='line'?'active':''}" data-chart-type="line" style="padding:6px 9px;" title="Line chart"><span style="display:inline-flex;width:14px;height:14px;">${ICONS.trend}</span></button>
+            <button class="${ui.chartType==='bar'?'active':''}" data-chart-type="bar" style="padding:6px 9px;" title="Bar chart"><span style="display:inline-flex;width:14px;height:14px;">${ICONS.dashboard}</span></button>
+          </div>
+        </div>
+        ${ui.chartType==='line' ? sparklineSVG(profitSeriesForPeriod(ui.period)) : barChartSVG(profitSeriesForPeriod(ui.period))}
       </div>
       <div class="card panel">
         <div class="panel-title">Recent Sales</div>
@@ -958,6 +966,85 @@ function sparklineSVG(series){
 // dashboard's DOM tree, relying on none of its ancestors ever having such
 // a property — appending directly to body sidesteps that risk entirely,
 // with certainty, regardless of anything else on the page.
+// Deliberately mirrors sparklineSVG's structure closely — same width,
+// height, padding, scaling approach, and critically the same element
+// IDs (profitChartSvg, chartHoverLine, chartHoverDot) and
+// window.__chartPoints/__chartWidth convention. That means the existing
+// hover/tooltip mechanism (bindChartHoverEvents, already wired into
+// attachDashboardEvents) works on this chart completely unchanged —
+// no separate hover implementation needed for the bar view.
+function barChartSVG(series){
+  const wasSinglePoint = series.length === 1;
+  if(wasSinglePoint){
+    series = [series[0], series[0]];
+  }
+  const w=520, h=150, pad=10, topPad=26, bottomPad=24;
+  const values = series.map(p=>p.value);
+  const expenseValues = series.map(p=>p.expenses||0);
+  let min, max;
+  if(wasSinglePoint){
+    const range = Math.max(Math.abs(values[0]), Math.abs(expenseValues[0]), 1) * 1.6;
+    min = -range; max = range;
+  } else {
+    min = Math.min(0, ...values); max = Math.max(0, ...values, ...expenseValues);
+    if(min===max){ min-=1; max+=1; }
+  }
+  const plotTop = topPad, plotBottom = h-bottomPad;
+  const stepX = (w-pad*2)/series.length;
+  const yFor = v => plotBottom - ((v-min)/(max-min)) * (plotBottom-plotTop);
+  const zeroY = yFor(0);
+  const barGap = 3;
+  const barW = Math.max(2, (stepX - barGap*3) / 2);
+
+  const bars = series.map((p,i)=>{
+    const groupX = pad + i*stepX + barGap;
+    const profitY = yFor(p.value);
+    const profitTop = Math.min(profitY, zeroY);
+    const profitH = Math.max(1, Math.abs(profitY - zeroY));
+    const expenseY = yFor(p.expenses||0);
+    const expenseTop = Math.min(expenseY, zeroY);
+    const expenseH = Math.max(1, Math.abs(expenseY - zeroY));
+    const profitColor = p.value >= 0 ? "var(--violet)" : "var(--red)";
+    return `
+      <rect x="${groupX.toFixed(1)}" y="${profitTop.toFixed(1)}" width="${barW.toFixed(1)}" height="${profitH.toFixed(1)}" rx="2" fill="${profitColor}">
+        <title>${p.date.toLocaleDateString(undefined,{month:'short',day:'numeric'})}: ${fmtMoney(p.value)}</title>
+      </rect>
+      <rect x="${(groupX+barW+barGap).toFixed(1)}" y="${expenseTop.toFixed(1)}" width="${barW.toFixed(1)}" height="${expenseH.toFixed(1)}" rx="2" fill="var(--red)" opacity="0.55">
+        <title>${p.date.toLocaleDateString(undefined,{month:'short',day:'numeric'})}: ${fmtMoney(p.expenses||0)} expenses</title>
+      </rect>
+    `;
+  }).join("");
+
+  const dateLabelIdx = series.map((_,i)=>i).filter(i=> i%3===0 || i===series.length-1);
+  const dateLabels = dateLabelIdx.map(i=>({x: pad+i*stepX+stepX/2, text: `${series[i].date.getMonth()+1}/${series[i].date.getDate()}`}));
+
+  // Same point convention as the line chart — centered over each bar
+  // group, at the profit bar's value height — so the existing
+  // nearest-point hover logic finds the right group without any changes.
+  window.__chartPoints = series.map((p,i)=>({
+    x: pad + i*stepX + stepX/2, y: yFor(p.value), value: p.value, expenses: p.expenses||0,
+    dateLabel: p.date.toLocaleDateString(undefined,{month:'short',day:'numeric', year:'numeric'})
+  }));
+  window.__chartWidth = w;
+
+  return `
+    <div id="profitChartWrap" style="position:relative;">
+      <div style="display:flex;gap:16px;justify-content:flex-end;margin-bottom:2px;">
+        <span style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-dim);"><span style="width:10px;height:10px;border-radius:2px;background:var(--violet);display:inline-block;"></span>Profit</span>
+        <span style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-dim);"><span style="width:10px;height:10px;border-radius:2px;background:var(--red);opacity:0.55;display:inline-block;"></span>Expenses</span>
+      </div>
+      <svg id="profitChartSvg" viewBox="0 0 ${w} ${h}" style="width:100%;height:auto;display:block;cursor:crosshair;">
+        <line x1="${pad}" y1="${zeroY.toFixed(1)}" x2="${w-pad}" y2="${zeroY.toFixed(1)}" stroke="#232332" stroke-width="1" stroke-dasharray="3 3"/>
+        <text x="${pad}" y="${(zeroY-5).toFixed(1)}" font-size="9.5" fill="#5C5C72" font-family="IBM Plex Mono, monospace">${fmtMoney(0)}</text>
+        ${bars}
+        ${dateLabels.map(l=>`<text x="${l.x}" y="${h-6}" font-size="9.5" fill="#5C5C72" font-family="IBM Plex Mono, monospace" text-anchor="middle">${l.text}</text>`).join("")}
+        <line id="chartHoverLine" x1="0" y1="${plotTop}" x2="0" y2="${plotBottom}" stroke="var(--violet)" stroke-width="1" opacity="0" pointer-events="none"/>
+        <circle id="chartHoverDot" cx="0" cy="0" r="4.5" fill="var(--violet)" stroke="var(--bg)" stroke-width="2" opacity="0" pointer-events="none"/>
+      </svg>
+    </div>
+  `;
+}
+
 function ensureChartTooltipElement(){
   let tooltip = document.getElementById("chartTooltip");
   if(tooltip) return tooltip;
@@ -990,7 +1077,184 @@ function attachDashboardEvents(){
   document.querySelectorAll("[data-period]").forEach(btn=>{
     btn.addEventListener("click", ()=>{ ui.period = btn.dataset.period; renderView(); });
   });
+  document.querySelectorAll("[data-chart-type]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ ui.chartType = btn.dataset.chartType; renderView(); });
+  });
   bindChartHoverEvents();
+}
+
+/* ============================================================
+   ANALYTICS
+   ============================================================ */
+
+let analyticsUI = { period: "Month" };
+
+// Renders a sorted, proportional horizontal-bar breakdown from a plain
+// {label: value} object — reused across every breakdown panel on this
+// page (platform, category, retailer, expense tag) rather than building
+// each one separately.
+function breakdownBarsHTML(dataObj, opts){
+  const entries = Object.entries(dataObj).filter(([,v])=>v!==0).sort((a,b)=>b[1]-a[1]);
+  if(entries.length===0) return `<div class="hint">No data yet for this period.</div>`;
+  const max = Math.max(...entries.map(([,v])=>Math.abs(v)));
+  const color = (opts && opts.color) || "var(--violet)";
+  return `
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      ${entries.map(([label,value])=>`
+        <div>
+          <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px;">
+            <span style="color:var(--text-dim);">${escapeHTML(label)}</span>
+            <span class="mono" style="font-weight:600;color:${value<0?'var(--red)':'var(--text)'};">${fmtMoney(value)}</span>
+          </div>
+          <div style="height:7px;background:var(--card-2);border-radius:4px;overflow:hidden;">
+            <div style="height:100%;width:${max>0?Math.abs(value)/max*100:0}%;background:${value<0?'var(--red)':color};border-radius:4px;"></div>
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function analyticsHTML(){
+  const start = periodStart(analyticsUI.period);
+  const inPeriod = d => !start || new Date(d) >= start;
+  const nonPreorderItems = state.items.filter(i => !i.isPreorder);
+
+  // Point-in-time inventory health — deliberately NOT period-filtered,
+  // since "how much dead stock do I have right now" isn't really a
+  // "this month" question.
+  const totalPurchasedQty = nonPreorderItems.reduce((s,i)=>s+i.quantityPurchased,0);
+  const totalSoldQty = nonPreorderItems.reduce((s,i)=>s+qtySold(i),0);
+  const sellThroughRate = totalPurchasedQty>0 ? (totalSoldQty/totalPurchasedQty*100) : 0;
+  const inventoryValue = nonPreorderItems.reduce((s,i)=>s+qtyRemaining(i)*i.purchasePricePerUnit,0);
+
+  const daysToSellList = [];
+  nonPreorderItems.forEach(i => i.sales.forEach(s => {
+    if(!i.purchaseDate || !s.saleDate) return;
+    const days = Math.round((new Date(s.saleDate)-new Date(i.purchaseDate))/86400000);
+    if(days>=0) daysToSellList.push(days);
+  }));
+  const avgDaysToSell = daysToSellList.length ? Math.round(daysToSellList.reduce((a,b)=>a+b,0)/daysToSellList.length) : null;
+
+  const DEAD_STOCK_DAYS = 60;
+  const deadStock = nonPreorderItems.filter(i=>{
+    if(qtyRemaining(i)<=0 || !i.purchaseDate) return false;
+    return Math.round((new Date()-new Date(i.purchaseDate))/86400000) >= DEAD_STOCK_DAYS;
+  }).sort((a,b)=>new Date(a.purchaseDate)-new Date(b.purchaseDate));
+
+  // Everything below IS period-filtered — these are activity breakdowns,
+  // where "this month" is exactly the useful lens.
+  const platformStats = {}, categoryStats = {};
+  nonPreorderItems.forEach(i => i.sales.forEach(s=>{
+    if(!inPeriod(s.saleDate)) return;
+    const profit = saleNet(s) - s.quantitySold*i.purchasePricePerUnit;
+    const p = s.platform || "Unknown";
+    platformStats[p] = (platformStats[p]||0) + profit;
+    const c = i.category || "Other";
+    categoryStats[c] = (categoryStats[c]||0) + profit;
+  }));
+
+  const itemProfits = nonPreorderItems.map(i=>{
+    const periodSales = i.sales.filter(s=>inPeriod(s.saleDate));
+    const profit = periodSales.reduce((s,sale)=>s+saleNet(sale)-sale.quantitySold*i.purchasePricePerUnit,0);
+    const qty = periodSales.reduce((s,sale)=>s+sale.quantitySold,0);
+    return {item:i, profit, qty};
+  }).filter(x=>x.qty>0).sort((a,b)=>b.profit-a.profit).slice(0,5);
+
+  // Same retailer-aware logic as the dashboard's Total Spent — Pokémon
+  // Center preorders count once received, everything else counts at
+  // confirmation. Reused here rather than re-derived so the two pages
+  // can't quietly disagree with each other.
+  const retailerSpend = {};
+  state.items.filter(i=>!(i.isPreorder && i.retailer==="Pokemon Center") && inPeriod(i.purchaseDate)).forEach(i=>{
+    retailerSpend[i.retailer||"Unknown"] = (retailerSpend[i.retailer||"Unknown"]||0) + totalCost(i);
+  });
+  state.pendingOrders.filter(p=>p.retailer!=="Pokemon Center" && !p.addedToStockId && p.status!=="cancelled" && inPeriod(p.orderDate)).forEach(p=>{
+    retailerSpend[p.retailer||"Unknown"] = (retailerSpend[p.retailer||"Unknown"]||0) + (p.price||0);
+  });
+
+  const expenseByTag = {};
+  (state.expenses||[]).filter(e=>inPeriod(e.date)).forEach(e=>{
+    expenseByTag[e.tag||"Other"] = (expenseByTag[e.tag||"Other"]||0) + (e.amount||0);
+  });
+
+  return `
+    <div class="toolbar-row" style="margin-bottom:16px;">
+      <div class="segmented">
+        ${["Day","Week","Month","Year","All Time"].map(p=>`<button class="${analyticsUI.period===p?"active":""}" data-analytics-period="${p}">${p==="All Time"?"All":p}</button>`).join("")}
+      </div>
+    </div>
+
+    <div class="stat-grid" style="margin-bottom:16px;">
+      ${statCard("percent", "Sell-Through Rate", fmtPct(sellThroughRate), "var(--violet)", "var(--violet-bg)", "Percentage of everything you've ever bought that's since sold")}
+      ${statCard("trend", "Avg. Days to Sell", avgDaysToSell===null ? "—" : avgDaysToSell+"d", "var(--cyan)", "var(--cyan-bg)", "Average time between buying an item and it selling")}
+      ${statCard("stock", "Inventory Value", fmtMoney(inventoryValue), "var(--blue)", "var(--blue-bg)", "What your current unsold stock cost to buy")}
+      ${statCard("cart", `Dead Stock (${DEAD_STOCK_DAYS}+ days)`, ""+deadStock.length, deadStock.length>0?"var(--red)":"var(--green)", deadStock.length>0?"var(--red-bg)":"var(--green-bg)", "Unsold items sitting for two months or more")}
+    </div>
+
+    <div class="dash-grid" style="margin-bottom:16px;">
+      <div class="card panel">
+        <div class="panel-title">Profit by Platform — ${periodQualifier(analyticsUI.period)}</div>
+        ${breakdownBarsHTML(platformStats)}
+      </div>
+      <div class="card panel">
+        <div class="panel-title">Profit by Category — ${periodQualifier(analyticsUI.period)}</div>
+        ${breakdownBarsHTML(categoryStats, {color:"var(--cyan)"})}
+      </div>
+    </div>
+
+    <div class="dash-grid" style="margin-bottom:16px;">
+      <div class="card panel">
+        <div class="panel-title">Where the Money's Going — ${periodQualifier(analyticsUI.period)}</div>
+        ${breakdownBarsHTML(retailerSpend, {color:"var(--blue)"})}
+      </div>
+      <div class="card panel">
+        <div class="panel-title">Running Costs by Type — ${periodQualifier(analyticsUI.period)}</div>
+        ${breakdownBarsHTML(expenseByTag, {color:"var(--red)"})}
+      </div>
+    </div>
+
+    <div class="card panel" style="margin-bottom:16px;">
+      <div class="panel-title">Most Profitable Items — ${periodQualifier(analyticsUI.period)}</div>
+      ${itemProfits.length===0 ? `<div class="hint">No sales yet for this period.</div>` : `
+        <div class="card table-wrap" style="box-shadow:none;">
+          <table class="data-table">
+            <thead><tr><th>Item</th><th>Qty Sold</th><th style="text-align:right;">Profit</th></tr></thead>
+            <tbody>
+              ${itemProfits.map(x=>`<tr><td>${escapeHTML(x.item.name)}</td><td class="mono dim">${x.qty}</td><td class="mono" style="text-align:right;color:${x.profit>=0?'var(--green)':'var(--red)'};">${fmtMoney(x.profit)}</td></tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+      `}
+    </div>
+
+    <div class="card panel">
+      <div class="panel-title">Dead Stock <span class="hint" style="margin:0;">— unsold for ${DEAD_STOCK_DAYS}+ days</span></div>
+      ${deadStock.length===0 ? `<div class="hint">Nothing's been sitting that long — nice.</div>` : `
+        <div class="card table-wrap" style="box-shadow:none;">
+          <table class="data-table">
+            <thead><tr><th>Item</th><th>Purchased</th><th>Days sitting</th><th style="text-align:right;">Remaining</th><th style="text-align:right;">Tied-up cost</th></tr></thead>
+            <tbody>
+              ${deadStock.map(i=>{
+                const days = Math.round((new Date()-new Date(i.purchaseDate))/86400000);
+                return `<tr data-open-item="${i.id}" style="cursor:pointer;"><td>${escapeHTML(i.name)}</td><td class="mono dim">${formatDate(i.purchaseDate)}</td><td class="mono">${days}d</td><td class="mono" style="text-align:right;">${qtyRemaining(i)}</td><td class="mono" style="text-align:right;">${fmtMoney(qtyRemaining(i)*i.purchasePricePerUnit)}</td></tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      `}
+    </div>
+    <div style="height:20px;"></div>
+  `;
+}
+
+function attachAnalyticsEvents(){
+  document.querySelectorAll("[data-analytics-period]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ analyticsUI.period = btn.dataset.analyticsPeriod; renderView(); });
+  });
+  document.querySelectorAll("[data-open-item]").forEach(row=>{
+    row.addEventListener("click", ()=>{ ui.detailItemId = row.dataset.openItem; render(); });
+  });
 }
 
 function bindChartHoverEvents(){
