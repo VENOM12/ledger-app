@@ -1098,12 +1098,13 @@ function breakdownBarsHTML(dataObj, opts){
   if(entries.length===0) return `<div class="hint">No data yet for this period.</div>`;
   const max = Math.max(...entries.map(([,v])=>Math.abs(v)));
   const color = (opts && opts.color) || "var(--violet)";
+  const clickable = !!(opts && opts.sources);
   return `
     <div style="display:flex;flex-direction:column;gap:10px;">
       ${entries.map(([label,value])=>`
-        <div>
+        <div ${clickable?`data-breakdown-label="${escapeAttr(label)}" style="cursor:pointer;"`:""}>
           <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px;">
-            <span style="color:var(--text-dim);">${escapeHTML(label)}</span>
+            <span style="color:var(--text-dim);">${escapeHTML(label)}${clickable?` <span style="opacity:0.6;">— click for detail</span>`:""}</span>
             <span class="mono" style="font-weight:600;color:${value<0?'var(--red)':'var(--text)'};">${fmtMoney(value)}</span>
           </div>
           <div style="height:7px;background:var(--card-2);border-radius:4px;overflow:hidden;">
@@ -1113,6 +1114,33 @@ function breakdownBarsHTML(dataObj, opts){
       `).join("")}
     </div>
   `;
+}
+
+function openBreakdownDetailModal(title, label, sourceEntries){
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open">
+      <div class="modal" style="width:480px;">
+        <div class="modal-header">
+          <h2>${escapeHTML(title)}: ${escapeHTML(label)}</h2>
+          <button class="icon-btn" id="closeBreakdownDetail">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          ${sourceEntries.length===0 ? `<div class="hint">No entries found.</div>` : `
+            <div class="card table-wrap" style="box-shadow:none;">
+              <table class="data-table">
+                <thead><tr><th>What</th><th>Date</th><th style="text-align:right;">Amount</th></tr></thead>
+                <tbody>
+                  ${sourceEntries.map(e=>`<tr><td>${escapeHTML(e.name)}</td><td class="mono dim">${formatDate(e.date)}</td><td class="mono" style="text-align:right;">${fmtMoney(e.amount)}</td></tr>`).join("")}
+                </tbody>
+              </table>
+            </div>
+          `}
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("closeBreakdownDetail").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
 }
 
 function analyticsHTML(){
@@ -1165,12 +1193,16 @@ function analyticsHTML(){
   // Center preorders count once received, everything else counts at
   // confirmation. Reused here rather than re-derived so the two pages
   // can't quietly disagree with each other.
-  const retailerSpend = {};
+  const retailerSpend = {}, retailerSources = {};
   state.items.filter(i=>!(i.isPreorder && i.retailer==="Pokemon Center") && inPeriod(i.purchaseDate)).forEach(i=>{
-    retailerSpend[i.retailer||"Unknown"] = (retailerSpend[i.retailer||"Unknown"]||0) + totalCost(i);
+    const r = i.retailer || "Unknown";
+    retailerSpend[r] = (retailerSpend[r]||0) + totalCost(i);
+    (retailerSources[r] = retailerSources[r]||[]).push({name: i.name, date: i.purchaseDate, amount: totalCost(i)});
   });
   state.pendingOrders.filter(p=>p.retailer!=="Pokemon Center" && !p.addedToStockId && p.status!=="cancelled" && inPeriod(p.orderDate)).forEach(p=>{
-    retailerSpend[p.retailer||"Unknown"] = (retailerSpend[p.retailer||"Unknown"]||0) + (p.price||0);
+    const r = p.retailer || "Unknown";
+    retailerSpend[r] = (retailerSpend[r]||0) + (p.price||0);
+    (retailerSources[r] = retailerSources[r]||[]).push({name: `Order ${p.orderNumber||p.id}`, date: p.orderDate, amount: p.price||0});
   });
 
   const expenseByTag = {};
@@ -1191,6 +1223,8 @@ function analyticsHTML(){
   state.pendingOrders.filter(p=>p.retailer!=="Pokemon Center" && !p.addedToStockId && p.status!=="cancelled" && inPeriod(p.orderDate)).forEach(p=>{
     purchaseMethodSpend.online += (p.price||0);
   });
+
+  window.__analyticsRetailerSources = retailerSources;
 
   return `
     <div class="toolbar-row" style="margin-bottom:16px;">
@@ -1220,7 +1254,7 @@ function analyticsHTML(){
     <div class="dash-grid" style="margin-bottom:16px;">
       <div class="card panel">
         <div class="panel-title">Where the Money's Going — ${periodQualifier(analyticsUI.period)}</div>
-        ${breakdownBarsHTML(retailerSpend, {color:"var(--blue)"})}
+        ${breakdownBarsHTML(retailerSpend, {color:"var(--blue)", sources:retailerSources})}
       </div>
       <div class="card panel">
         <div class="panel-title">Running Costs by Type — ${periodQualifier(analyticsUI.period)}</div>
@@ -1273,6 +1307,13 @@ function attachAnalyticsEvents(){
   });
   document.querySelectorAll("[data-open-item]").forEach(row=>{
     row.addEventListener("click", ()=>{ ui.detailItemId = row.dataset.openItem; render(); });
+  });
+  document.querySelectorAll("[data-breakdown-label]").forEach(row=>{
+    row.addEventListener("click", ()=>{
+      const label = row.dataset.breakdownLabel;
+      const sources = (window.__analyticsRetailerSources && window.__analyticsRetailerSources[label]) || [];
+      openBreakdownDetailModal("Where the Money's Going", label, sources.sort((a,b)=>new Date(b.date)-new Date(a.date)));
+    });
   });
 }
 
@@ -2965,13 +3006,13 @@ function vccResultsHTML(cards){
               <button class="icon-btn" data-edit-vcc="${c.id}" style="color:#fff;background:rgba(255,255,255,0.14);width:22px;height:22px;" title="Edit">${ICONS.pencil}</button>
             </div>
           </div>
-          <div class="mono" style="font-size:15px;letter-spacing:1.5px;">${c.number ? (revealed ? escapeHTML(c.number) : maskCardNumber(c.number)) : "No card number saved"}</div>
+          <div class="mono" style="font-size:15px;letter-spacing:1.5px;${revealed && c.number ? 'cursor:pointer;' : ''}" ${revealed && c.number ? `data-copy-value="${escapeAttr(c.number.replace(/\s/g,''))}" title="Click to copy"` : ""}>${c.number ? (revealed ? escapeHTML(c.number) : maskCardNumber(c.number)) : "No card number saved"}</div>
           <div style="display:flex;justify-content:space-between;align-items:flex-end;">
-            <div>
+            <div ${revealed && c.expiry ? `data-copy-value="${escapeAttr(c.expiry.replace(/\s/g,''))}" title="Click to copy" style="cursor:pointer;"` : ""}>
               <div style="font-size:8.5px;opacity:0.7;letter-spacing:0.05em;">EXPIRES</div>
               <div class="mono" style="font-size:12px;">${c.expiry ? escapeHTML(c.expiry) : "—"}</div>
             </div>
-            <div style="text-align:right;">
+            <div style="text-align:right;" ${revealed && c.cvv ? `data-copy-value="${escapeAttr(c.cvv.replace(/\s/g,''))}" title="Click to copy" style="cursor:pointer;"` : ""}>
               <div style="font-size:8.5px;opacity:0.7;letter-spacing:0.05em;">CVV</div>
               <div class="mono" style="font-size:12px;">${revealed ? (c.cvv ? escapeHTML(c.cvv) : "—") : "•••"}</div>
             </div>
@@ -3025,7 +3066,7 @@ function attachVccTrackerEvents(){
 function bindVccResultEvents(){
   document.querySelectorAll("[data-reveal-vcc]").forEach(card=>{
     card.addEventListener("click", (e)=>{
-      if(e.target.closest("button")) return; // let the Edit button handle its own click
+      if(e.target.closest("button") || e.target.closest("[data-copy-value]")) return; // let those handle their own clicks
       const id = card.dataset.revealVcc;
       if(vccRevealedCvv.has(id)) vccRevealedCvv.delete(id);
       else vccRevealedCvv.add(id);
@@ -3036,6 +3077,12 @@ function bindVccResultEvents(){
     btn.addEventListener("click", (e)=>{
       e.stopPropagation();
       openVccModal(btn.dataset.editVcc);
+    });
+  });
+  document.querySelectorAll("[data-copy-value]").forEach(el=>{
+    el.addEventListener("click", (e)=>{
+      e.stopPropagation();
+      navigator.clipboard.writeText(el.dataset.copyValue).then(()=>showToast("Copied"));
     });
   });
 }
@@ -3186,7 +3233,10 @@ function addressTrackerHTML(){
 }
 function addressResultsHTML(addresses){
   if(!addresses.length) return `<div class="empty-state">${ICONS.pin}<div class="t">No addresses yet</div><div class="d">Save addresses using separate fields so every part exports correctly.</div></div>`;
-  return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;">${addresses.map(a=>`<div class="card" style="padding:16px 18px;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px;"><div style="min-width:0;"><div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(a.nickname)}</div><div class="hint" style="margin:2px 0 0;">${escapeHTML(a.type||"Other")}</div></div><div style="display:flex;gap:6px;flex-shrink:0;"><button class="icon-btn" data-edit-address="${a.id}" title="Edit">${ICONS.pencil}</button><button class="icon-btn" data-delete-address="${a.id}" title="Delete">${ICONS.trash}</button></div></div><div class="hint" style="white-space:pre-line;line-height:1.5;">${escapeHTML(trackedAddressText(a))}</div>${a.notes?`<div class="hint" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft);">${escapeHTML(a.notes)}</div>`:""}</div>`).join("")}</div>`;
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;">${addresses.map(a=>{
+    const missingZip = !trackedAddressParts(a).zip;
+    return `<div class="card" style="padding:16px 18px;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px;"><div style="min-width:0;"><div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(a.nickname)}</div><div class="hint" style="margin:2px 0 0;">${escapeHTML(a.type||"Other")}</div></div><div style="display:flex;gap:6px;flex-shrink:0;">${missingZip?`<span title="No postcode saved — exports will be missing it for this address" style="color:var(--red);display:inline-flex;align-items:center;width:15px;height:15px;">${ICONS.warning}</span>`:""}<button class="icon-btn" data-edit-address="${a.id}" title="Edit">${ICONS.pencil}</button><button class="icon-btn" data-delete-address="${a.id}" title="Delete">${ICONS.trash}</button></div></div><div class="hint" style="white-space:pre-line;line-height:1.5;">${escapeHTML(trackedAddressText(a))}</div>${a.notes?`<div class="hint" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft);">${escapeHTML(a.notes)}</div>`:""}</div>`;
+  }).join("")}</div>`;
 }
 function renderAddressResults(){ const c=document.getElementById("addressResultsContainer"); if(!c)return; const a=state.addresses.filter(x=>addressUI.typeFilter==="All"||x.type===addressUI.typeFilter).filter(x=>!addressUI.search||`${x.nickname} ${trackedAddressText(x)}`.toLowerCase().includes(addressUI.search.toLowerCase())); c.innerHTML=addressResultsHTML(a); bindAddressResultEvents(); }
 function attachAddressTrackerEvents(){
@@ -4714,6 +4764,11 @@ function renderSellSheet(){
   document.getElementById("s-fees").addEventListener("input", e=>{ f.fees = e.target.value; updateSellTotals(); });
   document.getElementById("s-date").addEventListener("change", e=>{ f.date = e.target.value; });
   document.getElementById("confirmSellBtn").addEventListener("click", confirmSale);
+  // Explicitly grabs focus the moment this opens, rather than leaving it
+  // to chance — a freshly-opened Electron window can sometimes need an
+  // initial click just to gain OS-level focus before any field inside it
+  // actually responds to typing.
+  sellQtyInput.focus();
 }
 
 function closeSellSheet(){
