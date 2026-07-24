@@ -1998,6 +1998,8 @@ function renderAddOrderModal(){
 
 let orderStatusEditing = null;
 let orderRetailerEditing = null;
+let orderLineItemsEditing = null;
+let orderLineItemsDraft = null;
 
 const ALL_ORDER_STATUSES = ["confirmed", "action_required", "shipped", "out_for_delivery", "ready_for_collection", "delivered", "cancelled"];
 
@@ -2006,6 +2008,7 @@ function orderDetailModal(orderId){
   if(!p) return;
   const editingStatus = orderStatusEditing === orderId;
   const editingRetailer = orderRetailerEditing === orderId;
+  const editingLineItems = orderLineItemsEditing === orderId;
   const root = document.getElementById("modalRoot");
   root.innerHTML = `
     <div class="modal-backdrop open" id="orderDetailBackdrop">
@@ -2013,7 +2016,7 @@ function orderDetailModal(orderId){
         <div class="modal-header">
           ${editingRetailer ? `
             <div style="display:flex;gap:8px;align-items:center;flex:1;">
-              <input type="text" id="orderRetailerEditInput" value="${escapeAttr(p.retailer)}" style="flex:1;">
+              <div class="field" style="margin:0;flex:1;"><input type="text" id="orderRetailerEditInput" value="${escapeAttr(p.retailer)}"></div>
               <button class="icon-btn" id="saveOrderRetailerBtn" title="Save">${ICONS.check}</button>
               <button class="icon-btn" id="cancelOrderRetailerBtn" title="Cancel">${ICONS.close}</button>
             </div>
@@ -2047,17 +2050,44 @@ function orderDetailModal(orderId){
             ${kvRow("Delivery address", p.deliveryAddress ? escapeHTML(p.deliveryAddress) : "—")}
           </div>
 
-          ${p.lineItems && p.lineItems.length>0 ? `
+          ${editingLineItems ? `
             <div class="hint" style="margin:14px 0 6px;">What was bought:</div>
             <div class="card table-wrap" style="box-shadow:none;">
               <table class="data-table">
-                <thead><tr><th>Item</th><th>Qty</th><th style="text-align:right;">Price</th></tr></thead>
+                <thead><tr><th>Item</th><th>Qty</th><th>Price</th><th></th></tr></thead>
                 <tbody>
-                  ${p.lineItems.map(li=>`<tr><td>${escapeHTML(li.name)}</td><td class="mono dim">${li.quantity}</td><td class="mono" style="text-align:right;">${fmtMoney(li.price)}</td></tr>`).join("")}
+                  ${orderLineItemsDraft.map((li,idx)=>`
+                    <tr>
+                      <td><div class="field" style="margin:0;"><input type="text" class="oli-name" data-idx="${idx}" value="${escapeAttr(li.name)}"></div></td>
+                      <td><div class="field" style="margin:0;width:60px;"><input type="number" class="oli-qty" data-idx="${idx}" value="${li.quantity}" min="1"></div></td>
+                      <td><div class="field" style="margin:0;width:90px;"><input type="number" class="oli-price" data-idx="${idx}" value="${li.price}" step="0.01" min="0"></div></td>
+                      <td style="text-align:right;"><button class="icon-btn" data-remove-oli="${idx}">${ICONS.trash}</button></td>
+                    </tr>
+                  `).join("")}
                 </tbody>
               </table>
             </div>
-          ` : `<div class="hint" style="margin-top:14px;">No itemized product list could be found in this order's emails.</div>`}
+            <div style="display:flex;gap:8px;margin-top:10px;">
+              <button class="btn-small" id="addOliBtn">${ICONS.plus} Add Item</button>
+              <button class="btn-small" id="saveOliBtn">Save</button>
+              <button class="btn-small" id="cancelOliBtn">Cancel</button>
+            </div>
+          ` : `
+            <div style="display:flex;align-items:center;justify-content:space-between;margin:14px 0 6px;">
+              <div class="hint" style="margin:0;">What was bought:</div>
+              <button class="btn-small" id="editOliBtn">${ICONS.pencil} ${p.lineItems && p.lineItems.length ? "Edit" : "Add Items"}</button>
+            </div>
+            ${p.lineItems && p.lineItems.length>0 ? `
+              <div class="card table-wrap" style="box-shadow:none;">
+                <table class="data-table">
+                  <thead><tr><th>Item</th><th>Qty</th><th style="text-align:right;">Price</th></tr></thead>
+                  <tbody>
+                    ${p.lineItems.map(li=>`<tr><td>${escapeHTML(li.name)}</td><td class="mono dim">${li.quantity}</td><td class="mono" style="text-align:right;">${fmtMoney(li.price)}</td></tr>`).join("")}
+                  </tbody>
+                </table>
+              </div>
+            ` : `<div class="hint">No itemized product list could be found in this order's emails.</div>`}
+          `}
 
           ${p.addedToStockId && state.items.find(i=>i.id===p.addedToStockId) ? `
             <div style="height:16px;"></div>
@@ -2080,6 +2110,48 @@ function orderDetailModal(orderId){
     orderRetailerEditing = null;
     saveState();
     showToast("Retailer updated");
+    orderDetailModal(orderId);
+    if(ui.tab==="orders") renderView();
+  });
+  const editOliBtn = document.getElementById("editOliBtn");
+  if(editOliBtn) editOliBtn.addEventListener("click", ()=>{
+    orderLineItemsDraft = (p.lineItems && p.lineItems.length) ? p.lineItems.map(li=>({...li})) : [{name:"", quantity:1, price:0}];
+    orderLineItemsEditing = orderId;
+    orderDetailModal(orderId);
+  });
+  const cancelOliBtn = document.getElementById("cancelOliBtn");
+  if(cancelOliBtn) cancelOliBtn.addEventListener("click", ()=>{
+    orderLineItemsEditing = null;
+    orderLineItemsDraft = null;
+    orderDetailModal(orderId);
+  });
+  const addOliBtn = document.getElementById("addOliBtn");
+  if(addOliBtn) addOliBtn.addEventListener("click", ()=>{
+    orderLineItemsDraft.push({name:"", quantity:1, price:0});
+    orderDetailModal(orderId);
+  });
+  document.querySelectorAll("[data-remove-oli]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      orderLineItemsDraft.splice(parseInt(btn.dataset.removeOli,10),1);
+      orderDetailModal(orderId);
+    });
+  });
+  document.querySelectorAll(".oli-name").forEach(input=>{
+    input.addEventListener("input", e=>{ orderLineItemsDraft[parseInt(e.target.dataset.idx,10)].name = e.target.value; });
+  });
+  document.querySelectorAll(".oli-qty").forEach(input=>{
+    input.addEventListener("input", e=>{ orderLineItemsDraft[parseInt(e.target.dataset.idx,10)].quantity = parseInt(e.target.value,10)||1; });
+  });
+  document.querySelectorAll(".oli-price").forEach(input=>{
+    input.addEventListener("input", e=>{ orderLineItemsDraft[parseInt(e.target.dataset.idx,10)].price = parseFloat(e.target.value)||0; });
+  });
+  const saveOliBtn = document.getElementById("saveOliBtn");
+  if(saveOliBtn) saveOliBtn.addEventListener("click", ()=>{
+    p.lineItems = orderLineItemsDraft.filter(li=>li.name.trim()).map(li=>({name:li.name.trim(), quantity:Math.max(1,li.quantity||1), price:li.price||0}));
+    orderLineItemsEditing = null;
+    orderLineItemsDraft = null;
+    saveState();
+    showToast("Items updated");
     orderDetailModal(orderId);
     if(ui.tab==="orders") renderView();
   });
