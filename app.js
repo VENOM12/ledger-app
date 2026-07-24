@@ -1103,11 +1103,17 @@ function computeTodayStats(){
     itemTotals[i.name] = (itemTotals[i.name]||0) + i.quantityPurchased;
   });
   state.pendingOrders.filter(p=>p.retailer!=="Pokemon Center" && !p.addedToStockId && p.status!=="cancelled" && isToday(p.orderDate)).forEach(p=>{
-    spent += (p.price||0);
     orderCount++;
     if(p.lineItems && p.lineItems.length){
+      // Line items are the actual source of truth for what was bought —
+      // the order's own price field can end up stale or blank (e.g. an
+      // email that failed to parse a total but still had real line
+      // items, or an order price that wasn't recalculated after editing
+      // items), which was exactly why this showed items but £0 spent.
+      spent += p.lineItems.reduce((s,li)=>s+li.quantity*li.price, 0);
       p.lineItems.forEach(li=>{ itemTotals[li.name] = (itemTotals[li.name]||0) + li.quantity; });
     } else {
+      spent += (p.price||0);
       itemTotals[`Order from ${p.retailer}`] = (itemTotals[`Order from ${p.retailer}`]||0) + 1;
     }
   });
@@ -1117,7 +1123,10 @@ function computeTodayStats(){
 
 function shareDailyStatsImage(){
   const stats = computeTodayStats();
-  const W = 900, H = 620;
+  const totalItemsQty = stats.items.reduce((s,[,q])=>s+q,0);
+  const itemsToShow = stats.items.slice(0,8);
+  const H = 200 + Math.max(1,itemsToShow.length)*72 + 80;
+  const W = 900;
   const canvas = document.createElement("canvas");
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext("2d");
@@ -1126,62 +1135,113 @@ function shareDailyStatsImage(){
   // accent, rather than looking like a generic export.
   ctx.fillStyle = "#0A0A12";
   ctx.fillRect(0,0,W,H);
-  const grad = ctx.createLinearGradient(0,0,W,0);
-  grad.addColorStop(0,"#9B6BF5"); grad.addColorStop(1,"#F55BC2");
-  ctx.fillStyle = grad;
+  const topGrad = ctx.createLinearGradient(0,0,W,0);
+  topGrad.addColorStop(0,"#9B6BF5"); topGrad.addColorStop(1,"#F55BC2");
+  ctx.fillStyle = topGrad;
   ctx.fillRect(0,0,W,6);
 
-  ctx.fillStyle = "#EDEDF5";
-  ctx.font = "700 30px Arial";
-  ctx.fillText("Today's Purchases", 40, 60);
-  ctx.fillStyle = "#8E8EA8";
-  ctx.font = "400 15px Arial";
-  ctx.fillText(new Date().toLocaleDateString(undefined,{weekday:'long', year:'numeric', month:'long', day:'numeric'}), 40, 84);
+  // Header with app mark — a colored rounded square with the app's own
+  // gradient, similar in spirit to the branded logo corner in the
+  // reference images, but this app's own identity rather than a
+  // service's join-us branding.
+  roundRectPath(ctx, 40, 30, 44, 44, 12);
+  const logoGrad = ctx.createLinearGradient(40,30,84,74);
+  logoGrad.addColorStop(0,"#9B6BF5"); logoGrad.addColorStop(1,"#F55BC2");
+  ctx.fillStyle = logoGrad;
+  ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.font = "700 20px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("R", 62, 59);
+  ctx.textAlign = "left";
 
-  // Three summary stat boxes
+  ctx.fillStyle = "#EDEDF5";
+  ctx.font = "700 26px Arial";
+  ctx.fillText("Today's Purchases", 100, 52);
+  ctx.fillStyle = "#8E8EA8";
+  ctx.font = "400 14px Arial";
+  ctx.fillText(new Date().toLocaleDateString(undefined,{weekday:'long', year:'numeric', month:'long', day:'numeric'}), 100, 72);
+
+  // Three summary stat boxes, each with its own colored icon chip —
+  // mirrors the visual weight of the reference cards without the
+  // member/group metrics those actually tracked.
   const boxes = [
-    { label: "Orders", value: String(stats.orderCount) },
-    { label: "Items Bought", value: String(stats.items.reduce((s,[,q])=>s+q,0)) },
-    { label: "Total Spent", value: fmtMoney(stats.spent) }
+    { label: "Orders", value: String(stats.orderCount), color: "#F5B942", bg: "rgba(245,185,66,0.13)", icon: "cart" },
+    { label: "Items Bought", value: String(totalItemsQty), color: "#4FA9F7", bg: "rgba(79,169,247,0.14)", icon: "box" },
+    { label: "Total Spent", value: fmtMoney(stats.spent), color: "#3DD68C", bg: "rgba(61,214,140,0.13)", icon: "coin" }
   ];
   const boxW = (W-80-2*16)/3;
   boxes.forEach((b,i)=>{
     const x = 40 + i*(boxW+16);
     ctx.fillStyle = "#15151F";
-    roundRectPath(ctx, x, 110, boxW, 90, 10);
+    roundRectPath(ctx, x, 100, boxW, 96, 12);
     ctx.fill();
-    ctx.fillStyle = "#9B6BF5";
-    ctx.font = "700 26px Arial";
-    ctx.fillText(b.value, x+18, 160);
+
+    roundRectPath(ctx, x+16, 116, 40, 40, 10);
+    ctx.fillStyle = b.bg;
+    ctx.fill();
+    ctx.fillStyle = b.color;
+    drawStatIcon(ctx, b.icon, x+36, 136);
+
+    ctx.fillStyle = "#EDEDF5";
+    ctx.font = "700 24px Arial";
+    ctx.fillText(b.value, x+16, 178);
     ctx.fillStyle = "#8E8EA8";
-    ctx.font = "400 13px Arial";
-    ctx.fillText(b.label.toUpperCase(), x+18, 182);
+    ctx.font = "400 12px Arial";
+    ctx.fillText(b.label.toUpperCase(), x+16, boxW<210?196:194);
   });
 
-  // Itemized list
+  // Ranked itemized list with proportional bars, similar in spirit to
+  // the reference images' numbered product rows.
   ctx.fillStyle = "#EDEDF5";
-  ctx.font = "700 17px Arial";
-  ctx.fillText("Items", 40, 240);
-  let y = 270;
-  if(stats.items.length===0){
+  ctx.font = "700 16px Arial";
+  ctx.fillText("Items", 40, 226);
+
+  let y = 250;
+  if(itemsToShow.length===0){
     ctx.fillStyle = "#8E8EA8";
     ctx.font = "400 15px Arial";
-    ctx.fillText("Nothing bought today.", 40, y);
+    ctx.fillText("Nothing bought today.", 40, y+16);
   } else {
-    stats.items.slice(0,10).forEach(([name,qty])=>{
+    const maxQty = Math.max(...itemsToShow.map(([,q])=>q));
+    itemsToShow.forEach(([name,qty],i)=>{
       ctx.fillStyle = "#15151F";
-      roundRectPath(ctx, 40, y-24, W-80, 40, 8);
+      roundRectPath(ctx, 40, y, W-80, 60, 10);
       ctx.fill();
-      ctx.fillStyle = "#EDEDF5";
-      ctx.font = "400 15px Arial";
-      const truncated = name.length>60 ? name.slice(0,57)+"..." : name;
-      ctx.fillText(truncated, 56, y+2);
+
+      // Rank circle
+      ctx.beginPath();
+      ctx.arc(70, y+30, 16, 0, Math.PI*2);
+      ctx.fillStyle = "rgba(155,107,245,0.16)";
+      ctx.fill();
       ctx.fillStyle = "#9B6BF5";
-      ctx.font = "700 15px Arial";
-      ctx.textAlign = "right";
-      ctx.fillText("×"+qty, W-56, y+2);
+      ctx.font = "700 14px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText(String(i+1), 70, y+35);
       ctx.textAlign = "left";
-      y += 48;
+
+      ctx.fillStyle = "#EDEDF5";
+      ctx.font = "600 15px Arial";
+      const truncated = name.length>55 ? name.slice(0,52)+"..." : name;
+      ctx.fillText(truncated, 100, y+26);
+
+      // Proportional bar showing this item's share of today's total qty
+      const barMaxW = 240;
+      const barW = Math.max(6, (qty/maxQty)*barMaxW);
+      ctx.fillStyle = "#232332";
+      roundRectPath(ctx, 100, y+36, barMaxW, 6, 3);
+      ctx.fill();
+      ctx.fillStyle = "#9B6BF5";
+      roundRectPath(ctx, 100, y+36, barW, 6, 3);
+      ctx.fill();
+
+      ctx.fillStyle = "#9B6BF5";
+      ctx.font = "700 16px Arial";
+      ctx.textAlign = "right";
+      ctx.fillText("×"+qty, W-56, y+35);
+      ctx.textAlign = "left";
+
+      y += 72;
     });
   }
 
@@ -1207,6 +1267,34 @@ function roundRectPath(ctx, x, y, w, h, r){
   ctx.arcTo(x, y+h, x, y, r);
   ctx.arcTo(x, y, x+w, y, r);
   ctx.closePath();
+}
+
+function drawStatIcon(ctx, type, cx, cy){
+  ctx.save();
+  ctx.strokeStyle = ctx.fillStyle;
+  const fillColor = ctx.fillStyle;
+  ctx.lineWidth = 2;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  if(type==="cart"){
+    ctx.beginPath();
+    ctx.moveTo(cx-9,cy-8); ctx.lineTo(cx-6,cy-8); ctx.lineTo(cx-3,cy+3); ctx.lineTo(cx+8,cy+3); ctx.lineTo(cx+10,cy-4); ctx.lineTo(cx-5,cy-4);
+    ctx.stroke();
+    ctx.fillStyle = fillColor;
+    ctx.beginPath(); ctx.arc(cx-2,cy+8,1.6,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(cx+7,cy+8,1.6,0,Math.PI*2); ctx.fill();
+  } else if(type==="box"){
+    ctx.strokeRect(cx-9,cy-6,18,14);
+    ctx.beginPath(); ctx.moveTo(cx-9,cy); ctx.lineTo(cx+9,cy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx,cy+8); ctx.stroke();
+  } else if(type==="coin"){
+    ctx.beginPath(); ctx.arc(cx,cy,10,0,Math.PI*2); ctx.stroke();
+    ctx.fillStyle = fillColor;
+    ctx.font = "700 12px Arial"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("$", cx, cy+1);
+    ctx.textBaseline = "alphabetic";
+  }
+  ctx.restore();
 }
 
 /* ============================================================
