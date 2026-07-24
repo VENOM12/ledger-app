@@ -1121,18 +1121,65 @@ function computeTodayStats(){
   return { orderCount, spent, items: Object.entries(itemTotals).sort((a,b)=>b[1]-a[1]) };
 }
 
+// Measures and wraps text to fit a pixel width, up to maxLines — actual
+// measurement via ctx.measureText() rather than an arbitrary character
+// count, which was cutting names off before they visually needed it (or
+// letting genuinely long ones overflow past where they were measured to).
+function wrapTextLines(ctx, text, maxWidth, maxLines){
+  const words = text.split(" ");
+  const lines = [];
+  let current = "";
+  for(const word of words){
+    const test = current ? current+" "+word : word;
+    if(ctx.measureText(test).width > maxWidth && current){
+      lines.push(current);
+      current = word;
+      if(lines.length === maxLines-1){
+        // Last allowed line — fill it and ellipsis-truncate by actual
+        // width if what's left still doesn't fit, instead of guessing.
+        const remaining = words.slice(words.indexOf(word)).join(" ");
+        let fitted = remaining;
+        while(ctx.measureText(fitted+"…").width > maxWidth && fitted.length>1){
+          fitted = fitted.slice(0,-1);
+        }
+        lines.push(fitted.length < remaining.length ? fitted+"…" : remaining);
+        return lines;
+      }
+    } else {
+      current = test;
+    }
+  }
+  if(current) lines.push(current);
+  return lines.slice(0,maxLines);
+}
+
 function shareDailyStatsImage(){
   const stats = computeTodayStats();
   const totalItemsQty = stats.items.reduce((s,[,q])=>s+q,0);
   const itemsToShow = stats.items.slice(0,8);
-  const H = 200 + Math.max(1,itemsToShow.length)*72 + 80;
   const W = 900;
+  const measureCanvas = document.createElement("canvas");
+  const mctx = measureCanvas.getContext("2d");
+
+  // First pass: work out how many lines each item's name actually needs
+  // at the real card width, so the card (and the whole canvas) can be
+  // sized correctly before anything is drawn — rather than guessing a
+  // fixed row height and hoping names fit.
+  const cardPad = 20, nameMaxWidth = W-80-cardPad*2-70;
+  mctx.font = "700 17px Arial";
+  const itemLayouts = itemsToShow.map(([name,qty])=>{
+    const lines = wrapTextLines(mctx, name, nameMaxWidth, 2);
+    return { name, qty, lines, cardH: lines.length>1 ? 108 : 88 };
+  });
+
+  const headerH = 130, statsH = 116, itemsHeaderH = 40;
+  const itemsH = itemLayouts.length ? itemLayouts.reduce((s,l)=>s+l.cardH+14,0) : 50;
+  const H = headerH + statsH + itemsHeaderH + itemsH + 50;
+
   const canvas = document.createElement("canvas");
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext("2d");
 
-  // Background — matches the app's own dark theme and violet/magenta
-  // accent, rather than looking like a generic export.
   ctx.fillStyle = "#0A0A12";
   ctx.fillRect(0,0,W,H);
   const topGrad = ctx.createLinearGradient(0,0,W,0);
@@ -1140,114 +1187,128 @@ function shareDailyStatsImage(){
   ctx.fillStyle = topGrad;
   ctx.fillRect(0,0,W,6);
 
-  // Header with app mark — a colored rounded square with the app's own
-  // gradient, similar in spirit to the branded logo corner in the
-  // reference images, but this app's own identity rather than a
-  // service's join-us branding.
-  roundRectPath(ctx, 40, 30, 44, 44, 12);
-  const logoGrad = ctx.createLinearGradient(40,30,84,74);
+  roundRectPath(ctx, 40, 30, 48, 48, 13);
+  const logoGrad = ctx.createLinearGradient(40,30,88,78);
   logoGrad.addColorStop(0,"#9B6BF5"); logoGrad.addColorStop(1,"#F55BC2");
   ctx.fillStyle = logoGrad;
   ctx.fill();
   ctx.fillStyle = "#fff";
-  ctx.font = "700 20px Arial";
+  ctx.font = "700 22px Arial";
   ctx.textAlign = "center";
-  ctx.fillText("R", 62, 59);
+  ctx.fillText("R", 64, 62);
   ctx.textAlign = "left";
 
+  ctx.fillStyle = "#8E8EA8";
+  ctx.font = "700 11px Arial";
+  ctx.fillText("RESTOCK", 104, 44);
   ctx.fillStyle = "#EDEDF5";
-  ctx.font = "700 26px Arial";
-  ctx.fillText("Today's Purchases", 100, 52);
+  ctx.font = "700 27px Arial";
+  ctx.fillText("Today's Purchases", 104, 70);
+
   ctx.fillStyle = "#8E8EA8";
   ctx.font = "400 14px Arial";
-  ctx.fillText(new Date().toLocaleDateString(undefined,{weekday:'long', year:'numeric', month:'long', day:'numeric'}), 100, 72);
+  ctx.textAlign = "right";
+  ctx.fillText(new Date().toLocaleDateString(undefined,{weekday:'long', year:'numeric', month:'long', day:'numeric'}), W-40, 58);
+  ctx.textAlign = "left";
 
-  // Three summary stat boxes, each with its own colored icon chip —
-  // mirrors the visual weight of the reference cards without the
-  // member/group metrics those actually tracked.
   const boxes = [
     { label: "Orders", value: String(stats.orderCount), color: "#F5B942", bg: "rgba(245,185,66,0.13)", icon: "cart" },
     { label: "Items Bought", value: String(totalItemsQty), color: "#4FA9F7", bg: "rgba(79,169,247,0.14)", icon: "box" },
     { label: "Total Spent", value: fmtMoney(stats.spent), color: "#3DD68C", bg: "rgba(61,214,140,0.13)", icon: "coin" }
   ];
   const boxW = (W-80-2*16)/3;
+  const statsY = headerH;
   boxes.forEach((b,i)=>{
     const x = 40 + i*(boxW+16);
     ctx.fillStyle = "#15151F";
-    roundRectPath(ctx, x, 100, boxW, 96, 12);
+    roundRectPath(ctx, x, statsY, boxW, 96, 12);
     ctx.fill();
 
-    roundRectPath(ctx, x+16, 116, 40, 40, 10);
+    roundRectPath(ctx, x+16, statsY+16, 40, 40, 10);
     ctx.fillStyle = b.bg;
     ctx.fill();
     ctx.fillStyle = b.color;
-    drawStatIcon(ctx, b.icon, x+36, 136);
+    drawStatIcon(ctx, b.icon, x+36, statsY+36);
 
     ctx.fillStyle = "#EDEDF5";
-    ctx.font = "700 24px Arial";
-    ctx.fillText(b.value, x+16, 178);
+    ctx.font = "700 25px Arial";
+    ctx.fillText(b.value, x+16, statsY+78);
     ctx.fillStyle = "#8E8EA8";
     ctx.font = "400 12px Arial";
-    ctx.fillText(b.label.toUpperCase(), x+16, boxW<210?196:194);
+    ctx.fillText(b.label.toUpperCase(), x+16, statsY+94);
   });
 
-  // Ranked itemized list with proportional bars, similar in spirit to
-  // the reference images' numbered product rows.
+  const itemsHeaderY = statsY + statsH + 20;
   ctx.fillStyle = "#EDEDF5";
-  ctx.font = "700 16px Arial";
-  ctx.fillText("Items", 40, 226);
+  ctx.font = "700 17px Arial";
+  ctx.fillText("Items", 40, itemsHeaderY);
 
-  let y = 250;
-  if(itemsToShow.length===0){
+  let y = itemsHeaderY + 20;
+  if(itemLayouts.length===0){
     ctx.fillStyle = "#8E8EA8";
     ctx.font = "400 15px Arial";
     ctx.fillText("Nothing bought today.", 40, y+16);
   } else {
-    const maxQty = Math.max(...itemsToShow.map(([,q])=>q));
-    itemsToShow.forEach(([name,qty],i)=>{
+    const maxQty = Math.max(...itemLayouts.map(l=>l.qty));
+    itemLayouts.forEach((l,i)=>{
+      const cardH = l.cardH;
       ctx.fillStyle = "#15151F";
-      roundRectPath(ctx, 40, y, W-80, 60, 10);
+      roundRectPath(ctx, 40, y, W-80, cardH, 12);
       ctx.fill();
 
-      // Rank circle
+      // Rank badge
       ctx.beginPath();
-      ctx.arc(70, y+30, 16, 0, Math.PI*2);
+      ctx.arc(40+cardPad+16, y+cardPad+16, 17, 0, Math.PI*2);
       ctx.fillStyle = "rgba(155,107,245,0.16)";
       ctx.fill();
       ctx.fillStyle = "#9B6BF5";
-      ctx.font = "700 14px Arial";
+      ctx.font = "700 15px Arial";
       ctx.textAlign = "center";
-      ctx.fillText(String(i+1), 70, y+35);
+      ctx.fillText(String(i+1), 40+cardPad+16, y+cardPad+21);
       ctx.textAlign = "left";
 
+      // Name — wrapped to however many lines it actually needs
+      const nameX = 40+cardPad+50;
       ctx.fillStyle = "#EDEDF5";
-      ctx.font = "600 15px Arial";
-      const truncated = name.length>55 ? name.slice(0,52)+"..." : name;
-      ctx.fillText(truncated, 100, y+26);
+      ctx.font = "700 17px Arial";
+      l.lines.forEach((line,li)=>{
+        ctx.fillText(line, nameX, y+cardPad+16+li*22);
+      });
+
+      // Quantity chip badge, mirroring the pill-badge style from the
+      // reference cards
+      const chipY = y+cardPad+16+l.lines.length*22+8;
+      const chipText = `×${l.qty}`;
+      ctx.font = "700 13px Arial";
+      const chipTextW = ctx.measureText(chipText).width;
+      const chipW = chipTextW+28;
+      roundRectPath(ctx, nameX, chipY, chipW, 26, 13);
+      ctx.fillStyle = "rgba(155,107,245,0.16)";
+      ctx.fill();
+      ctx.fillStyle = "#9B6BF5";
+      ctx.fillText(chipText, nameX+14, chipY+18);
 
       // Proportional bar showing this item's share of today's total qty
-      const barMaxW = 240;
-      const barW = Math.max(6, (qty/maxQty)*barMaxW);
-      ctx.fillStyle = "#232332";
-      roundRectPath(ctx, 100, y+36, barMaxW, 6, 3);
-      ctx.fill();
-      ctx.fillStyle = "#9B6BF5";
-      roundRectPath(ctx, 100, y+36, barW, 6, 3);
-      ctx.fill();
+      const barX = nameX+chipW+16;
+      const barMaxW = (40+(W-80))-barX-cardPad;
+      if(barMaxW > 40){
+        const barY = chipY+11;
+        ctx.fillStyle = "#232332";
+        roundRectPath(ctx, barX, barY, barMaxW, 6, 3);
+        ctx.fill();
+        ctx.fillStyle = "#9B6BF5";
+        const barW = Math.max(6, (l.qty/maxQty)*barMaxW);
+        roundRectPath(ctx, barX, barY, barW, 6, 3);
+        ctx.fill();
+      }
 
-      ctx.fillStyle = "#9B6BF5";
-      ctx.font = "700 16px Arial";
-      ctx.textAlign = "right";
-      ctx.fillText("×"+qty, W-56, y+35);
-      ctx.textAlign = "left";
-
-      y += 72;
+      y += cardH + 14;
     });
   }
 
   ctx.fillStyle = "#5C5C72";
   ctx.font = "400 12px Arial";
-  ctx.fillText("Generated with Restock", 40, H-24);
+  ctx.fillText("Generated with Restock", 40, H-22);
 
   canvas.toBlob(blob=>{
     const url = URL.createObjectURL(blob);
