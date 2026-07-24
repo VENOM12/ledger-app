@@ -676,8 +676,11 @@ function dashboardHTML(){
   const periods = ["Day","Week","Month","Year","All Time"];
 
   return `
-    <div class="segmented">
-      ${periods.map(p=>`<button class="${ui.period===p?'active':''}" data-period="${p}">${p==="All Time"?"All":p}</button>`).join("")}
+    <div class="toolbar-row" style="margin-bottom:16px;">
+      <div class="segmented">
+        ${periods.map(p=>`<button class="${ui.period===p?'active':''}" data-period="${p}">${p==="All Time"?"All":p}</button>`).join("")}
+      </div>
+      <button class="btn-small" id="shareDailyStatsBtn" style="margin-left:auto;">${ICONS.download} Share Today's Stats</button>
     </div>
 
     <div class="stat-grid">
@@ -1080,7 +1083,130 @@ function attachDashboardEvents(){
   document.querySelectorAll("[data-chart-type]").forEach(btn=>{
     btn.addEventListener("click", ()=>{ ui.chartType = btn.dataset.chartType; renderView(); });
   });
+  document.getElementById("shareDailyStatsBtn").addEventListener("click", shareDailyStatsImage);
   bindChartHoverEvents();
+}
+
+// Personal daily purchase summary — orders placed, items bought, money
+// spent. Deliberately just that: no group/member tracking, no
+// cancellation-survival-rate metrics, no join-a-service branding, since
+// this is meant as a personal bookkeeping export, not the kind of
+// checkout-group marketing card those track.
+function computeTodayStats(){
+  const isToday = d => d && new Date(d).toDateString() === new Date().toDateString();
+  const itemTotals = {};
+  let spent = 0, orderCount = 0;
+
+  state.items.filter(i=>!(i.isPreorder && i.retailer==="Pokemon Center") && isToday(i.purchaseDate)).forEach(i=>{
+    spent += totalCost(i);
+    orderCount++;
+    itemTotals[i.name] = (itemTotals[i.name]||0) + i.quantityPurchased;
+  });
+  state.pendingOrders.filter(p=>p.retailer!=="Pokemon Center" && !p.addedToStockId && p.status!=="cancelled" && isToday(p.orderDate)).forEach(p=>{
+    spent += (p.price||0);
+    orderCount++;
+    if(p.lineItems && p.lineItems.length){
+      p.lineItems.forEach(li=>{ itemTotals[li.name] = (itemTotals[li.name]||0) + li.quantity; });
+    } else {
+      itemTotals[`Order from ${p.retailer}`] = (itemTotals[`Order from ${p.retailer}`]||0) + 1;
+    }
+  });
+
+  return { orderCount, spent, items: Object.entries(itemTotals).sort((a,b)=>b[1]-a[1]) };
+}
+
+function shareDailyStatsImage(){
+  const stats = computeTodayStats();
+  const W = 900, H = 620;
+  const canvas = document.createElement("canvas");
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext("2d");
+
+  // Background — matches the app's own dark theme and violet/magenta
+  // accent, rather than looking like a generic export.
+  ctx.fillStyle = "#0A0A12";
+  ctx.fillRect(0,0,W,H);
+  const grad = ctx.createLinearGradient(0,0,W,0);
+  grad.addColorStop(0,"#9B6BF5"); grad.addColorStop(1,"#F55BC2");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,W,6);
+
+  ctx.fillStyle = "#EDEDF5";
+  ctx.font = "700 30px Arial";
+  ctx.fillText("Today's Purchases", 40, 60);
+  ctx.fillStyle = "#8E8EA8";
+  ctx.font = "400 15px Arial";
+  ctx.fillText(new Date().toLocaleDateString(undefined,{weekday:'long', year:'numeric', month:'long', day:'numeric'}), 40, 84);
+
+  // Three summary stat boxes
+  const boxes = [
+    { label: "Orders", value: String(stats.orderCount) },
+    { label: "Items Bought", value: String(stats.items.reduce((s,[,q])=>s+q,0)) },
+    { label: "Total Spent", value: fmtMoney(stats.spent) }
+  ];
+  const boxW = (W-80-2*16)/3;
+  boxes.forEach((b,i)=>{
+    const x = 40 + i*(boxW+16);
+    ctx.fillStyle = "#15151F";
+    roundRectPath(ctx, x, 110, boxW, 90, 10);
+    ctx.fill();
+    ctx.fillStyle = "#9B6BF5";
+    ctx.font = "700 26px Arial";
+    ctx.fillText(b.value, x+18, 160);
+    ctx.fillStyle = "#8E8EA8";
+    ctx.font = "400 13px Arial";
+    ctx.fillText(b.label.toUpperCase(), x+18, 182);
+  });
+
+  // Itemized list
+  ctx.fillStyle = "#EDEDF5";
+  ctx.font = "700 17px Arial";
+  ctx.fillText("Items", 40, 240);
+  let y = 270;
+  if(stats.items.length===0){
+    ctx.fillStyle = "#8E8EA8";
+    ctx.font = "400 15px Arial";
+    ctx.fillText("Nothing bought today.", 40, y);
+  } else {
+    stats.items.slice(0,10).forEach(([name,qty])=>{
+      ctx.fillStyle = "#15151F";
+      roundRectPath(ctx, 40, y-24, W-80, 40, 8);
+      ctx.fill();
+      ctx.fillStyle = "#EDEDF5";
+      ctx.font = "400 15px Arial";
+      const truncated = name.length>60 ? name.slice(0,57)+"..." : name;
+      ctx.fillText(truncated, 56, y+2);
+      ctx.fillStyle = "#9B6BF5";
+      ctx.font = "700 15px Arial";
+      ctx.textAlign = "right";
+      ctx.fillText("×"+qty, W-56, y+2);
+      ctx.textAlign = "left";
+      y += 48;
+    });
+  }
+
+  ctx.fillStyle = "#5C5C72";
+  ctx.font = "400 12px Arial";
+  ctx.fillText("Generated with Restock", 40, H-24);
+
+  canvas.toBlob(blob=>{
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `restock-daily-stats-${todayISO()}.png`;
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+}
+
+function roundRectPath(ctx, x, y, w, h, r){
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y, x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x, y+h, r);
+  ctx.arcTo(x, y+h, x, y, r);
+  ctx.arcTo(x, y, x+w, y, r);
+  ctx.closePath();
 }
 
 /* ============================================================
