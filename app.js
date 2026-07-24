@@ -2148,6 +2148,13 @@ function orderDetailModal(orderId){
   const saveOliBtn = document.getElementById("saveOliBtn");
   if(saveOliBtn) saveOliBtn.addEventListener("click", ()=>{
     p.lineItems = orderLineItemsDraft.filter(li=>li.name.trim()).map(li=>({name:li.name.trim(), quantity:Math.max(1,li.quantity||1), price:li.price||0}));
+    // The order's own overall price (shown separately above, and what
+    // feeds the All Orders table and the dashboard's spending totals)
+    // doesn't update itself just because the line items changed — has to
+    // be recalculated from them explicitly, or it's left showing
+    // whatever it was before (often £0.00 for an order that started with
+    // no items at all, exactly what was reported).
+    p.price = p.lineItems.reduce((s,li)=>s+li.quantity*li.price, 0);
     orderLineItemsEditing = null;
     orderLineItemsDraft = null;
     saveState();
