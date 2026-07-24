@@ -1886,7 +1886,7 @@ const ORDER_STATUSES = [
 ];
 
 function openAddOrderModal(){
-  addOrderFormState = { retailer:"", orderNumber:"", price:"", orderDate: todayISO(), status:"confirmed", carrier:"", trackingNumber:"", expectedDelivery:"" };
+  addOrderFormState = { retailer:"", itemName:"", quantity:1, orderNumber:"", price:"", orderDate: todayISO(), status:"confirmed", carrier:"", trackingNumber:"", expectedDelivery:"" };
   renderAddOrderModal();
 }
 
@@ -1905,6 +1905,14 @@ function renderAddOrderModal(){
             <div class="field" style="grid-column:1/-1;">
               <label>Retailer</label>
               <input type="text" id="ao-retailer" value="${escapeAttr(f.retailer)}" placeholder="e.g. Amazon">
+            </div>
+            <div class="field" style="grid-column:1/-1;">
+              <label>What did you buy? (optional)</label>
+              <input type="text" id="ao-itemName" value="${escapeAttr(f.itemName)}" placeholder="e.g. Charizard VMAX Booster Box">
+            </div>
+            <div class="field">
+              <label>Quantity</label>
+              <input type="number" id="ao-quantity" value="${f.quantity}" min="1" step="1">
             </div>
             <div class="field">
               <label>Price</label>
@@ -1945,6 +1953,8 @@ function renderAddOrderModal(){
   `;
   document.getElementById("closeAddOrder").addEventListener("click", ()=>{ document.getElementById("modalRoot").innerHTML=""; });
   document.getElementById("ao-retailer").addEventListener("input", e=>{ f.retailer = e.target.value; });
+  document.getElementById("ao-itemName").addEventListener("input", e=>{ f.itemName = e.target.value; });
+  document.getElementById("ao-quantity").addEventListener("input", e=>{ f.quantity = parseInt(e.target.value,10)||1; });
   document.getElementById("ao-price").addEventListener("input", e=>{ f.price = e.target.value; });
   document.getElementById("ao-orderNumber").addEventListener("input", e=>{ f.orderNumber = e.target.value; });
   document.getElementById("ao-orderDate").addEventListener("change", e=>{ f.orderDate = e.target.value; });
@@ -1970,7 +1980,8 @@ function renderAddOrderModal(){
       fromEmail: null, orderDate: f.orderDate || todayISO(),
       expectedDelivery: f.expectedDelivery || null, expectedDeliveryTime: null,
       carrier: f.carrier.trim() || null, trackingNumber: f.trackingNumber.trim() || null,
-      orderNumber, status: f.status, addedToStockId: null, isPKCPreorder: false
+      orderNumber, status: f.status, addedToStockId: null, isPKCPreorder: false,
+      lineItems: f.itemName.trim() ? [{ name: f.itemName.trim(), quantity: Math.max(1, f.quantity||1), price: price ? price/Math.max(1, f.quantity||1) : 0 }] : []
     };
 
     if(f.status==="delivered"){
@@ -1986,6 +1997,7 @@ function renderAddOrderModal(){
 }
 
 let orderStatusEditing = null;
+let orderRetailerEditing = null;
 
 const ALL_ORDER_STATUSES = ["confirmed", "action_required", "shipped", "out_for_delivery", "ready_for_collection", "delivered", "cancelled"];
 
@@ -1993,12 +2005,21 @@ function orderDetailModal(orderId){
   const p = state.pendingOrders.find(o=>o.id===orderId);
   if(!p) return;
   const editingStatus = orderStatusEditing === orderId;
+  const editingRetailer = orderRetailerEditing === orderId;
   const root = document.getElementById("modalRoot");
   root.innerHTML = `
     <div class="modal-backdrop open" id="orderDetailBackdrop">
       <div class="modal" style="width:520px;">
         <div class="modal-header">
-          <h2>${escapeHTML(p.retailer)}</h2>
+          ${editingRetailer ? `
+            <div style="display:flex;gap:8px;align-items:center;flex:1;">
+              <input type="text" id="orderRetailerEditInput" value="${escapeAttr(p.retailer)}" style="flex:1;">
+              <button class="icon-btn" id="saveOrderRetailerBtn" title="Save">${ICONS.check}</button>
+              <button class="icon-btn" id="cancelOrderRetailerBtn" title="Cancel">${ICONS.close}</button>
+            </div>
+          ` : `
+            <h2 style="display:flex;align-items:center;gap:8px;">${escapeHTML(p.retailer)}<button class="icon-btn" id="editOrderRetailerBtn" title="Edit retailer" style="width:22px;height:22px;">${ICONS.pencil}</button></h2>
+          `}
           <button class="icon-btn" id="closeOrderDetail">${ICONS.close}</button>
         </div>
         <div class="modal-body">
@@ -2046,7 +2067,22 @@ function orderDetailModal(orderId){
       </div>
     </div>
   `;
-  document.getElementById("closeOrderDetail").addEventListener("click", ()=>{ orderStatusEditing = null; document.getElementById("modalRoot").innerHTML=""; });
+  document.getElementById("closeOrderDetail").addEventListener("click", ()=>{ orderStatusEditing = null; orderRetailerEditing = null; document.getElementById("modalRoot").innerHTML=""; });
+  const editRetailerBtn = document.getElementById("editOrderRetailerBtn");
+  if(editRetailerBtn) editRetailerBtn.addEventListener("click", ()=>{ orderRetailerEditing = orderId; orderDetailModal(orderId); });
+  const cancelRetailerBtn = document.getElementById("cancelOrderRetailerBtn");
+  if(cancelRetailerBtn) cancelRetailerBtn.addEventListener("click", ()=>{ orderRetailerEditing = null; orderDetailModal(orderId); });
+  const saveRetailerBtn = document.getElementById("saveOrderRetailerBtn");
+  if(saveRetailerBtn) saveRetailerBtn.addEventListener("click", ()=>{
+    const newRetailer = document.getElementById("orderRetailerEditInput").value.trim();
+    if(!newRetailer){ showToast("Retailer can't be blank", "close"); return; }
+    p.retailer = newRetailer;
+    orderRetailerEditing = null;
+    saveState();
+    showToast("Retailer updated");
+    orderDetailModal(orderId);
+    if(ui.tab==="orders") renderView();
+  });
   const viewStockBtn = document.getElementById("orderDetailViewStock");
   if(viewStockBtn) viewStockBtn.addEventListener("click", ()=>{
     document.getElementById("modalRoot").innerHTML = "";
@@ -5969,7 +6005,7 @@ function createStockItemFromOrder(order){
       const item = {
         id: uid(), name: line.name, category: "Other", quantityPurchased: line.quantity || 1,
         purchasePricePerUnit: line.price || 0, retailer: order.retailer, purchaseDate: order.orderDate || todayISO(),
-        notes: "Auto-added from email sync — please verify item name, quantity, and price.",
+        notes: order.fromEmail ? "Auto-added from email sync — please verify item name, quantity, and price." : "",
         isPreorder: false, expectedArrival: null, isCancelled: false, image: null, purchaseMethod: "online", sales: []
       };
       state.items.unshift(item);
