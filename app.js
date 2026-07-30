@@ -5968,6 +5968,21 @@ function mergeExpenseResults(expenseResults){
   return newCount;
 }
 
+// A line item name that's actually a URL tracking-parameter fragment —
+// confirmed a real order ended up with "e11400.m144671.l197928&mkcid=7&
+// ch=osgood&euid=..." as its item name, eBay's own affiliate-link
+// tracking parameters leaking through from somewhere in the source
+// email rather than an actual product name. Used to decide whether an
+// existing order's line items are worth backfilling on re-sync, not
+// just whether they're completely empty — a populated-but-garbage name
+// is exactly as unhelpful as no name at all.
+function looksLikeGarbageItemName(name){
+  if (!name) return true;
+  if (/[&=]/.test(name) && !/\s/.test(name)) return true; // no spaces at all despite URL-query characters — never a real product name
+  if (/\b(mkevt|mkcid|mkrid|campid|customid|toolid|mkgrpid|euid)=/i.test(name)) return true;
+  return false;
+}
+
 function mergeSyncResults(results){
   let addedCount = 0;
   let cancelledCount = 0;
@@ -6137,7 +6152,7 @@ function mergeSyncResults(results){
           toEmail:r.toEmail||null, deliveryAddress:r.deliveryAddress||null, recipientName:r.recipientName||null, lineItems:r.lineItems||[],
           orderNumber:r.orderNumber, status:"confirmed", addedToStockId:null, isPKCPreorder:false
         });
-      } else if((!existing.lineItems || !existing.lineItems.length) && r.lineItems && r.lineItems.length){
+      } else if((!existing.lineItems || !existing.lineItems.length || existing.lineItems.every(li=>looksLikeGarbageItemName(li.name))) && r.lineItems && r.lineItems.length){
         // An order that's still missing its line items means the
         // original sync either failed to extract them entirely or hit a
         // parsing bug that's since been fixed — a Full Re-scan is
@@ -6177,7 +6192,7 @@ function mergeSyncResults(results){
         if(r.pickupCode) existing.pickupCode = r.pickupCode;
         if(r.deliveryAddress && !existing.deliveryAddress) existing.deliveryAddress = r.deliveryAddress;
         if(r.recipientName && !existing.recipientName) existing.recipientName = r.recipientName;
-        if(r.lineItems && r.lineItems.length && (!existing.lineItems || !existing.lineItems.length)) existing.lineItems = r.lineItems;
+        if(r.lineItems && r.lineItems.length && (!existing.lineItems || !existing.lineItems.length || existing.lineItems.every(li=>looksLikeGarbageItemName(li.name)))) existing.lineItems = r.lineItems;
       } else if(!existing){
         state.pendingOrders.unshift({
           id: uid(), matchKey:key, retailer:r.retailer, price:r.price, fromEmail:r.fromEmail||null,
