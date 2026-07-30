@@ -1096,11 +1096,17 @@ function computeTodayStats(){
   const isToday = d => d && new Date(d).toDateString() === new Date().toDateString();
   const itemTotals = {};
   let spent = 0, orderCount = 0;
+  const addItem = (name, qty, lineSpent) => {
+    if(!itemTotals[name]) itemTotals[name] = {qty:0, spent:0};
+    itemTotals[name].qty += qty;
+    itemTotals[name].spent += lineSpent;
+  };
 
   state.items.filter(i=>!(i.isPreorder && i.retailer==="Pokemon Center") && isToday(i.purchaseDate)).forEach(i=>{
-    spent += totalCost(i);
+    const cost = totalCost(i);
+    spent += cost;
     orderCount++;
-    itemTotals[i.name] = (itemTotals[i.name]||0) + i.quantityPurchased;
+    addItem(i.name, i.quantityPurchased, cost);
   });
   state.pendingOrders.filter(p=>p.retailer!=="Pokemon Center" && !p.addedToStockId && p.status!=="cancelled" && isToday(p.orderDate)).forEach(p=>{
     orderCount++;
@@ -1110,15 +1116,18 @@ function computeTodayStats(){
       // email that failed to parse a total but still had real line
       // items, or an order price that wasn't recalculated after editing
       // items), which was exactly why this showed items but £0 spent.
-      spent += p.lineItems.reduce((s,li)=>s+li.quantity*li.price, 0);
-      p.lineItems.forEach(li=>{ itemTotals[li.name] = (itemTotals[li.name]||0) + li.quantity; });
+      p.lineItems.forEach(li=>{
+        const lineSpent = li.quantity*li.price;
+        spent += lineSpent;
+        addItem(li.name, li.quantity, lineSpent);
+      });
     } else {
       spent += (p.price||0);
-      itemTotals[`Order from ${p.retailer}`] = (itemTotals[`Order from ${p.retailer}`]||0) + 1;
+      addItem(`Order from ${p.retailer}`, 1, p.price||0);
     }
   });
 
-  return { orderCount, spent, items: Object.entries(itemTotals).sort((a,b)=>b[1]-a[1]) };
+  return { orderCount, spent, items: Object.entries(itemTotals).map(([name,v])=>({name, qty:v.qty, spent:v.spent})).sort((a,b)=>b.spent-a.spent) };
 }
 
 // Measures and wraps text to fit a pixel width, up to maxLines — actual
@@ -1155,7 +1164,7 @@ function wrapTextLines(ctx, text, maxWidth, maxLines){
 
 function shareDailyStatsImage(){
   const stats = computeTodayStats();
-  const totalItemsQty = stats.items.reduce((s,[,q])=>s+q,0);
+  const totalItemsQty = stats.items.reduce((s,it)=>s+it.qty,0);
   const itemsToShow = stats.items.slice(0,8);
   const W = 900;
   const measureCanvas = document.createElement("canvas");
@@ -1164,16 +1173,18 @@ function shareDailyStatsImage(){
   // First pass: work out how many lines each item's name actually needs
   // at the real card width, so the card (and the whole canvas) can be
   // sized correctly before anything is drawn — rather than guessing a
-  // fixed row height and hoping names fit.
-  const cardPad = 20, nameMaxWidth = W-80-cardPad*2-70;
-  mctx.font = "700 17px Arial";
-  const itemLayouts = itemsToShow.map(([name,qty])=>{
-    const lines = wrapTextLines(mctx, name, nameMaxWidth, 2);
-    return { name, qty, lines, cardH: lines.length>1 ? 108 : 88 };
+  // fixed row height and hoping names fit. Right side reserves space for
+  // the stacked qty/price block, not just a small badge, so this is
+  // narrower than before.
+  const cardPad = 20, rightBlockW = 110, nameMaxWidth = W-80-cardPad*2-50-rightBlockW-16;
+  mctx.font = "700 16px Arial";
+  const itemLayouts = itemsToShow.map(it=>{
+    const lines = wrapTextLines(mctx, it.name, nameMaxWidth, 2);
+    return { ...it, lines, cardH: lines.length>1 ? 92 : 72 };
   });
 
   const headerH = 130, statsH = 116, itemsHeaderH = 40;
-  const itemsH = itemLayouts.length ? itemLayouts.reduce((s,l)=>s+l.cardH+14,0) : 50;
+  const itemsH = itemLayouts.length ? itemLayouts.reduce((s,l)=>s+l.cardH+12,0) : 50;
   const H = headerH + statsH + itemsHeaderH + itemsH + 50;
 
   const canvas = document.createElement("canvas");
@@ -1249,60 +1260,63 @@ function shareDailyStatsImage(){
     ctx.font = "400 15px Arial";
     ctx.fillText("Nothing bought today.", 40, y+16);
   } else {
-    const maxQty = Math.max(...itemLayouts.map(l=>l.qty));
+    const maxSpend = Math.max(...itemLayouts.map(l=>l.spent), 1);
     itemLayouts.forEach((l,i)=>{
       const cardH = l.cardH;
+      const cardX = 40, cardW = W-80;
       ctx.fillStyle = "#15151F";
-      roundRectPath(ctx, 40, y, W-80, cardH, 12);
+      roundRectPath(ctx, cardX, y, cardW, cardH, 12);
       ctx.fill();
 
-      // Rank badge
+      const nameBlockH = l.lines.length*21;
+      const nameTopY = y + (cardH-8-nameBlockH)/2 + 15;
+
+      // Rank badge, vertically centered against the name block
       ctx.beginPath();
-      ctx.arc(40+cardPad+16, y+cardPad+16, 17, 0, Math.PI*2);
+      ctx.arc(cardX+cardPad+15, y+(cardH-8)/2, 15, 0, Math.PI*2);
       ctx.fillStyle = "rgba(155,107,245,0.16)";
       ctx.fill();
       ctx.fillStyle = "#9B6BF5";
-      ctx.font = "700 15px Arial";
+      ctx.font = "700 14px Arial";
       ctx.textAlign = "center";
-      ctx.fillText(String(i+1), 40+cardPad+16, y+cardPad+21);
+      ctx.fillText(String(i+1), cardX+cardPad+15, y+(cardH-8)/2+5);
       ctx.textAlign = "left";
 
-      // Name — wrapped to however many lines it actually needs
-      const nameX = 40+cardPad+50;
+      // Name — wrapped to however many lines it actually needs, vertically
+      // centered in the card rather than pinned to the top
+      const nameX = cardX+cardPad+46;
       ctx.fillStyle = "#EDEDF5";
-      ctx.font = "700 17px Arial";
+      ctx.font = "700 16px Arial";
       l.lines.forEach((line,li)=>{
-        ctx.fillText(line, nameX, y+cardPad+16+li*22);
+        ctx.fillText(line, nameX, nameTopY+li*21);
       });
 
-      // Quantity chip badge, mirroring the pill-badge style from the
-      // reference cards
-      const chipY = y+cardPad+16+l.lines.length*22+8;
-      const chipText = `×${l.qty}`;
-      ctx.font = "700 13px Arial";
-      const chipTextW = ctx.measureText(chipText).width;
-      const chipW = chipTextW+28;
-      roundRectPath(ctx, nameX, chipY, chipW, 26, 13);
-      ctx.fillStyle = "rgba(155,107,245,0.16)";
-      ctx.fill();
+      // Quantity + price, stacked and right-aligned — same clean pattern
+      // as the reference images' right-aligned counts, instead of a
+      // small badge competing for space with a floating bar.
+      const rightX = cardX+cardW-cardPad;
+      ctx.textAlign = "right";
       ctx.fillStyle = "#9B6BF5";
-      ctx.fillText(chipText, nameX+14, chipY+18);
+      ctx.font = "700 17px Arial";
+      ctx.fillText("×"+l.qty, rightX, y+(cardH-8)/2-2);
+      ctx.fillStyle = "#8E8EA8";
+      ctx.font = "400 13px Arial";
+      ctx.fillText(fmtMoney(l.spent), rightX, y+(cardH-8)/2+16);
+      ctx.textAlign = "left";
 
-      // Proportional bar showing this item's share of today's total qty
-      const barX = nameX+chipW+16;
-      const barMaxW = (40+(W-80))-barX-cardPad;
-      if(barMaxW > 40){
-        const barY = chipY+11;
-        ctx.fillStyle = "#232332";
-        roundRectPath(ctx, barX, barY, barMaxW, 6, 3);
-        ctx.fill();
-        ctx.fillStyle = "#9B6BF5";
-        const barW = Math.max(6, (l.qty/maxQty)*barMaxW);
-        roundRectPath(ctx, barX, barY, barW, 6, 3);
-        ctx.fill();
-      }
+      // Proportional footer strip along the bottom edge, showing this
+      // item's share of today's total spend — subtle even when it's the
+      // only item and the strip runs the full width, unlike a floating
+      // bar competing with the text above it.
+      ctx.fillStyle = "#232332";
+      roundRectPath(ctx, cardX+cardPad, y+cardH-8, cardW-cardPad*2, 4, 2);
+      ctx.fill();
+      const stripW = Math.max(10, (l.spent/maxSpend)*(cardW-cardPad*2));
+      ctx.fillStyle = "#9B6BF5";
+      roundRectPath(ctx, cardX+cardPad, y+cardH-8, stripW, 4, 2);
+      ctx.fill();
 
-      y += cardH + 14;
+      y += cardH + 12;
     });
   }
 
@@ -6123,6 +6137,22 @@ function mergeSyncResults(results){
           toEmail:r.toEmail||null, deliveryAddress:r.deliveryAddress||null, recipientName:r.recipientName||null, lineItems:r.lineItems||[],
           orderNumber:r.orderNumber, status:"confirmed", addedToStockId:null, isPKCPreorder:false
         });
+      } else if((!existing.lineItems || !existing.lineItems.length) && r.lineItems && r.lineItems.length){
+        // An order that's still missing its line items means the
+        // original sync either failed to extract them entirely or hit a
+        // parsing bug that's since been fixed — a Full Re-scan is
+        // exactly when this should get picked up and corrected, but
+        // there was previously no path for an already-existing
+        // "confirmed" order to ever be updated by a later sync at all.
+        // Trusting the fresh price alongside the line items here too,
+        // since both come from the same corrected parse of the same
+        // email, and a case that reached this branch means the original
+        // price was extracted under the same broken conditions that
+        // produced empty line items in the first place.
+        existing.lineItems = r.lineItems;
+        if(r.price != null) existing.price = r.price;
+        if(r.deliveryAddress && !existing.deliveryAddress) existing.deliveryAddress = r.deliveryAddress;
+        if(r.recipientName && !existing.recipientName) existing.recipientName = r.recipientName;
       }
     } else if(r.status==="shipped" || r.status==="out_for_delivery" || r.status==="ready_for_collection"){
       // A fallback here that matched by "sent to" address alone (removed)
