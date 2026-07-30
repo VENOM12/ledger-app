@@ -774,6 +774,19 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   subject = stripInvisible(subject);
   bodyText = stripInvisible(bodyText);
 
+  // A shipping-progress tracker widget (the visual "Processing > Shipped
+  // > Out for Delivery > Delivered" bar many retailers use) renders all
+  // four stage labels as plain text regardless of which one is actually
+  // current — there's no way to tell from extracted text which one was
+  // visually highlighted. Confirmed directly against a real order still
+  // sitting at "Processing" that got misclassified as "shipped" purely
+  // because the word appeared as one of the tracker's stage labels.
+  // Stripped specifically as this exact sequence, so a genuine "your
+  // order has shipped" sentence anywhere else in the same email is
+  // completely unaffected.
+  const stripProgressTracker = s => (s || '').replace(/processing\s+processing\s+shipped\s+out\s+for\s+delivery\s+delivered/gi, ' ').replace(/\bprocessing\s+shipped\s+out\s+for\s+delivery\s+delivered\b/gi, ' ');
+  bodyText = stripProgressTracker(bodyText);
+
   const hay = (subject + '\n' + bodyText).toLowerCase();
 
   let status = null;
@@ -915,6 +928,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // exposed. "Order total" as its own phrase is a lower-priority fallback,
   // tried only if no standalone Total row was found.
   const priceMatch =
+    bodyText.match(/total\s+charged\s+to[\s\S]{0,40}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
     bodyText.match(/(?<!sub)\btotal\*?(?!\s*includes)[\s\S]{0,15}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
     bodyText.match(/order\s+total(?!\s*includes)[\s\S]{0,30}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
     bodyText.match(/[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/);
@@ -991,7 +1005,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // Made the label separator optional, and added a global truncation
   // pass that finds the stop phrase wherever it actually appears, not
   // just at a line's start.
-  const addrLabelMatch = bodyText.match(/(?:shipping address|ship(?:ping)? to|delivery address|delivered to)\s*[:\n]?/i);
+  const addrLabelMatch = bodyText.match(/(?:shipping\s*(?:&|and)\s*billing address|shipping address|ship(?:ping)? to|delivery address|delivered to)\s*[:\n]?/i);
   if (addrLabelMatch) {
     let afterLabel = bodyText.slice(addrLabelMatch.index + addrLabelMatch[0].length, addrLabelMatch.index + addrLabelMatch[0].length + 300);
     // Broad enough to catch the sign-off/next-section text that follows an
@@ -999,7 +1013,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
     // email ran the address straight into "Thank you for shopping..." and
     // "Sincerely," as if they were address lines.
     const stopWordsAnchored = /^(order summary|subtotal|discount|shipping\b|total|payment|customer support|billing address|thank you|sincerely|fulfillment|delivered items|order details|order number)/i;
-    const stopWordsGlobal = /\b(order summary|subtotal|discount|delivery options|customer support|billing address|thank you for|sincerely|fulfillment|delivered items|order details|order number|need to return|returns\b)/i;
+    const stopWordsGlobal = /\b(order summary|subtotal|discount|delivery options|customer support|billing address|thank you for|sincerely|fulfillment|delivered items|order details|order number|need to return|returns\b|personalized picks|you may also like|recommended for you)/i;
     const globalStop = afterLabel.match(stopWordsGlobal);
     if (globalStop) afterLabel = afterLabel.slice(0, globalStop.index);
 
@@ -1015,6 +1029,23 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       if (addrLines.length >= 6) break;
     }
     result.deliveryAddress = addrLines.length ? addrLines.join(', ') : null;
+    // Truncated right after a recognizable postcode, plus a small
+    // allowance for a trailing country name/code — confirmed directly
+    // against a real email where the address correctly started right,
+    // but kept running straight into an unrelated "recommended products"
+    // section afterward with no stop-word anywhere near it to catch.
+    // A postcode reliably marks where a real address actually ends,
+    // which no fixed list of stop phrases can promise for every
+    // possible retailer template.
+    if (result.deliveryAddress) {
+      const ukPostcodeEnd = result.deliveryAddress.match(/\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b/i);
+      if (ukPostcodeEnd) {
+        const cutoff = ukPostcodeEnd.index + ukPostcodeEnd[0].length;
+        const tail = result.deliveryAddress.slice(cutoff, cutoff + 20);
+        const countryTail = tail.match(/^[,\s]*(United Kingdom|UK|GB|Ireland|USA|United States)\b/i);
+        result.deliveryAddress = result.deliveryAddress.slice(0, cutoff + (countryTail ? countryTail[0].length : 0));
+      }
+    }
     // Not every "delivered to" / "shipping address" block starts with a
     // name — a real delivery email went straight to the street address
     // with no name line at all. Only trust the first line as a name if it
@@ -1074,7 +1105,12 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // Fallback for simpler single-line formats ("Item x2 $10.00") some
   // other retailers use, in case the SKU-anchored parse above found nothing.
   if (lineItems.length === 0) {
-    const simpleLineRe = /([A-Za-z0-9][^\n$£€]{4,70}?)\s*(?:Qty|Quantity)[:\s]*(\d{1,3})[^\n$£€]{0,20}[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/gi;
+    // Widened from 20 to 40 chars — confirmed directly against a real
+    // email where a product attribute line ("Size: One Size Only") sat
+    // between the quantity and the price, at 21 characters just barely
+    // over the old limit, which was enough to silently fail the whole
+    // match despite everything else being right there.
+    const simpleLineRe = /([A-Za-z0-9][^\n$£€]{4,70}?)\s*(?:Qty|Quantity)[:\s]*(\d{1,3})[^\n$£€]{0,40}[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/gi;
     let lm;
     while ((lm = simpleLineRe.exec(bodyText)) !== null && lineItems.length < 20) {
       // When the source email has no real text/plain part, newlines get
@@ -1086,6 +1122,12 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       let cleanName = lm[1].trim().replace(/\s{2,}/g, ' ');
       cleanName = cleanName.replace(/^(?:[A-Z][A-Z\s]{2,20}SUMMARY|ORDER\s+DETAILS|ITEMS?\s+ORDERED|YOUR\s+ITEMS?)\s+/i, '');
       cleanName = cleanName.replace(/\s*Pre-?order\s*:\s*[\d/.\-]+\s*$/i, '');
+      // Order-total/order-date text sitting just before the actual line
+      // item in the same lookback window used to find it — confirmed
+      // directly against a real email ("(1 items) - Order Date:
+      // 30/07/2026" bleeding into the captured name as a prefix).
+      cleanName = cleanName.replace(/^.*?\(\d+\s*items?\)\s*-?\s*/i, '');
+      cleanName = cleanName.replace(/^.*?Order\s+Date\s*:\s*\d{1,2}\/\d{1,2}\/\d{2,4}\s*/i, '');
       lineItems.push({
         name: cleanName,
         quantity: parseInt(lm[2], 10) || 1,
@@ -1093,7 +1135,63 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       });
     }
   }
+  // A real Amazon order confirmation (plain-text version, which is what
+  // actually gets used whenever it's present) uses a distinct format
+  // neither pattern above handles: a bullet-point item, "Quantity: N" on
+  // its own line, then the price as "35.99 GBP" — the number comes
+  // first, followed by a currency *code*, not a currency *symbol* before
+  // it like every other pattern here assumes. Confirmed directly: this
+  // silently produced zero line items despite the order itself
+  // registering correctly, since the SKU-anchored and symbol-based
+  // fallback patterns both require a $/£/€ character that's never
+  // present in this exact format.
+  if (lineItems.length === 0) {
+    const bulletCurrencyCodeRe = /\*\s*([^\n]{4,250}?)\s*\n\s*Quantity:\s*(\d{1,3})\s*\n\s*([0-9]+(?:[.,][0-9]{2})?)\s*(?:GBP|USD|EUR|CAD|AUD|NZD)\b/gi;
+    let lm2;
+    while ((lm2 = bulletCurrencyCodeRe.exec(bodyText)) !== null && lineItems.length < 20) {
+      lineItems.push({
+        name: lm2[1].trim().replace(/\s{2,}/g, ' '),
+        quantity: parseInt(lm2[2], 10) || 1,
+        price: parseFloat(lm2[3].replace(',', ''))
+      });
+    }
+  }
+  // eBay international purchase format: "Price: EUR 259.00 (4 x EUR
+  // 64.75)" — item priced and multiplied out in a foreign currency, no
+  // "Qty:" label at all, nothing any pattern above could recognize.
+  // Confirmed directly against a real order. Only the name and quantity
+  // are taken from this match — the per-unit price is deliberately NOT
+  // converted from EUR here, since doing that arithmetic from the
+  // exchange rate mentioned in the email would risk introducing its own
+  // rounding error. The already-correct GBP total (from the "total
+  // charged to" pattern above, which includes postage) is used instead
+  // as a single line item's price, split evenly across the quantity —
+  // slightly overstates the item alone by whatever the postage was, but
+  // that's a far smaller and more honest gap than the alternative of
+  // guessing at a conversion.
+  if (lineItems.length === 0) {
+    const foreignCurrencyRe = /([A-Za-z0-9][^\n]{4,150}?)\s*(?:&#160;|\s)*Price:\s*[A-Z]{3}\s*[\d.,]+\s*\((\d+)\s*x\s*[A-Z]{3}\s*[\d.,]+\)/i;
+    const fm = bodyText.match(foreignCurrencyRe);
+    if (fm && price) {
+      const qty = parseInt(fm[2], 10) || 1;
+      lineItems.push({
+        name: fm[1].trim().replace(/\s{2,}/g, ' ').replace(/&#\d+;/g, ' ').replace(/\s{2,}/g, ' ').replace(/^.*\.\s+/, '').trim(),
+        quantity: qty,
+        price: price / qty
+      });
+    }
+  }
   result.lineItems = lineItems;
+  // No currency-symbol-based total pattern matched anything — confirmed
+  // directly against a real email (Amazon's plain-text order
+  // confirmation) that uses "35.99 GBP" throughout with no £/$/€ symbol
+  // anywhere at all, so every total-price pattern above comes back
+  // empty even though the order itself is completely real. Summing the
+  // now-correctly-extracted line items is a reasonable stand-in for a
+  // total that was never in a format any of those patterns could catch.
+  if (result.price === null && lineItems.length > 0) {
+    result.price = lineItems.reduce((s, li) => s + (li.quantity || 1) * (li.price || 0), 0);
+  }
 
   // Pokémon Center preorders additionally get flagged so the app routes
   // them into PKC Orders instead of the regular Orders list.
