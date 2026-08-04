@@ -4001,17 +4001,70 @@ function attachProfileBuilderEvents(){
     // replacement (which could previously reuse the same email across
     // several profiles in the same batch).
     let listEmails = [];
+    const usedPhones = new Set(state.generatedProfiles.map(p=>p.phone));
+    const usedEmails = new Set(state.generatedProfiles.map(p=>p.email));
+
     if(profileGenUI.mode==="list"){
-      listEmails = shuffledCopy(s.emailList);
+      // Excludes emails already used by any previously generated
+      // profile, not just ones in this batch — "0 duplicates, period"
+      // means checked against everything ever generated, not reset
+      // fresh on every click of Generate.
+      listEmails = shuffledCopy(s.emailList.filter(e=>!usedEmails.has(e)));
       if(listEmails.length<count){
-        showToast(`${count} email addresses are required; only ${listEmails.length} are available`, "close");
+        showToast(`${count} unused email addresses are required; only ${listEmails.length} are available (some may already be used by existing profiles)`, "close");
         return;
       }
     }
+    // Genuinely unique phone number — retries against every phone number
+    // ever generated (not just this batch) rather than a single random
+    // draw with no collision check at all.
+    const nextUniquePhone = () => {
+      let phone;
+      do { phone = generatePhoneNumber(); } while(usedPhones.has(phone));
+      usedPhones.add(phone);
+      return phone;
+    };
+    // Genuinely unique catchall email — retries a fresh name combination
+    // until one hasn't been used before. With only 30 first names × 30
+    // last names (900 combinations), collisions become likely well
+    // before you'd expect in any single batch of meaningful size — the
+    // birthday paradox means a 50%+ chance of at least one repeat by
+    // around 36 profiles. If every combination in the pool is
+    // eventually exhausted, falls back to a numeric suffix
+    // (james.smith2@) rather than looping forever or silently
+    // duplicating.
+    const nextUniqueCatchallIdentity = (domain) => {
+      for(let attempt=0; attempt<200; attempt++){
+        const firstName = randomFrom(PROFILE_FIRST_NAMES);
+        const lastName = randomFrom(PROFILE_LAST_NAMES);
+        const email = generateEmail(firstName, lastName, "catchall", domain);
+        if(!usedEmails.has(email)){
+          usedEmails.add(email);
+          return { firstName, lastName, email };
+        }
+      }
+      let n = 2, firstName, lastName, email;
+      do {
+        firstName = randomFrom(PROFILE_FIRST_NAMES);
+        lastName = randomFrom(PROFILE_LAST_NAMES);
+        email = `${firstName.toLowerCase()}.${lastName.toLowerCase()}${n}@${domain.replace(/^@/,"")}`;
+        n++;
+      } while(usedEmails.has(email) && n < 10000);
+      usedEmails.add(email);
+      return { firstName, lastName, email };
+    };
+
     const newProfiles = [];
     for(let i=0; i<count; i++){
-      const firstName = randomFrom(PROFILE_FIRST_NAMES);
-      const lastName = randomFrom(PROFILE_LAST_NAMES);
+      let firstName, lastName, email;
+      if(profileGenUI.mode==="list"){
+        firstName = randomFrom(PROFILE_FIRST_NAMES);
+        lastName = randomFrom(PROFILE_LAST_NAMES);
+        email = listEmails[i];
+      } else {
+        const identity = nextUniqueCatchallIdentity(profileGenUI.selectedCatchall);
+        firstName = identity.firstName; lastName = identity.lastName; email = identity.email;
+      }
       const address = selectedAddresses[i % selectedAddresses.length];
       // Obviously fake placeholder — all-zero number, no real network,
       // clearly not something that could be entered anywhere and mistaken
@@ -4021,8 +4074,8 @@ function attachProfileBuilderEvents(){
         : cards[i];
       newProfiles.push({
         id: uid(), profileName: `${firstName} ${lastName}`, firstName, lastName,
-        phone: generatePhoneNumber(),
-        email: profileGenUI.mode==="list" ? listEmails[i] : generateEmail(firstName, lastName, profileGenUI.mode, profileGenUI.selectedCatchall),
+        phone: nextUniquePhone(),
+        email,
         addressId: address.id, addressSnapshot: trackedAddressText(address),
         cardId: card.id, cardNumber: card.number||"", cardExpiry: card.expiry||"",
         cardNetwork: card.network||"", cardCvv: card.cvv||""
