@@ -3893,7 +3893,7 @@ function profileBuilderHTML(){
     <div class="toolbar-row">
       <button class="btn-primary" id="generateProfileBtn">${ICONS.plus} Generate</button>
       <div class="field" style="margin:0;width:90px;">
-        <input type="number" id="pb-genCount" value="${profileGenUI.count}" min="1" max="100" step="1">
+        <input type="number" id="pb-genCount" value="${profileGenUI.count}" min="1" step="1">
       </div>
       <div class="hint" style="margin:0;">profile${profileGenUI.count===1?"":"s"} at once</div>
       ${state.generatedProfiles.length ? `<button class="btn-small" id="exportProfilesCsvBtn" style="margin-left:auto;">${ICONS.download} Export CSV</button>` : ""}
@@ -3976,7 +3976,7 @@ function attachProfileBuilderEvents(){
     });
   });
   document.getElementById("pb-genCount").addEventListener("input", e=>{
-    profileGenUI.count = Math.max(1, Math.min(100, parseInt(e.target.value,10)||1));
+    profileGenUI.count = Math.max(1, parseInt(e.target.value,10)||1);
   });
 
   document.getElementById("generateProfileBtn").addEventListener("click", ()=>{
@@ -3986,12 +3986,25 @@ function attachProfileBuilderEvents(){
     const selectedAddresses = profileGenUI.selectedAddressIds.map(id=>state.addresses.find(a=>a.id===id)).filter(Boolean);
     if(!selectedAddresses.length){ showToast("Select at least one address", "close"); return; }
     const countInput = document.getElementById("pb-genCount");
-    const count = Math.max(1, Math.min(100, parseInt(countInput.value,10)||1));
+    const count = Math.max(1, parseInt(countInput.value,10)||1);
     let cards = [];
     if(!profileGenUI.usePlaceholderCard){
       cards = shuffledCopy(usableProfileCards(profileGenUI.provider, profileGenUI.cardType));
       if(cards.length<count){
         showToast(`${count} complete cards are required; only ${cards.length} are available`, "close");
+        return;
+      }
+    }
+    // "My own addresses" mode draws from a fixed pool, same idea as
+    // cards — bounded by how many are actually available, and each one
+    // used at most once per batch rather than picked at random with
+    // replacement (which could previously reuse the same email across
+    // several profiles in the same batch).
+    let listEmails = [];
+    if(profileGenUI.mode==="list"){
+      listEmails = shuffledCopy(s.emailList);
+      if(listEmails.length<count){
+        showToast(`${count} email addresses are required; only ${listEmails.length} are available`, "close");
         return;
       }
     }
@@ -4009,7 +4022,7 @@ function attachProfileBuilderEvents(){
       newProfiles.push({
         id: uid(), profileName: `${firstName} ${lastName}`, firstName, lastName,
         phone: generatePhoneNumber(),
-        email: generateEmail(firstName, lastName, profileGenUI.mode, profileGenUI.selectedCatchall),
+        email: profileGenUI.mode==="list" ? listEmails[i] : generateEmail(firstName, lastName, profileGenUI.mode, profileGenUI.selectedCatchall),
         addressId: address.id, addressSnapshot: trackedAddressText(address),
         cardId: card.id, cardNumber: card.number||"", cardExpiry: card.expiry||"",
         cardNetwork: card.network||"", cardCvv: card.cvv||""
