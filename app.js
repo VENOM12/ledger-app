@@ -3812,7 +3812,7 @@ function profileCsvRow(p){
   ];
 }
 
-let profileGenUI = { mode: "catchall", selectedCatchall: "", count: 1, selectedAddressIds: [], provider: "All", cardType: "All" };
+let profileGenUI = { mode: "catchall", selectedCatchall: "", count: 1, selectedAddressIds: [], provider: "All", cardType: "All", usePlaceholderCard: false };
 
 function allImapCatchallDomains(){
   const all = (emailUI.accounts || []).flatMap(acc => acc.catchAllDomains || []);
@@ -3867,7 +3867,14 @@ function profileBuilderHTML(){
 
     <div class="card panel" style="margin-bottom:20px;">
       <div class="panel-title" style="margin-bottom:6px;">Cards</div>
-      <div class="hint" style="margin-bottom:12px;">Cards are selected randomly and each card is used no more than once in the batch.</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap;">
+        <div class="hint" style="margin:0;">${profileGenUI.usePlaceholderCard ? "Profiles get an obvious placeholder card — not tied to any real card, not usable anywhere." : "Cards are selected randomly and each card is used no more than once in the batch."}</div>
+        <div class="segmented">
+          <button class="${!profileGenUI.usePlaceholderCard?'active':''}" data-card-mode="real">Real card</button>
+          <button class="${profileGenUI.usePlaceholderCard?'active':''}" data-card-mode="placeholder">Placeholder</button>
+        </div>
+      </div>
+      ${profileGenUI.usePlaceholderCard ? "" : `
       <div style="display:grid;grid-template-columns:repeat(2,minmax(180px,280px));gap:12px;">
         <div class="field" style="margin:0;"><label>Card provider</label><select id="pb-card-provider">
           <option value="All" ${profileGenUI.provider==="All"?"selected":""}>All providers</option>
@@ -3880,6 +3887,7 @@ function profileBuilderHTML(){
         </select></div>
       </div>
       <div class="hint" style="margin-top:10px;">${usableProfileCards(profileGenUI.provider, profileGenUI.cardType).length} matching complete card${usableProfileCards(profileGenUI.provider, profileGenUI.cardType).length===1?"":"s"} available.</div>
+      `}
     </div>
 
     <div class="toolbar-row">
@@ -3957,6 +3965,9 @@ function attachProfileBuilderEvents(){
   if(providerSelect) providerSelect.addEventListener("change", e=>{ profileGenUI.provider = e.target.value; renderView(); });
   const cardTypeSelect = document.getElementById("pb-card-type");
   if(cardTypeSelect) cardTypeSelect.addEventListener("change", e=>{ profileGenUI.cardType = e.target.value; renderView(); });
+  document.querySelectorAll("[data-card-mode]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ profileGenUI.usePlaceholderCard = btn.dataset.cardMode==="placeholder"; renderView(); });
+  });
   document.querySelectorAll("[data-pb-address]").forEach(cb=>{
     cb.addEventListener("change", ()=>{
       const id = cb.dataset.pbAddress;
@@ -3976,17 +3987,25 @@ function attachProfileBuilderEvents(){
     if(!selectedAddresses.length){ showToast("Select at least one address", "close"); return; }
     const countInput = document.getElementById("pb-genCount");
     const count = Math.max(1, Math.min(100, parseInt(countInput.value,10)||1));
-    const cards = shuffledCopy(usableProfileCards(profileGenUI.provider, profileGenUI.cardType));
-    if(cards.length<count){
-      showToast(`${count} complete cards are required; only ${cards.length} are available`, "close");
-      return;
+    let cards = [];
+    if(!profileGenUI.usePlaceholderCard){
+      cards = shuffledCopy(usableProfileCards(profileGenUI.provider, profileGenUI.cardType));
+      if(cards.length<count){
+        showToast(`${count} complete cards are required; only ${cards.length} are available`, "close");
+        return;
+      }
     }
     const newProfiles = [];
     for(let i=0; i<count; i++){
       const firstName = randomFrom(PROFILE_FIRST_NAMES);
       const lastName = randomFrom(PROFILE_LAST_NAMES);
       const address = selectedAddresses[i % selectedAddresses.length];
-      const card = cards[i];
+      // Obviously fake placeholder — all-zero number, no real network,
+      // clearly not something that could be entered anywhere and mistaken
+      // for a working card, and not linked to any card in Card Tracker.
+      const card = profileGenUI.usePlaceholderCard
+        ? { id: null, number: "0000 0000 0000 0000", expiry: "00/00", network: "PLACEHOLDER", cvv: "000" }
+        : cards[i];
       newProfiles.push({
         id: uid(), profileName: `${firstName} ${lastName}`, firstName, lastName,
         phone: generatePhoneNumber(),
