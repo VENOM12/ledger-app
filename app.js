@@ -4004,7 +4004,7 @@ function attachProfileBuilderEvents(){
       // clearly not something that could be entered anywhere and mistaken
       // for a working card, and not linked to any card in Card Tracker.
       const card = profileGenUI.usePlaceholderCard
-        ? { id: null, number: "0000 0000 0000 0000", expiry: "00/00", network: "PLACEHOLDER", cvv: "000" }
+        ? { id: null, number: "0000 0000 0000 0000", expiry: "01/28", network: "Visa", cvv: "111" }
         : cards[i];
       newProfiles.push({
         id: uid(), profileName: `${firstName} ${lastName}`, firstName, lastName,
