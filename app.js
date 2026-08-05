@@ -2464,7 +2464,23 @@ function orderDetailModal(orderId){
   const saveBtn = document.getElementById("saveOrderStatusBtn");
   if(saveBtn) saveBtn.addEventListener("click", ()=>{
     const newStatus = document.getElementById("orderStatusEditSelect").value;
+    const wasAlreadyDelivered = p.status==="delivered";
     p.status = newStatus;
+    // Matches what the Add Order form and automatic email sync both
+    // already do when an order reaches delivered — this manual control
+    // was the one remaining path that just changed the label without
+    // ever actually adding anything to stock.
+    if(newStatus==="delivered" && !wasAlreadyDelivered){
+      if(!p.addedToStockId){
+        const item = createStockItemFromOrder(p);
+        p.addedToStockId = item.id;
+      } else {
+        const relatedItems = p.orderNumber
+          ? state.items.filter(i=>i.orderNumber===p.orderNumber && i.isPreorder)
+          : [state.items.find(i=>i.id===p.addedToStockId)].filter(Boolean);
+        relatedItems.forEach(linkedItem=>{ linkedItem.isPreorder = false; linkedItem.needsAttention = false; });
+      }
+    }
     orderStatusEditing = null;
     saveState();
     showToast(`Status updated to ${statusLabel(newStatus)}`);
@@ -6207,6 +6223,29 @@ function mergeSyncResults(results){
     // wording tested against real emails so far.
     const key = r.orderNumber ? ("num:"+r.orderNumber) : ("guess:"+r.retailer.toLowerCase()+"|"+(r.price||0)+"|"+(r.date||"").slice(0,10));
     let existing = state.pendingOrders.find(p=>p.matchKey===key);
+    // The strict guess-key above requires an exact match on price and
+    // date, which almost never holds between an order's own lifecycle
+    // stages when there's no order number to match on instead — a
+    // shipped notification frequently omits the price entirely, and the
+    // date is obviously different from the original confirmation.
+    // Confirmed directly against a real duplicate this caused. Only
+    // tried for a later-stage update (never for a fresh "confirmed",
+    // which should always get its own entry unless it's a genuine exact
+    // repeat), and only acted on when there's exactly one plausible
+    // candidate — an existing order from the same retailer and address
+    // that hasn't reached this stage yet, within a 60-day window — so an
+    // ambiguous case with multiple recent orders from the same retailer
+    // is left alone rather than risking merging two unrelated orders.
+    if(!existing && r.status!=="confirmed"){
+      const candidates = state.pendingOrders.filter(p=>
+        p.matchKey.indexOf("guess:")===0 &&
+        p.retailer.toLowerCase()===r.retailer.toLowerCase() &&
+        (p.toEmail||null)===(r.toEmail||null) &&
+        statusRank(p.status) < statusRank(r.status) &&
+        Math.abs(new Date(r.date) - new Date(p.orderDate)) < 60*86400000
+      );
+      if(candidates.length===1) existing = candidates[0];
+    }
 
     // Pokémon Center preorder confirmations get pulled out of the regular
     // Orders flow entirely and turned straight into a PKC Orders entry,
