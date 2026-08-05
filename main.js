@@ -774,6 +774,25 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   subject = stripInvisible(subject);
   bodyText = stripInvisible(bodyText);
 
+  // A forwarded order confirmation should be treated exactly as if it
+  // arrived directly from the retailer — otherwise it gets attributed to
+  // whoever did the forwarding (their own name/address) instead of the
+  // actual retailer, and misses entirely on retailer-based matching.
+  // Confirmed directly against a real Gmail-forwarded email: the
+  // original sender's name and address sit inside the forwarding
+  // boilerplate itself ("---------- Forwarded message ---------\nFrom:
+  // Zatu Games <no-reply@zatu.com>..."), which is stripped out here so
+  // it doesn't interfere with line item/price/address extraction later,
+  // after pulling the real sender out of it first. Also handles
+  // Outlook's "Sent:" in place of Gmail's "Date:".
+  const forwardMatch = bodyText.match(/-{2,}\s*forwarded message\s*-{2,}\s*\n\s*from:\s*([^\n<]+?)\s*<([^\s<>]+@[^\s<>]+)>\s*\n(?:(?:date|sent):[^\n]*\n)?(?:subject:[^\n]*\n)?(?:to:[^\n]*\n)?(?:cc:[^\n]*\n)?/i);
+  if (forwardMatch) {
+    fromName = forwardMatch[1].trim();
+    fromEmail = forwardMatch[2].trim();
+    bodyText = bodyText.slice(forwardMatch.index + forwardMatch[0].length);
+    subject = (subject || '').replace(/^\s*(?:fwd|fw)\s*:\s*/i, '');
+  }
+
   // A shipping-progress tracker widget (the visual "Processing > Shipped
   // > Out for Delivery > Delivered" bar many retailers use) renders all
   // four stage labels as plain text regardless of which one is actually
@@ -846,10 +865,10 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // pattern already fixed once for delivered/out_for_delivery above.
   // Excluding that specific future-tense construction while still
   // catching genuine shipped notifications.
-  else if (/shipped|on its way|tracking number|has shipped|getting a shipment|being prepared to ship/.test(hay) && !/will\s+be\s+shipped|will\s+ship\b|be\s+shipped\s+after/i.test(hay)) status = 'shipped';
+  else if (/shipped|on its way|tracking number|has shipped|getting a shipment|being prepared to ship/.test(hay) && !/will\s+be\s+shipped|will\s+ship\b|be\s+shipped\s+after|ready\s+to\s+be\s+shipped|to\s+be\s+shipped/i.test(hay)) status = 'shipped';
   // Real order confirmations often say "Thanks for your order" rather than
   // the "Thank you for your order" this used to require exactly.
-  else if (/order confirmation|thanks?\s*(?:you\s*)?for\s*(?:your\s+order|placing\s+(?:your|an)\s+order|shopping)|order received|we.ve received your order|your order has been placed|order summary|order details|processing\s+(?:your\s+)?order|currently\s+processing\s+your\s+order/i.test(hay)) status = 'confirmed';
+  else if (/order confirmation|thanks?\s*(?:you\s*)?for\s*(?:your\s+(?:order|purchase)|placing\s+(?:your|an)\s+order|shopping)|order received|we.ve received your order|your order has been placed|order summary|order details|processing\s+(?:your\s+)?order|currently\s+processing\s+your\s+order/i.test(hay)) status = 'confirmed';
   if (!status) return null;
 
   let retailer = fromName || (fromEmail.split('@')[1] || 'Unknown');
@@ -1204,6 +1223,23 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
         name: fm[1].trim().replace(/\s{2,}/g, ' ').replace(/&#\d+;/g, ' ').replace(/\s{2,}/g, ' ').replace(/^.*\.\s+/, '').trim(),
         quantity: qty,
         price: price / qty
+      });
+    }
+  }
+  // "Product Name × N" followed by the line total — a Shopify-style
+  // order summary layout, confirmed directly against a real Zatu Games
+  // order confirmation, that has no "Qty:" label anywhere for any of
+  // the earlier patterns to find.
+  if (lineItems.length === 0) {
+    const multiplySignRe = /([A-Za-z0-9][^\n]{2,120}?)\s*×\s*(\d{1,3})\s*\n+\s*[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/g;
+    let mm;
+    while ((mm = multiplySignRe.exec(bodyText)) !== null && lineItems.length < 20) {
+      const qty = parseInt(mm[2], 10) || 1;
+      const lineTotal = parseFloat(mm[3].replace(',', ''));
+      lineItems.push({
+        name: mm[1].trim().replace(/\s{2,}/g, ' '),
+        quantity: qty,
+        price: qty ? lineTotal / qty : lineTotal
       });
     }
   }
