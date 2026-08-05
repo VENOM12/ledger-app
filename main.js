@@ -846,16 +846,34 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // pattern already fixed once for delivered/out_for_delivery above.
   // Excluding that specific future-tense construction while still
   // catching genuine shipped notifications.
-  else if (/shipped|on its way|tracking number|has shipped/.test(hay) && !/will\s+be\s+shipped|will\s+ship\b|be\s+shipped\s+after/i.test(hay)) status = 'shipped';
+  else if (/shipped|on its way|tracking number|has shipped|getting a shipment|being prepared to ship/.test(hay) && !/will\s+be\s+shipped|will\s+ship\b|be\s+shipped\s+after/i.test(hay)) status = 'shipped';
   // Real order confirmations often say "Thanks for your order" rather than
   // the "Thank you for your order" this used to require exactly.
-  else if (/order confirmation|thanks?\s*(?:you\s*)?for\s*(?:your|placing)|order received|we.ve received your order|your order has been placed|order summary|order details/i.test(hay)) status = 'confirmed';
+  else if (/order confirmation|thanks?\s*(?:you\s*)?for\s*(?:your\s+order|placing\s+(?:your|an)\s+order|shopping)|order received|we.ve received your order|your order has been placed|order summary|order details|processing\s+(?:your\s+)?order|currently\s+processing\s+your\s+order/i.test(hay)) status = 'confirmed';
   if (!status) return null;
 
   let retailer = fromName || (fromEmail.split('@')[1] || 'Unknown');
   retailer = retailer.replace(/^(noreply|orders|no-reply|do-not-reply)[.@]/i, '').replace(/\.(com|co|net|org).*/i, '');
   retailer = retailer.trim();
   retailer = retailer ? retailer.charAt(0).toUpperCase() + retailer.slice(1) : 'Unknown';
+
+  // Carrier tracking notifications (FedEx, UPS, DHL, etc.) are sent BY
+  // the carrier, not the retailer — the "retailer" derived above from
+  // the From address/name is really just the carrier's own name, which
+  // is wrong for matching this against the order it actually belongs
+  // to. Confirmed directly against a real FedEx email: the actual
+  // seller name sits in the email's own "From [name] [address]" tracking
+  // details section. Only overrides when the sender is a domain
+  // actually known to be a carrier, so this never touches a normal
+  // retailer's own confirmation/shipping emails.
+  const carrierDomains = /\b(fedex|ups|dhl|usps|royalmail|evri|yodel|hermes|dpd|parcelforce|tnt|gls)\b/i;
+  if (carrierDomains.test(fromEmail) || carrierDomains.test(fromName || '')) {
+    const carrierFromMatch = bodyText.match(/\bFrom\s+([A-Z][A-Za-z0-9&' .-]{1,40}?)\s+(?:VIA\s|STREET\s|ST\s|ROAD\s|RD\s|AVENUE\s|AVE\s|DRIVE\s|DR\s|LANE\s|LN\s|BLVD\s|\d)/);
+    if (carrierFromMatch) {
+      retailer = carrierFromMatch[1].trim();
+      retailer = retailer.charAt(0).toUpperCase() + retailer.slice(1).toLowerCase();
+    }
+  }
 
   if (status === 'sold') {
     // eBay's real "item sold" email just says "Sold: £64.70" — confirmed
@@ -929,7 +947,8 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // tried only if no standalone Total row was found.
   const priceMatch =
     bodyText.match(/total\s+charged\s+to[\s\S]{0,40}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
-    bodyText.match(/(?<!sub)\btotal\*?(?!\s*includes)[\s\S]{0,15}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
+    bodyText.match(/total\s+paid[\s\S]{0,15}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
+    bodyText.match(/(?<!sub)\btotal\*?(?!\s*includes)(?!\s*tax)[\s\S]{0,15}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
     bodyText.match(/order\s+total(?!\s*includes)[\s\S]{0,30}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
     bodyText.match(/[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/);
   const price = priceMatch ? parseFloat(priceMatch[1].replace(',', '')) : null;
@@ -939,7 +958,14 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // with the actual number) and caused a real false match. Word boundary
   // keeps this from matching inside "preorder"/"reorder" too.
   const orderNumMatch =
-    bodyText.match(/\border\s*(?:number|no\.?|#)\s*(?:is)?\s*[:#]?\s*\n?\s*([A-Z0-9-]{5,20})/i) ||
+    bodyText.match(/\b(?:[Oo]rder\s*(?:[Nn]umber|[Nn]o\.?|#|[Ii][Dd])|[Rr]eference)\s*(?:is|IS)?\s*[:#]?\s*\n?\s*([A-Z0-9-]{5,20})\b/) ||
+    // Case-sensitive on purpose, unlike a fully case-insensitive pattern
+    // would be — a bare "Order:" label with nothing else attached is too
+    // generic to allow matching any lowercase word that happens to
+    // follow, so this only fires when what follows is genuinely an
+    // uppercase code, confirmed against a real "Order:\n THIGVAVFE" email
+    // that doesn't fit any other pattern.
+    bodyText.match(/[Oo]rder\s*:\s*\n?\s*([A-Z0-9-]{5,20})\b/) ||
     subject.match(/#\s?([A-Z0-9-]{5,20})/);
   const orderNumber = orderNumMatch ? orderNumMatch[1] : null;
 
@@ -971,7 +997,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // Carrier + tracking number — best-effort, since formats vary a lot.
   const carrierMatch = bodyText.match(/\b(UPS|USPS|FedEx|DHL|Royal Mail|Evri|Hermes|Yodel|DPD|Canada Post|Australia Post|Amazon Logistics|OnTrac|Purolator|An Post|Parcelforce)\b/i);
   const carrier = carrierMatch ? carrierMatch[1] : null;
-  const trackingMatch = bodyText.match(/(?:tracking\s*(?:number|#|no\.?)|track(?:ing)? your (?:package|order|shipment))[:\s]*([A-Z0-9]{8,35})/i);
+  const trackingMatch = bodyText.match(/(?:tracking\s*(?:number|#|no\.?|id)|track(?:ing)? your (?:package|order|shipment))[:\s]*([A-Z0-9]{8,35})/i);
   const trackingNumber = trackingMatch ? trackingMatch[1] : null;
 
   const result = { status, retailer, price, orderNumber, expectedDelivery, expectedDeliveryTime, carrier, trackingNumber, subject, date, fromEmail };
@@ -1072,7 +1098,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // reliable enough pattern to use when the address-based extraction above
   // came up empty.
   if (!result.recipientName) {
-    const helloMatch = bodyText.match(/(?:hello|hi|hey)\s*,?\s*([A-Z][a-zA-Z'-]{1,25})\s*[!,.]/i);
+    const helloMatch = bodyText.match(/\b(?:hello|hi|hey)\s*,?\s*([A-Z][a-zA-Z'-]{1,25})\s*[!,.]/i);
     if (helloMatch) result.recipientName = helloMatch[1].trim();
   }
 

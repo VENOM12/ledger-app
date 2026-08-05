@@ -6238,10 +6238,9 @@ function mergeSyncResults(results){
     // is left alone rather than risking merging two unrelated orders.
     if(!existing && r.status!=="confirmed"){
       const candidates = state.pendingOrders.filter(p=>
-        p.matchKey.indexOf("guess:")===0 &&
         p.retailer.toLowerCase()===r.retailer.toLowerCase() &&
         (p.toEmail||null)===(r.toEmail||null) &&
-        statusRank(p.status) < statusRank(r.status) &&
+        statusRank(p.status) <= statusRank(r.status) &&
         Math.abs(new Date(r.date) - new Date(p.orderDate)) < 60*86400000
       );
       if(candidates.length===1) existing = candidates[0];
@@ -6307,7 +6306,7 @@ function mergeSyncResults(results){
       // so this only matches by order number now, same as everything
       // else. A genuine mismatch falls through to creating a new entry
       // below, which is far safer than corrupting the wrong order.
-      if(existing && existing.status!=="delivered" && existing.status!=="cancelled" && statusRank(r.status) > statusRank(existing.status)){
+      if(existing && existing.status!=="delivered" && existing.status!=="cancelled" && statusRank(r.status) >= statusRank(existing.status)){
         existing.status = r.status;
         if(r.expectedDelivery) existing.expectedDelivery = r.expectedDelivery;
         if(r.expectedDeliveryTime) existing.expectedDeliveryTime = r.expectedDeliveryTime;
