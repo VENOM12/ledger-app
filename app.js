@@ -6081,6 +6081,13 @@ function looksLikeGarbageItemName(name){
   if (!name) return true;
   if (/[&=]/.test(name) && !/\s/.test(name)) return true; // no spaces at all despite URL-query characters — never a real product name
   if (/\b(mkevt|mkcid|mkrid|campid|customid|toolid|mkgrpid|euid)=/i.test(name)) return true;
+  // A purely numeric/price-shaped name (e.g. "99.99") is never a real
+  // product name — confirmed directly against a real order that ended
+  // up with exactly this as its item name from an old extraction bug.
+  // Without this, a re-scan with corrected extraction logic could never
+  // fix an order that was already broken, since the existing "99.99"
+  // wasn't recognized as needing replacement in the first place.
+  if (/^[\d.,£$€\s]+$/.test(name)) return true;
   return false;
 }
 
