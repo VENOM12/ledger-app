@@ -6231,18 +6231,52 @@ function mergeSyncResults(results){
     // Confirmed directly against a real duplicate this caused. Only
     // tried for a later-stage update (never for a fresh "confirmed",
     // which should always get its own entry unless it's a genuine exact
-    // repeat), and only acted on when there's exactly one plausible
-    // candidate — an existing order from the same retailer and address
-    // that hasn't reached this stage yet, within a 60-day window — so an
-    // ambiguous case with multiple recent orders from the same retailer
-    // is left alone rather than risking merging two unrelated orders.
-    if(!existing && r.status!=="confirmed"){
-      const candidates = state.pendingOrders.filter(p=>
-        p.retailer.toLowerCase()===r.retailer.toLowerCase() &&
-        (p.toEmail||null)===(r.toEmail||null) &&
-        statusRank(p.status) <= statusRank(r.status) &&
-        Math.abs(new Date(r.date) - new Date(p.orderDate)) < 60*86400000
-      );
+    // repeat).
+    // Both fallback attempts below are only ever tried when the incoming
+    // email has NO order number of its own — critical distinction
+    // confirmed by a real bug this caused: a genuinely different,
+    // separately cancelled order (with its own distinct order number
+    // that simply didn't match any existing entry) got incorrectly
+    // merged into an unrelated successful order, purely because it was
+    // the only "candidate" the retailer/date guess could find. An
+    // order number that doesn't match anything is definitive evidence
+    // this is a different order, not a reason to guess — guessing is
+    // only appropriate when there's no order number to go on at all.
+    if(!existing && r.status!=="confirmed" && !r.orderNumber){
+      // Tracking number is the most reliable signal available when
+      // present — confirmed directly against a real order where a
+      // carrier's own tracking number exactly matched what the retailer
+      // had already provided, even though the carrier's version of the
+      // retailer's name ("Disney") didn't match the retailer's own full
+      // name ("DisneyStore") at all. Checked first, ahead of the
+      // retailer/date fallback below, since an exact tracking number
+      // match doesn't need any of the ambiguity safeguards that
+      // retailer-based guessing does.
+      if(r.trackingNumber){
+        const trackingCandidates = state.pendingOrders.filter(p=>
+          p.trackingNumber===r.trackingNumber && (p.toEmail||null)===(r.toEmail||null)
+        );
+        if(trackingCandidates.length===1) existing = trackingCandidates[0];
+      }
+    }
+    if(!existing && r.status!=="confirmed" && !r.orderNumber){
+      // Retailer names between a carrier's own notification and the
+      // retailer's own emails frequently don't match exactly — a
+      // carrier's shorthand ("Disney") vs. the retailer's actual brand
+      // name ("DisneyStore") — so this checks whether either name
+      // contains the other rather than requiring an exact match. Only
+      // acted on when there's exactly one plausible candidate — an
+      // existing order from the same address that hasn't reached this
+      // stage yet, within a 60-day window — so an ambiguous case with
+      // multiple recent orders from the same retailer is left alone
+      // rather than risking merging two unrelated orders.
+      const candidates = state.pendingOrders.filter(p=>{
+        const a = p.retailer.toLowerCase(), b = r.retailer.toLowerCase();
+        return (a===b || a.includes(b) || b.includes(a)) &&
+          (p.toEmail||null)===(r.toEmail||null) &&
+          statusRank(p.status) <= statusRank(r.status) &&
+          Math.abs(new Date(r.date) - new Date(p.orderDate)) < 60*86400000;
+      });
       if(candidates.length===1) existing = candidates[0];
     }
 

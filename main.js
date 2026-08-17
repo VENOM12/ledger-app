@@ -723,6 +723,17 @@ function stripHtmlToText(html) {
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
+    // Currency symbols are frequently encoded as named or numeric HTML
+    // entities rather than the literal character — confirmed directly
+    // against a real order confirmation that used "&#163;" throughout
+    // instead of "£", which silently broke price extraction since every
+    // pattern looks for the actual symbol character.
+    .replace(/&pound;|&#163;|&#xa3;/gi, '£')
+    .replace(/&dollar;|&#36;|&#x24;/gi, '$')
+    .replace(/&euro;|&#8364;|&#x20ac;/gi, '€')
+    // General fallback for any other numeric entity not covered above.
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)))
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
@@ -888,8 +899,16 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   const carrierDomains = /\b(fedex|ups|dhl|usps|royalmail|evri|yodel|hermes|dpd|parcelforce|tnt|gls)\b/i;
   if (carrierDomains.test(fromEmail) || carrierDomains.test(fromName || '')) {
     const carrierFromMatch = bodyText.match(/\bFrom\s+([A-Z][A-Za-z0-9&' .-]{1,40}?)\s+(?:VIA\s|STREET\s|ST\s|ROAD\s|RD\s|AVENUE\s|AVE\s|DRIVE\s|DR\s|LANE\s|LN\s|BLVD\s|\d)/);
-    if (carrierFromMatch) {
-      retailer = carrierFromMatch[1].trim();
+    // Evri in particular frequently has no "From [name] [address]"
+    // section at all — instead the retailer shows up in the subject as
+    // "your [Retailer] c/o [Logistics Partner] parcel" (e.g. "your
+    // Disney c/o Ceva parcel"), confirmed against three real Evri
+    // notifications that all used this exact phrasing with nothing else
+    // in the body to identify the actual retailer.
+    const coFromMatch = (subject || '').match(/\byour\s+([A-Z][A-Za-z0-9&' -]{1,40}?)\s+c\/o\s+/i);
+    const match = carrierFromMatch || coFromMatch;
+    if (match) {
+      retailer = match[1].trim();
       retailer = retailer.charAt(0).toUpperCase() + retailer.slice(1).toLowerCase();
     }
   }
@@ -1173,6 +1192,14 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       // 30/07/2026" bleeding into the captured name as a prefix).
       cleanName = cleanName.replace(/^.*?\(\d+\s*items?\)\s*-?\s*/i, '');
       cleanName = cleanName.replace(/^.*?Order\s+Date\s*:\s*\d{1,2}\/\d{1,2}\/\d{2,4}\s*/i, '');
+      // A purely numeric/price-shaped "name" means the real product name
+      // was blocked by an intervening currency symbol or product code
+      // and this only picked up leftover price digits — confirmed
+      // directly against a real Disney Store email that produced "99.99"
+      // as the "name" this way. Skipped rather than pushed, so a later,
+      // more specific pattern gets a chance to find the actual name
+      // instead of this locking in a wrong one.
+      if (/^[\d.,]+$/.test(cleanName)) continue;
       lineItems.push({
         name: cleanName,
         quantity: parseInt(lm[2], 10) || 1,
@@ -1241,6 +1268,34 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
         quantity: qty,
         price: qty ? lineTotal / qty : lineTotal
       });
+    }
+  }
+  // "Name / Product Code / Unit Price / QtyN / Line Total" — confirmed
+  // against a real Disney Store order. The product code and an early
+  // per-unit price sitting between the name and the "Qty" label broke
+  // every earlier pattern's lookback, since a currency symbol partway
+  // through blocks the name capture from reaching back far enough,
+  // leaving just the price digits themselves ("99.99") to get captured
+  // as if that were the product name.
+  if (lineItems.length === 0) {
+    const codeThenQtyRe = /\d{6,15}\s+[$£€][\d.,]+\s+Qty\s?(\d{1,3})\s+[$£€]\s?([\d.,]+)/gi;
+    let cm;
+    while ((cm = codeThenQtyRe.exec(bodyText)) !== null && lineItems.length < 20) {
+      const beforeCode = bodyText.slice(Math.max(0, cm.index - 200), cm.index);
+      // A phone number or postcode reliably marks where an address
+      // section ends and the actual item listing begins — confirmed
+      // directly against a real Disney Store email where, without this,
+      // the delivery address itself got pulled into the captured name
+      // since nothing else in a fully space-collapsed email (no real
+      // text/plain part) marks that boundary.
+      const boundaryRe = /(?:\+?\d{10,14}|[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\s*/gi;
+      let lastBoundaryEnd = 0, bm;
+      while ((bm = boundaryRe.exec(beforeCode)) !== null) lastBoundaryEnd = bm.index + bm[0].length;
+      const name = beforeCode.slice(lastBoundaryEnd).trim().replace(/\s{2,}/g, ' ');
+      if (!name || /^[\d.,]+$/.test(name)) continue;
+      const qty = parseInt(cm[1], 10) || 1;
+      const lineTotal = parseFloat(cm[2].replace(',', ''));
+      lineItems.push({ name, quantity: qty, price: qty ? lineTotal / qty : lineTotal });
     }
   }
   result.lineItems = lineItems;
