@@ -860,7 +860,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // order's real stage, and real Argos footer boilerplate about returns
   // says "...or it was delivered by a supplier," neither of which are
   // actual delivery notifications.
-  else if (/(?:has been delivered|package was delivered|package has arrived|item has arrived|you.ve collected|collected your (?:order|items))/i.test(hay)) status = 'delivered';
+  else if (/(?:has been delivered|package was delivered|parcel was delivered|package has arrived|item has arrived|you.ve collected|collected your (?:order|items)|delivered your [^.]{0,60}parcel)/i.test(hay)) status = 'delivered';
   // Click-and-collect "ready to pick up" is its own distinct step — the
   // item isn't moving toward the person, they need to go get it, which is
   // a different action than waiting for a courier.
@@ -1069,7 +1069,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // Made the label separator optional, and added a global truncation
   // pass that finds the stop phrase wherever it actually appears, not
   // just at a line's start.
-  const addrLabelMatch = bodyText.match(/(?:shipping\s*(?:&|and)\s*billing address|shipping address|ship(?:ping)? to|delivery address|delivered to)\s*[:\n]?/i);
+  const addrLabelMatch = bodyText.match(/(?:shipping\s*(?:&|and)\s*billing address|shipping address|ship(?:ping)? to|delivery address|delivered to)\s*[:\n]?(?!\s*your\s+address\b)/i);
   if (addrLabelMatch) {
     let afterLabel = bodyText.slice(addrLabelMatch.index + addrLabelMatch[0].length, addrLabelMatch.index + addrLabelMatch[0].length + 300);
     // Broad enough to catch the sign-off/next-section text that follows an
