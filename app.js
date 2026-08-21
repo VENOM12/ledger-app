@@ -3648,7 +3648,7 @@ let addressUI = { typeFilter: "All", search: "" };
 function addressTrackerHTML(){
   const addresses = state.addresses.filter(a=>addressUI.typeFilter==="All"||a.type===addressUI.typeFilter).filter(a=>!addressUI.search||`${a.nickname} ${trackedAddressText(a)}`.toLowerCase().includes(addressUI.search.toLowerCase()));
   return `<div class="stat-grid" style="margin-bottom:16px;">${statCard("pin","Total Addresses",""+state.addresses.length,"var(--blue)","var(--blue-bg)")}${ADDRESS_TYPES.slice(0,3).map(t=>statCard("pin",t,""+state.addresses.filter(a=>a.type===t).length,"var(--violet)","var(--violet-bg)")).join("")}</div>
-  <div class="toolbar-row" style="flex-wrap:wrap;"><button class="btn-primary" id="addAddressBtn">${ICONS.plus} Add Address</button><select id="addressTypeFilterSelect" style="width:auto;"><option value="All" ${addressUI.typeFilter==="All"?"selected":""}>All Types</option>${ADDRESS_TYPES.map(t=>`<option value="${t}" ${addressUI.typeFilter===t?"selected":""}>${t}</option>`).join("")}</select><div class="search-bar">${ICONS.search}<input type="text" id="addressSearchInput" placeholder="Search by nickname or address" value="${escapeAttr(addressUI.search)}"></div><button class="btn-small" id="exportAddressCsvBtn">${ICONS.download} Export CSV</button></div>
+  <div class="toolbar-row" style="flex-wrap:wrap;"><button class="btn-primary" id="addAddressBtn">${ICONS.plus} Add Address</button><select id="addressTypeFilterSelect" style="width:auto;"><option value="All" ${addressUI.typeFilter==="All"?"selected":""}>All Types</option>${ADDRESS_TYPES.map(t=>`<option value="${t}" ${addressUI.typeFilter===t?"selected":""}>${t}</option>`).join("")}</select><div class="search-bar">${ICONS.search}<input type="text" id="addressSearchInput" placeholder="Search by nickname or address" value="${escapeAttr(addressUI.search)}"></div><label class="btn-small" style="cursor:pointer;margin:0;">${ICONS.download} Import CSV<input type="file" id="addressCsvInput" accept=".csv,.txt" style="display:none;"></label><button class="btn-small" id="exportAddressCsvBtn">${ICONS.download} Export CSV</button></div>
   <div id="addressResultsContainer">${addressResultsHTML(addresses)}</div><div style="height:20px;"></div>`;
 }
 function addressResultsHTML(addresses){
@@ -3664,6 +3664,41 @@ function attachAddressTrackerEvents(){
   document.getElementById("addressTypeFilterSelect").addEventListener("change",e=>{addressUI.typeFilter=e.target.value;renderAddressResults();});
   document.getElementById("addressSearchInput").addEventListener("input",e=>{addressUI.search=e.target.value;renderAddressResults();});
   document.getElementById("exportAddressCsvBtn").addEventListener("click",()=>downloadCSV(`addresses-${todayISO()}.csv`,["Nickname","Type","First Name","Last Name","Address 1","Address 2","City","Postcode / ZIP","State","Country","Notes"],state.addresses.map(a=>{const x=trackedAddressParts(a);return[a.nickname,a.type||"",x.firstName,x.lastName,x.address1,x.address2,x.city,x.zip,x.state,x.country,a.notes||""];})));
+  document.getElementById("addressCsvInput").addEventListener("change",e=>{
+    const file=e.target.files[0];
+    if(!file)return;
+    const reader=new FileReader();
+    reader.onload=()=>{
+      const rows=parseCsvText(reader.result);
+      if(!rows.length){ showToast("No rows found in that file","close"); e.target.value=""; return; }
+      // Auto-detects and skips a header row matching the export's own
+      // column names, so a file round-tripped straight out of Export CSV
+      // imports cleanly without the header line becoming a bogus address.
+      let dataRows=rows;
+      const first=rows[0].map(c=>c.trim().toLowerCase());
+      if(first[0]==="nickname" && first.length>1) dataRows=rows.slice(1);
+      let imported=0, skipped=0;
+      dataRows.forEach(cols=>{
+        const [nickname,type,firstName,lastName,address1,address2,city,zip,stateRegion,country,notes]=cols.map(c=>(c||"").trim());
+        if(!nickname || !address1 || !city || !zip){ skipped++; return; }
+        const payload={
+          nickname, type: ADDRESS_TYPES.includes(type)?type:"Other",
+          firstName: firstName||"", lastName: lastName||"",
+          address1, address2: address2||"", city, zip: zip.toUpperCase(),
+          state: stateRegion||"", country: ADDRESS_COUNTRIES.some(([c])=>c===country)?country:"GB",
+          notes: notes||""
+        };
+        payload.address = trackedAddressText(payload);
+        state.addresses.unshift({id:uid(), ...payload});
+        imported++;
+      });
+      if(imported) saveState();
+      e.target.value="";
+      renderView();
+      showToast(`${imported} address${imported===1?"":"es"} imported${skipped?`, ${skipped} skipped (missing required fields)`:""}`, imported?"check":"close");
+    };
+    reader.readAsText(file);
+  });
   bindAddressResultEvents();
 }
 function bindAddressResultEvents(){
@@ -6925,6 +6960,32 @@ function downloadCSV(filename, headers, rows){
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+// Handles quoted fields properly (embedded commas, embedded newlines,
+// escaped "" quotes) rather than a naive split on comma, which would
+// break on real address data — city/county names routinely contain
+// commas once quoted in a CSV field.
+function parseCsvText(text){
+  const rows = [];
+  let row = [], field = "", inQuotes = false;
+  const chars = text.replace(/\r\n/g, "\n");
+  for(let i=0; i<chars.length; i++){
+    const c = chars[i];
+    if(inQuotes){
+      if(c === '"'){
+        if(chars[i+1] === '"'){ field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else {
+      if(c === '"') inQuotes = true;
+      else if(c === ','){ row.push(field); field = ""; }
+      else if(c === '\n'){ row.push(field); rows.push(row); row = []; field = ""; }
+      else field += c;
+    }
+  }
+  if(field.length || row.length){ row.push(field); rows.push(row); }
+  return rows.filter(r => r.some(c => c.trim().length));
 }
 
 /* ---------------- Utility ---------------- */

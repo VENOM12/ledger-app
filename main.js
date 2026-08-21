@@ -905,7 +905,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
     // Disney c/o Ceva parcel"), confirmed against three real Evri
     // notifications that all used this exact phrasing with nothing else
     // in the body to identify the actual retailer.
-    const coFromMatch = (subject || '').match(/\byour\s+([A-Z][A-Za-z0-9&' -]{1,40}?)\s+c\/o\s+/i);
+    const coFromMatch = (subject || '').match(/\byour\s+([A-Z][A-Za-z0-9&' -]{1,40}?)\s+(?:c\/o\s+[A-Za-z0-9&' -]{1,30}\s+)?parcel\b/i);
     const match = carrierFromMatch || coFromMatch;
     if (match) {
       retailer = match[1].trim();
@@ -1069,7 +1069,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // Made the label separator optional, and added a global truncation
   // pass that finds the stop phrase wherever it actually appears, not
   // just at a line's start.
-  const addrLabelMatch = bodyText.match(/(?:shipping\s*(?:&|and)\s*billing address|shipping address|ship(?:ping)? to|delivery address|delivered to)\s*[:\n]?(?!\s*your\s+address\b)/i);
+  const addrLabelMatch = bodyText.match(/(?:shipping\s*(?:&|and)\s*billing address|shipping address|ship(?:ping)? to|delivery address|delivered to)\s*[:\n]?(?!\s*your\s+address\b)(?!\s*an?\s)/i);
   if (addrLabelMatch) {
     let afterLabel = bodyText.slice(addrLabelMatch.index + addrLabelMatch[0].length, addrLabelMatch.index + addrLabelMatch[0].length + 300);
     // Broad enough to catch the sign-off/next-section text that follows an
@@ -1192,6 +1192,12 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       // 30/07/2026" bleeding into the captured name as a prefix).
       cleanName = cleanName.replace(/^.*?\(\d+\s*items?\)\s*-?\s*/i, '');
       cleanName = cleanName.replace(/^.*?Order\s+Date\s*:\s*\d{1,2}\/\d{1,2}\/\d{2,4}\s*/i, '');
+      // A leading collection/delivery time+date prefix — confirmed
+      // against a real Argos email where "Due for collection from
+      // 9:00am Tue 25 August" sat right before the product name, and the
+      // tail end of that date ("25 August") bled into the captured name
+      // since the lookback window started partway through it.
+      cleanName = cleanName.replace(/^(?:\d{1,2}:\d{2}\s*(?:am|pm)?\s*)?(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+)?\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+/i, '');
       // A purely numeric/price-shaped "name" means the real product name
       // was blocked by an intervening currency symbol or product code
       // and this only picked up leftover price digits — confirmed
@@ -1296,6 +1302,24 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       const qty = parseInt(cm[1], 10) || 1;
       const lineTotal = parseFloat(cm[2].replace(',', ''));
       lineItems.push({ name, quantity: qty, price: qty ? lineTotal / qty : lineTotal });
+    }
+  }
+  // "Name / Colour: X / Quantity: N" with no per-item price at all —
+  // confirmed against a real George.com/Asda order where the only price
+  // anywhere in the email is the order-level total, not attached to the
+  // item listing itself. Uses the already-extracted order total divided
+  // by quantity, same approach as the eBay EUR-multiplier fallback
+  // above, since there's genuinely nothing else to go on.
+  if (lineItems.length === 0 && price) {
+    const colourQtyRe = /([A-Za-z0-9][^\n]{4,120}?)\s*\n\s*Colour:\s*[^\n]+\s*\n+\s*Quantity:\s*(\d{1,3})/gi;
+    let qm;
+    while ((qm = colourQtyRe.exec(bodyText)) !== null && lineItems.length < 20) {
+      const qty = parseInt(qm[2], 10) || 1;
+      lineItems.push({
+        name: qm[1].trim().replace(/\s{2,}/g, ' '),
+        quantity: qty,
+        price: qty ? price / qty : price
+      });
     }
   }
   result.lineItems = lineItems;
