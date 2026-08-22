@@ -384,21 +384,33 @@ ipcMain.handle('email:removeAccount', (evt, { id }) => {
 });
 
 // Clears the "already looked at this" tracking AND the last-synced
-// timestamp, forcing the next sync to look back 48 hours regardless of
+// timestamp, forcing the next sync to look back 30 days regardless of
 // whether messages in that window were already marked seen — not just
-// new mail. A 90-day fallback (the previous behavior) is thorough but
-// slow; 48 hours is enough to catch a recent status-update email (shipped
-// → out for delivery → delivered) that arrived after a detection fix,
-// without re-scanning months of already-settled history every time. This
-// is the same button every user already has, not a one-off fix for any
-// single account. Re-processing an email that was already correctly
+// new mail. This used to be 48 hours specifically to catch a recent
+// status-update email (shipped → out for delivery → delivered) without
+// re-scanning months of already-settled history — but that turned out
+// to be too short for the button's other real purpose: letting an
+// extraction/detection fix reach an order whose original confirmation
+// email is more than two days old, which a 48-hour window could never
+// re-fetch no matter how many fixes shipped. Confirmed directly against
+// a real case where this was exactly the problem. This is the same
+// button every user already has, not a one-off fix for any single
+// account. Re-processing an email that was already correctly
 // merged in is safe and won't create duplicates or extra sales — the
 // merge logic itself (matching by order number for orders, and by
 // sender+date+amount for sales) is what actually prevents duplicates, not
 // the "already seen" tracking this clears.
 ipcMain.handle('email:resetTracking', (evt, { id }) => {
-  const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
-  const ok = patchAccountById(id, { processedMessageIds: [], lastSyncISO: fortyEightHoursAgo });
+  // Widened from 48 hours — that defeats the actual purpose of this
+  // button, which exists specifically so a detection/extraction fix can
+  // reach an order that was already processed and marked seen *before*
+  // the fix existed. An order confirmation from several days ago,
+  // already marked processed under old buggy logic, would never get
+  // re-fetched under a 48-hour window no matter how many fixes ship —
+  // confirmed directly against a real case where this was exactly the
+  // problem.
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const ok = patchAccountById(id, { processedMessageIds: [], lastSyncISO: thirtyDaysAgo });
   return { ok };
 });
 

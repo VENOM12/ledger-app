@@ -5506,7 +5506,7 @@ function accountBannerHTML(acc){
           </div>
         </div>
         <div style="display:flex;gap:8px;">
-          <button class="btn-small" data-reset-tracking="${acc.id}" title="Does a full re-scan of the last 48 hours, not just recent mail — useful after a detection fix, so an older email that was previously missed gets a genuine fresh look.">Full Re-scan</button>
+          <button class="btn-small" data-reset-tracking="${acc.id}" title="Does a full re-scan of the last 30 days, not just recent mail — useful after a detection fix, so an older email that was previously missed gets a genuine fresh look.">Full Re-scan</button>
           <button class="btn-small" data-remove-account="${acc.id}" style="border-color:var(--red);color:var(--red);">Remove</button>
         </div>
       </div>
@@ -5694,7 +5694,7 @@ function attachEmailEvents(){
         btn.disabled = true;
         btn.textContent = "Resetting…";
         await window.emailAPI.resetTracking(id);
-        showToast("Running a full re-scan of the last 48 hours");
+        showToast("Running a full re-scan of the last 30 days");
         await syncNow(false);
       });
     });
@@ -6433,6 +6433,21 @@ function mergeSyncResults(results){
       // Same removal as the shipped/out-for-delivery branch above — an
       // address-only fallback here is equally unsafe for the same reason.
       if(existing && existing.status!=="delivered" && existing.status!=="cancelled"){
+        // Backfills from the fresh parse before the stock item gets
+        // created from this order's data — same gap already fixed for
+        // the confirmed/shipped branches, just missed here. Without
+        // this, an order that was never backfilled by an earlier
+        // re-sync (its original confirmation email already being marked
+        // processed, so a normal sync wouldn't re-fetch and re-parse it)
+        // creates its stock item from whatever empty/garbage data was
+        // already sitting there, right at the one moment — delivery —
+        // where the correct item actually matters.
+        if(r.lineItems && r.lineItems.length && (!existing.lineItems || !existing.lineItems.length || existing.lineItems.every(li=>looksLikeGarbageItemName(li.name)))) existing.lineItems = r.lineItems;
+        if(r.price != null && (existing.price == null || existing.price === 0)) existing.price = r.price;
+        if(r.trackingNumber && !existing.trackingNumber) existing.trackingNumber = r.trackingNumber;
+        if(r.carrier && !existing.carrier) existing.carrier = r.carrier;
+        if(r.deliveryAddress && !existing.deliveryAddress) existing.deliveryAddress = r.deliveryAddress;
+        if(r.recipientName && !existing.recipientName) existing.recipientName = r.recipientName;
         existing.status = "delivered";
         existing.actionDeadline = null;
         existing.actionDeadlineTime = null;
