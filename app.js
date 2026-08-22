@@ -192,7 +192,7 @@ function migrateGenericPlaceholderStockItems(parsed){
   if(!Array.isArray(parsed.pendingOrders) || !Array.isArray(parsed.items)) return;
   const placeholderPattern = /^Order from .+ — tap to edit$/;
   parsed.pendingOrders.forEach(p=>{
-    if(!p.addedToStockId || !Array.isArray(p.lineItems) || p.lineItems.length<2) return;
+    if(!p.addedToStockId || !Array.isArray(p.lineItems) || p.lineItems.length<1) return;
     const item = parsed.items.find(i=>i.id===p.addedToStockId);
     if(!item || !placeholderPattern.test(item.name)) return;
     const [first, ...rest] = p.lineItems;
@@ -1907,13 +1907,40 @@ function savePurchase(){
   const f = addFormState;
   if(f.name.trim()==="") return;
   const effCat = f.category==="Other" && f.customCategory.trim() ? f.customCategory.trim() : f.category;
+  const name = f.name.trim();
+  const retailer = f.retailer.trim();
+  const quantity = f.quantity;
+  const price = parseFloat(f.price)||0;
+  // Consolidates with an existing matching stock item instead of always
+  // creating a new one — same matching logic the email-sync path already
+  // uses (normalized name + retailer, not a preorder), deliberately with
+  // no exclusion for items that are currently sold out, since restocking
+  // something that already sold through completely is exactly the case
+  // this needs to handle. A manually-added preorder still always gets
+  // its own entry, same as before, since a preorder isn't real stock yet.
+  const existingStock = !f.isPreorder ? state.items.find(i=>
+    !i.isPreorder && i.retailer===retailer && normalizeForMatch(i.name)===normalizeForMatch(name)
+  ) : null;
+  if(existingStock){
+    const oldQty = existingStock.quantityPurchased;
+    const oldPrice = existingStock.purchasePricePerUnit;
+    const combinedQty = oldQty + quantity;
+    existingStock.quantityPurchased = combinedQty;
+    existingStock.purchasePricePerUnit = combinedQty>0 ? ((oldQty*oldPrice)+(quantity*price))/combinedQty : price;
+    if(f.image && !existingStock.image) existingStock.image = f.image;
+    saveState();
+    showToast(`Added ${quantity} more to existing stock (now ${combinedQty} total)`);
+    addFormState = freshAddForm();
+    setTab("stock");
+    return;
+  }
   const item = {
     id: uid(),
-    name: f.name.trim(),
+    name,
     category: effCat,
-    quantityPurchased: f.quantity,
-    purchasePricePerUnit: parseFloat(f.price)||0,
-    retailer: f.retailer.trim(),
+    quantityPurchased: quantity,
+    purchasePricePerUnit: price,
+    retailer,
     purchaseDate: f.date,
     notes: f.notes,
     isPreorder: f.isPreorder,
