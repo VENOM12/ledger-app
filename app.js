@@ -1535,23 +1535,23 @@ function analyticsHTML(){
       </div>
     </div>
 
-    <div class="card panel" style="margin-bottom:16px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
-        <div class="panel-title" style="margin-bottom:0;">Turnover — Trailing 12 Months</div>
-        <div class="hint" style="margin:0;" title="Rolling 365 days from today, independent of the period filter above — always the correct window for UK VAT registration threshold tracking, which uses a rolling 12-month period rather than a calendar year.">Rolling window, not a calendar year</div>
+    <div class="card panel" style="margin-bottom:16px;padding:14px 16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span class="panel-title" style="margin-bottom:0;font-size:12px;">Turnover — Trailing 12 Months</span>
+        <span
+          title="${escapeAttr((rollingTurnover>=VAT_THRESHOLD
+            ? `This is over the current £90,000 UK VAT registration threshold — if it's stayed here, VAT registration may already be required. This isn't tax advice; check with HMRC or an accountant.`
+            : `${fmtMoney(Math.max(0,VAT_THRESHOLD-rollingTurnover))} of headroom left at the current £90,000 UK VAT registration threshold, always worth double-checking with HMRC since it can change. Registration is required once turnover exceeds this in any rolling 12-month period, or if you expect to exceed it in the next 30 days.`
+          ) + ` Rolling 365 days from today, independent of the period filter above, not a calendar year. Gross sales revenue before fees, not profit — this is what "taxable turnover" is based on, excluding VAT itself. Since none of your recorded prices include VAT yet, that distinction doesn't change the figure shown — it would start to matter once registered.`)}"
+          style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:var(--card-2);color:var(--text-dim);font-size:10px;font-weight:700;cursor:help;flex-shrink:0;"
+        >?</span>
       </div>
-      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
-        <span style="font-size:32px;font-weight:700;color:${rollingTurnover>=VAT_THRESHOLD?"var(--red)":rollingTurnover>=VAT_THRESHOLD*0.85?"var(--gold)":"var(--text)"};">${fmtMoney(rollingTurnover)}</span>
-        <span class="hint" style="margin:0;">of the ${fmtMoney(VAT_THRESHOLD)} UK VAT registration threshold</span>
+      <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+        <span style="font-size:22px;font-weight:700;color:${rollingTurnover>=VAT_THRESHOLD?"var(--red)":rollingTurnover>=VAT_THRESHOLD*0.85?"var(--gold)":"var(--text)"};">${fmtMoney(rollingTurnover)}</span>
+        <span class="hint" style="margin:0;">of ${fmtMoney(VAT_THRESHOLD)}</span>
       </div>
-      <div style="height:10px;background:var(--card-2);border-radius:5px;overflow:hidden;">
-        <div style="height:100%;width:${Math.min(100,(rollingTurnover/VAT_THRESHOLD)*100)}%;background:${rollingTurnover>=VAT_THRESHOLD?"var(--red)":rollingTurnover>=VAT_THRESHOLD*0.85?"var(--gold)":"var(--violet)"};border-radius:5px;"></div>
-      </div>
-      <div class="hint" style="margin-top:8px;">
-        ${rollingTurnover>=VAT_THRESHOLD
-          ? "This is over the current threshold — if it's stayed here, VAT registration may already be required. This isn't tax advice; check with HMRC or an accountant."
-          : `${fmtMoney(Math.max(0,VAT_THRESHOLD-rollingTurnover))} of headroom left at the current £90,000 threshold (2026/27 tax year — always worth double-checking the current figure with HMRC, since it can change).`}
-        Gross sales revenue, not profit — this is what "taxable turnover" is actually based on.
+      <div style="height:6px;background:var(--card-2);border-radius:3px;overflow:hidden;">
+        <div style="height:100%;width:${Math.min(100,(rollingTurnover/VAT_THRESHOLD)*100)}%;background:${rollingTurnover>=VAT_THRESHOLD?"var(--red)":rollingTurnover>=VAT_THRESHOLD*0.85?"var(--gold)":"var(--violet)"};border-radius:3px;"></div>
       </div>
     </div>
 
