@@ -537,11 +537,13 @@ async function syncOneAccount(acc, { blockPromotions, excludeList, rules }) {
           const amtMatch = bodyText.match(/(?<!sub)\btotal\*?(?!\s*includes)[\s\S]{0,15}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
                             bodyText.match(/[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/);
           const amount = amtMatch ? parseFloat(amtMatch[1].replace(',', '')) : null;
+          const expenseDate = (parsed.date || envMsg.envelope.date || new Date()).toISOString();
           expenseResults.push({
             amount, tag: matchedRule.tag, description: subject,
-            date: (parsed.date || envMsg.envelope.date || new Date()).toISOString(),
+            date: expenseDate,
             fromEmail
           });
+          saveEmailToTaxRecords('Expenses', expenseDate, matchedRule.tag, subject, full.source);
           if (messageId) newlySeenIds.push(messageId); // successfully handled as an expense
           continue;
         }
@@ -563,6 +565,7 @@ async function syncOneAccount(acc, { blockPromotions, excludeList, rules }) {
         });
         if (classified) {
           results.push(classified);
+          saveEmailToTaxRecords('Orders', classified.date, classified.retailer, subject, full.source);
           if (messageId) newlySeenIds.push(messageId); // successfully classified — a definitive outcome
         }
         // If classification returned null, deliberately NOT marking this
@@ -787,6 +790,92 @@ function localISO(d){
   return `${y}-${m}-${day}`;
 }
 
+// Tax record-keeping: every email detected as an order or an expense
+// gets a copy saved here automatically, plus a plain-text record for
+// anything entered manually (no source email to save). Documents/Restock
+// Tax Records was chosen specifically for being easy to find without
+// digging into app data folders — organized by year and category
+// (Orders/Expenses/Manual Entries) so it stays navigable as it grows,
+// since a single flat folder of hundreds of receipts over a few years
+// would defeat the purpose of being "easily accessible."
+function taxRecordsBaseDir() {
+  return path.join(app.getPath('documents'), 'Restock Tax Records');
+}
+
+// Strips characters that are invalid in Windows filenames (< > : " / \
+// | ? *) plus control characters, and caps length so a long subject
+// line or product name can't produce a path Windows silently refuses
+// to create.
+function sanitizeForFilename(s) {
+  return (s || '')
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .slice(0, 120);
+}
+
+// Saves a raw .eml for an auto-detected order or expense email — the
+// original source is kept exactly as received (headers, full content)
+// since that's the actual primary document for tax purposes, not a
+// reconstruction of it. Deterministic filename (same email always
+// produces the same name) means a duplicate write on re-sync just
+// silently no-ops instead of piling up repeat copies — checked via
+// existsSync rather than tracking separately, since the filesystem
+// itself is the simplest source of truth here.
+function saveEmailToTaxRecords(category, dateISO, retailer, subject, rawSource) {
+  try {
+    const year = (dateISO || '').slice(0, 4) || String(new Date().getFullYear());
+    const dir = path.join(taxRecordsBaseDir(), category, year);
+    fs.mkdirSync(dir, { recursive: true });
+    const datePart = (dateISO || '').slice(0, 10) || new Date().toISOString().slice(0, 10);
+    const filename = `${datePart} - ${sanitizeForFilename(retailer) || 'Unknown'} - ${sanitizeForFilename(subject) || 'No subject'}.eml`;
+    const fullPath = path.join(dir, filename);
+    if (fs.existsSync(fullPath)) return; // already saved from an earlier sync
+    fs.writeFileSync(fullPath, rawSource);
+  } catch (e) {
+    // Tax record-keeping is a convenience layer on top of the sync
+    // itself, not a precondition for it — a permissions issue or full
+    // disk here should never be allowed to break email sync, so this is
+    // deliberately swallowed rather than surfaced as a sync failure.
+  }
+}
+
+ipcMain.handle('taxRecords:saveManualEntry', (evt, { category, dateISO, title, lines }) => {
+  try {
+    const year = (dateISO || '').slice(0, 4) || String(new Date().getFullYear());
+    const dir = path.join(taxRecordsBaseDir(), category, year);
+    fs.mkdirSync(dir, { recursive: true });
+    const datePart = (dateISO || '').slice(0, 10) || new Date().toISOString().slice(0, 10);
+    let filename = `${datePart} - ${sanitizeForFilename(title) || 'Manual entry'}.txt`;
+    let fullPath = path.join(dir, filename);
+    // Manual entries have no natural unique key the way an email's own
+    // content provides one, so a second entry with an identical date and
+    // title gets a numbered suffix instead of silently overwriting the
+    // first record.
+    let n = 2;
+    while (fs.existsSync(fullPath)) {
+      filename = `${datePart} - ${sanitizeForFilename(title) || 'Manual entry'} (${n}).txt`;
+      fullPath = path.join(dir, filename);
+      n++;
+    }
+    fs.writeFileSync(fullPath, (lines || []).join('\n'));
+    return { ok: true, path: fullPath };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+});
+
+ipcMain.handle('taxRecords:openFolder', () => {
+  try {
+    const dir = taxRecordsBaseDir();
+    fs.mkdirSync(dir, { recursive: true });
+    shell.openPath(dir);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+});
+
 function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }) {
   // Invisible Unicode formatting characters (zero-width spaces, RTL/LTR
   // embedding marks, word joiners, BOM) show up in real marketing emails
@@ -891,13 +980,33 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   else if (/shipped|on its way|tracking number|has shipped|getting a shipment|being prepared to ship/.test(hay) && !/will\s+be\s+shipped|will\s+ship\b|be\s+shipped\s+after|ready\s+to\s+be\s+shipped|to\s+be\s+shipped/i.test(hay)) status = 'shipped';
   // Real order confirmations often say "Thanks for your order" rather than
   // the "Thank you for your order" this used to require exactly.
-  else if (/order confirmation|thanks?\s*(?:you\s*)?for\s*(?:your\s+(?:order|purchase)|placing\s+(?:your|an)\s+order|shopping)|order received|we.ve received your order|your order has been placed|order summary|order details|processing\s+(?:your\s+)?order|currently\s+processing\s+your\s+order/i.test(hay)) status = 'confirmed';
+  else if (/order confirmation|thanks?\s*(?:you\s*)?for\s*(?:your\s+(?:order|purchase)|placing\s+(?:your|an)\s+order|shopping)|order received|we.ve received your order|your order has been placed|order summary|order details|processing\s+(?:your\s+)?order|currently\s+processing\s+your\s+order|pre-?order\s+(?:is\s+confirmed|has\s+been\s+(?:confirmed|received))/i.test(hay)) status = 'confirmed';
   if (!status) return null;
 
   let retailer = fromName || (fromEmail.split('@')[1] || 'Unknown');
   retailer = retailer.replace(/^(noreply|orders|no-reply|do-not-reply)[.@]/i, '').replace(/\.(com|co|net|org).*/i, '');
   retailer = retailer.trim();
   retailer = retailer ? retailer.charAt(0).toUpperCase() + retailer.slice(1) : 'Unknown';
+
+  // Small businesses frequently send order emails from a real employee's
+  // name rather than the business name itself — confirmed directly
+  // against a real Tritex Games order sent "From: Jason Thornton",
+  // which would otherwise have been recorded as the retailer. The
+  // subject line usually states the actual business name clearly
+  // ("Your Tritex Games Ltd order has been received!"), so that's
+  // preferred when found — but only when its words genuinely overlap
+  // with the sender's own email domain, so this can't misfire by
+  // grabbing unrelated text from a subject that happens to contain a
+  // capitalized phrase.
+  const subjectRetailerMatch = (subject || '').match(/\bYour\s+([A-Z][A-Za-z0-9&' .-]{2,40}?)\s+(?:order|pre-order)/i) ||
+    (subject || '').match(/placed\s+on\s+([A-Z][A-Za-z0-9&' .-]{2,40}?)\s+is\s+confirmed/i);
+  if (subjectRetailerMatch) {
+    const domainCore = (fromEmail.split('@')[1] || '').split('.')[0].toLowerCase().split(/[-_]/).filter(w => w.length > 2);
+    const candidateLower = subjectRetailerMatch[1].toLowerCase();
+    if (domainCore.some(word => candidateLower.includes(word))) {
+      retailer = subjectRetailerMatch[1].trim();
+    }
+  }
 
   // Carrier tracking notifications (FedEx, UPS, DHL, etc.) are sent BY
   // the carrier, not the retailer — the "retailer" derived above from
@@ -1016,6 +1125,15 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
     // uppercase code, confirmed against a real "Order:\n THIGVAVFE" email
     // that doesn't fit any other pattern.
     bodyText.match(/[Oo]rder\s*:\s*\n?\s*([A-Z0-9-]{5,20})\b/) ||
+    // Labels grouped together, separate from their values ("Order
+    // Number:\n\nOrder Date:\n\n777306716\n\n2026-08-24") — confirmed
+    // against a real Zavvi email that lays out its whole order summary
+    // this way, which none of the label-adjacent-to-value patterns above
+    // could ever match.
+    bodyText.match(/Order\s+Number\s*:\s*\n+\s*Order\s+Date\s*:\s*\n+\s*([A-Z0-9-]{5,20})\s*\n+\s*\d{4}-\d{2}-\d{2}/i) ||
+    // "now being processed: [NUM]" — confirmed against a real Tritex
+    // pre-order email with no explicit order-number label at all.
+    bodyText.match(/now being processed\s*:\s*\n?\s*([A-Z0-9-]{4,20})\b/) ||
     subject.match(/#\s?([A-Z0-9-]{5,20})/);
   const orderNumber = orderNumMatch ? orderNumMatch[1] : null;
 
@@ -1276,16 +1394,19 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // order confirmation, that has no "Qty:" label anywhere for any of
   // the earlier patterns to find.
   if (lineItems.length === 0) {
-    const multiplySignRe = /([A-Za-z0-9][^\n]{2,120}?)\s*×\s*(\d{1,3})\s*\n+\s*[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/g;
+    const multiplySignRe = /([A-Za-z0-9][^\n]{2,120}?)\s*×\s*(\d{1,3})\s+[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/g;
     let mm;
     while ((mm = multiplySignRe.exec(bodyText)) !== null && lineItems.length < 20) {
       const qty = parseInt(mm[2], 10) || 1;
       const lineTotal = parseFloat(mm[3].replace(',', ''));
-      lineItems.push({
-        name: mm[1].trim().replace(/\s{2,}/g, ' '),
-        quantity: qty,
-        price: qty ? lineTotal / qty : lineTotal
-      });
+      // The same lookback that lets a genuinely long product name
+      // through can also reach into preceding order-status prose —
+      // confirmed a real email had "...is now being processed: 22465"
+      // (the order number and the sentence introducing it) bleed into
+      // the captured name. Safe to strip since the real product name
+      // always immediately follows the order number here.
+      const name = mm[1].trim().replace(/\s{2,}/g, ' ').replace(/^.*\bprocessed\s*:\s*[A-Z0-9-]+\s*/i, '');
+      lineItems.push({ name, quantity: qty, price: qty ? lineTotal / qty : lineTotal });
     }
   }
   // "Name / Product Code / Unit Price / QtyN / Line Total" — confirmed
@@ -1332,6 +1453,39 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
         quantity: qty,
         price: qty ? price / qty : price
       });
+    }
+  }
+  // "Order Details / [Name] <tracking-link URL>" — confirmed against a
+  // real Zavvi email where the product name is immediately followed by
+  // a link with no quantity or per-item price anywhere nearby at all.
+  // Assumes quantity 1 using the order total, since there's genuinely
+  // nothing else in the email to determine an actual quantity from.
+  if (lineItems.length === 0 && price) {
+    const orderDetailsMatch = bodyText.match(/Order\s+Details\s*\n+\s*([A-Za-z0-9][^\n<]{4,150}?)\s*(?:<|\n)/i);
+    if (orderDetailsMatch) {
+      lineItems.push({ name: orderDetailsMatch[1].trim().replace(/\s{2,}/g, ' '), quantity: 1, price });
+    }
+  }
+  // WooCommerce-style order table: "Name / [Pre-order product] /
+  // [Availability date: N/A] / Qty / Price" — confirmed against a real
+  // Tritex Games order. No "Qty:" label at all, just a bare digit before
+  // the price, which is generic enough on its own to risk matching
+  // unrelated text — gated behind actually finding the Product/
+  // Quantity/Price column headers this table layout always has, so it
+  // only fires on retailers genuinely using this exact format.
+  if (lineItems.length === 0 && /\bProduct\b[\s\S]{0,50}\bQuantity\b[\s\S]{0,50}\bPrice\b/i.test(bodyText)) {
+    const wooTableRe = /([A-Za-z0-9][^\n]{4,150}?)\s*(?:Pre-order product\s*)?(?:Availability date:\s*(?:N\/A|[\d\/]+)\s*)?(\d{1,3})\s*[$£€]\s?([\d.,]+)/gi;
+    let wm;
+    while ((wm = wooTableRe.exec(bodyText)) !== null && lineItems.length < 20) {
+      const qty = parseInt(wm[2], 10) || 1;
+      // The same 150-char lookback that lets a genuinely long product
+      // name through can also reach back into preceding order-summary
+      // text — confirmed a real order had "...Product Quantity Price"
+      // (the table's own column headers) bleed into the captured name.
+      // Stripping everything up through the last "Price" is safe since
+      // the real product name always immediately follows that header.
+      const name = wm[1].trim().replace(/\s{2,}/g, ' ').replace(/^.*\bPrice\s+/i, '');
+      lineItems.push({ name, quantity: qty, price: parseFloat(wm[3].replace(',', '')) });
     }
   }
   result.lineItems = lineItems;

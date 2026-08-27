@@ -10,6 +10,11 @@ contextBridge.exposeInMainWorld('shellAPI', {
   openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url)
 });
 
+contextBridge.exposeInMainWorld('taxRecordsAPI', {
+  saveManualEntry: (opts) => ipcRenderer.invoke('taxRecords:saveManualEntry', opts),
+  openFolder: () => ipcRenderer.invoke('taxRecords:openFolder')
+});
+
 contextBridge.exposeInMainWorld('emailAPI', {
   getAccounts: () => ipcRenderer.invoke('email:getAccounts'),
   addAccount: (config) => ipcRenderer.invoke('email:addAccount', config),

@@ -1437,6 +1437,19 @@ function analyticsHTML(){
   const inPeriod = d => !start || new Date(d) >= start;
   const nonPreorderItems = state.items.filter(i => !i.isPreorder);
 
+  // Deliberately independent of the period selector above — VAT
+  // threshold tracking always means the trailing 365 days from today,
+  // not whatever period the rest of this page happens to be filtered
+  // to. Gross revenue (before platform fees), since that's what "taxable
+  // turnover" is actually based on for UK VAT registration purposes —
+  // net profit isn't the relevant figure here.
+  const VAT_THRESHOLD = 90000;
+  const rollingStart = new Date(); rollingStart.setDate(rollingStart.getDate()-365);
+  let rollingTurnover = 0;
+  nonPreorderItems.forEach(i => i.sales.forEach(s => {
+    if(s.saleDate && new Date(s.saleDate) >= rollingStart) rollingTurnover += saleRevenue(s);
+  }));
+
   // Point-in-time inventory health — deliberately NOT period-filtered,
   // since "how much dead stock do I have right now" isn't really a
   // "this month" question.
@@ -1519,6 +1532,26 @@ function analyticsHTML(){
     <div class="toolbar-row" style="margin-bottom:16px;">
       <div class="segmented">
         ${["Day","Week","Month","Year","All Time"].map(p=>`<button class="${analyticsUI.period===p?"active":""}" data-analytics-period="${p}">${p==="All Time"?"All":p}</button>`).join("")}
+      </div>
+    </div>
+
+    <div class="card panel" style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
+        <div class="panel-title" style="margin-bottom:0;">Turnover — Trailing 12 Months</div>
+        <div class="hint" style="margin:0;" title="Rolling 365 days from today, independent of the period filter above — always the correct window for UK VAT registration threshold tracking, which uses a rolling 12-month period rather than a calendar year.">Rolling window, not a calendar year</div>
+      </div>
+      <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+        <span style="font-size:32px;font-weight:700;color:${rollingTurnover>=VAT_THRESHOLD?"var(--red)":rollingTurnover>=VAT_THRESHOLD*0.85?"var(--gold)":"var(--text)"};">${fmtMoney(rollingTurnover)}</span>
+        <span class="hint" style="margin:0;">of the ${fmtMoney(VAT_THRESHOLD)} UK VAT registration threshold</span>
+      </div>
+      <div style="height:10px;background:var(--card-2);border-radius:5px;overflow:hidden;">
+        <div style="height:100%;width:${Math.min(100,(rollingTurnover/VAT_THRESHOLD)*100)}%;background:${rollingTurnover>=VAT_THRESHOLD?"var(--red)":rollingTurnover>=VAT_THRESHOLD*0.85?"var(--gold)":"var(--violet)"};border-radius:5px;"></div>
+      </div>
+      <div class="hint" style="margin-top:8px;">
+        ${rollingTurnover>=VAT_THRESHOLD
+          ? "This is over the current threshold — if it's stayed here, VAT registration may already be required. This isn't tax advice; check with HMRC or an accountant."
+          : `${fmtMoney(Math.max(0,VAT_THRESHOLD-rollingTurnover))} of headroom left at the current £90,000 threshold (2026/27 tax year — always worth double-checking the current figure with HMRC, since it can change).`}
+        Gross sales revenue, not profit — this is what "taxable turnover" is actually based on.
       </div>
     </div>
 
@@ -1913,13 +1946,16 @@ function savePurchase(){
   const price = parseFloat(f.price)||0;
   // Consolidates with an existing matching stock item instead of always
   // creating a new one — same matching logic the email-sync path already
-  // uses (normalized name + retailer, not a preorder), deliberately with
-  // no exclusion for items that are currently sold out, since restocking
-  // something that already sold through completely is exactly the case
-  // this needs to handle. A manually-added preorder still always gets
-  // its own entry, same as before, since a preorder isn't real stock yet.
+  // uses (exact normalized name, not fuzzy, deliberately not restricted
+  // to the same retailer — buying the same product from a different
+  // retailer, like Asda then Sainsbury's, is still the same product and
+  // should consolidate the same way), with no exclusion for items that
+  // are currently sold out, since restocking something that already
+  // sold through completely is exactly the case this needs to handle. A
+  // manually-added preorder still always gets its own entry, same as
+  // before, since a preorder isn't real stock yet.
   const existingStock = !f.isPreorder ? state.items.find(i=>
-    !i.isPreorder && i.retailer===retailer && normalizeForMatch(i.name)===normalizeForMatch(name)
+    !i.isPreorder && normalizeForMatch(i.name)===normalizeForMatch(name)
   ) : null;
   if(existingStock){
     const oldQty = existingStock.quantityPurchased;
@@ -1929,6 +1965,7 @@ function savePurchase(){
     existingStock.purchasePricePerUnit = combinedQty>0 ? ((oldQty*oldPrice)+(quantity*price))/combinedQty : price;
     if(f.image && !existingStock.image) existingStock.image = f.image;
     saveState();
+    saveManualPurchaseTaxRecord(name, retailer, f.date, quantity, price);
     showToast(`Added ${quantity} more to existing stock (now ${combinedQty} total)`);
     addFormState = freshAddForm();
     setTab("stock");
@@ -1952,9 +1989,32 @@ function savePurchase(){
   };
   state.items.unshift(item);
   saveState();
+  saveManualPurchaseTaxRecord(name, retailer, f.date, quantity, price);
   showToast(f.isPreorder ? "Added to preorders" : "Added to stock");
   addFormState = freshAddForm();
   setTab(f.isPreorder ? "preorders" : "stock");
+}
+
+// Shared by both paths in savePurchase (consolidating into an existing
+// item, and creating a new one) so the record-keeping logic isn't
+// duplicated between them.
+function saveManualPurchaseTaxRecord(name, retailer, dateISO, quantity, price){
+  if(!window.taxRecordsAPI) return;
+  window.taxRecordsAPI.saveManualEntry({
+    category: "Manual Entries",
+    dateISO,
+    title: `Purchase - ${retailer || "Unknown retailer"} - ${name}`,
+    lines: [
+      `Manually-added stock purchase`,
+      `Item: ${name}`,
+      `Retailer: ${retailer || "—"}`,
+      `Date: ${dateISO}`,
+      `Quantity: ${quantity}`,
+      `Price per unit: ${fmtMoney(price)}`,
+      `Total: ${fmtMoney(quantity*price)}`,
+      `Entered in Restock: ${new Date().toISOString()}`
+    ]
+  }).catch(()=>{});
 }
 
 /* ============================================================
@@ -2306,6 +2366,28 @@ function renderAddOrderModal(){
     }
     state.pendingOrders.unshift(order);
     saveState();
+    // Same record-keeping purpose as the automatic email saving, but
+    // there's no source email here to save the original of — a plain
+    // text summary is the manual-entry equivalent.
+    if(window.taxRecordsAPI){
+      window.taxRecordsAPI.saveManualEntry({
+        category: "Manual Entries",
+        dateISO: order.orderDate,
+        title: `Order - ${retailer}`,
+        lines: [
+          `Manually-added order`,
+          `Retailer: ${retailer}`,
+          `Order date: ${order.orderDate}`,
+          `Order number: ${orderNumber || "—"}`,
+          `Price: ${price!=null ? fmtMoney(price) : "—"}`,
+          `Status: ${statusLabel(order.status)}`,
+          `Carrier: ${order.carrier || "—"}`,
+          `Tracking number: ${order.trackingNumber || "—"}`,
+          `Item: ${f.itemName.trim() || "—"}${f.itemName.trim() ? ` (qty ${Math.max(1, f.quantity||1)})` : ""}`,
+          `Entered in Restock: ${new Date().toISOString()}`
+        ]
+      }).catch(()=>{});
+    }
     document.getElementById("modalRoot").innerHTML = "";
     showToast(`Order from ${retailer} added`);
     if(ui.tab==="orders") renderView();
@@ -2315,6 +2397,7 @@ function renderAddOrderModal(){
 let orderStatusEditing = null;
 let orderRetailerEditing = null;
 let orderLineItemsEditing = null;
+let orderImportFeesEditing = null;
 let orderLineItemsDraft = null;
 
 const ALL_ORDER_STATUSES = ["confirmed", "action_required", "shipped", "out_for_delivery", "ready_for_collection", "delivered", "cancelled"];
@@ -2325,6 +2408,7 @@ function orderDetailModal(orderId){
   const editingStatus = orderStatusEditing === orderId;
   const editingRetailer = orderRetailerEditing === orderId;
   const editingLineItems = orderLineItemsEditing === orderId;
+  const editingImportFees = orderImportFeesEditing === orderId;
   const root = document.getElementById("modalRoot");
   root.innerHTML = `
     <div class="modal-backdrop open" id="orderDetailBackdrop">
@@ -2358,6 +2442,18 @@ function orderDetailModal(orderId){
             ${kvRow("Order #", p.orderNumber ? escapeHTML(p.orderNumber) : "—")}
             ${kvRow("Order date", p.orderDate ? formatDate(p.orderDate) : "—")}
             ${kvRow("Price", p.price!=null ? fmtMoney(p.price) : "—")}
+            ${editingImportFees ? `
+              <div class="kv-row"><span class="k">Import fees</span><span class="v" style="display:flex;gap:8px;align-items:center;justify-content:flex-end;">
+                <div class="field" style="margin:0;width:110px;"><input type="number" id="orderImportFeesInput" value="${p.importFees||0}" step="0.01" min="0"></div>
+                <button class="icon-btn" id="saveOrderImportFeesBtn" title="Save">${ICONS.check}</button>
+                <button class="icon-btn" id="cancelOrderImportFeesBtn" title="Cancel">${ICONS.close}</button>
+              </span></div>
+            ` : `
+              <div class="kv-row"><span class="k">Import fees</span><span class="v" style="display:flex;gap:8px;align-items:center;justify-content:flex-end;">
+                ${p.importFees ? fmtMoney(p.importFees) : "—"}
+                <button class="icon-btn" id="editOrderImportFeesBtn" title="Add customs/import duty fees, e.g. for an international purchase" style="width:22px;height:22px;">${ICONS.pencil}</button>
+              </span></div>
+            `}
             ${kvRow("Carrier", p.carrier ? escapeHTML(p.carrier) : "—")}
             ${kvRow("Tracking number", p.trackingNumber ? escapeHTML(p.trackingNumber) : "—")}
             ${kvRow("Estimated delivery", p.expectedDelivery ? formatDate(p.expectedDelivery) + (p.expectedDeliveryTime ? " · "+escapeHTML(p.expectedDeliveryTime) : "") : "—")}
@@ -2426,6 +2522,33 @@ function orderDetailModal(orderId){
     orderRetailerEditing = null;
     saveState();
     showToast("Retailer updated");
+    orderDetailModal(orderId);
+    if(ui.tab==="orders") renderView();
+  });
+  const editImportFeesBtn = document.getElementById("editOrderImportFeesBtn");
+  if(editImportFeesBtn) editImportFeesBtn.addEventListener("click", ()=>{ orderImportFeesEditing = orderId; orderDetailModal(orderId); });
+  const cancelImportFeesBtn = document.getElementById("cancelOrderImportFeesBtn");
+  if(cancelImportFeesBtn) cancelImportFeesBtn.addEventListener("click", ()=>{ orderImportFeesEditing = null; orderDetailModal(orderId); });
+  const saveImportFeesBtn = document.getElementById("saveOrderImportFeesBtn");
+  if(saveImportFeesBtn) saveImportFeesBtn.addEventListener("click", ()=>{
+    const newFees = parseFloat(document.getElementById("orderImportFeesInput").value) || 0;
+    const oldFees = p.importFees || 0;
+    const feeDelta = newFees - oldFees;
+    p.importFees = newFees;
+    // If this order's already delivered and has a linked stock item —
+    // e.g. a customs bill that arrives after the fact — spreads the
+    // change into that item's per-unit cost so profit/ROI figures stay
+    // accurate rather than only being visible on the order record.
+    if(feeDelta !== 0 && p.addedToStockId){
+      const linkedItem = state.items.find(i=>i.id===p.addedToStockId);
+      if(linkedItem && linkedItem.quantityPurchased>0){
+        const totalCostBefore = linkedItem.quantityPurchased * linkedItem.purchasePricePerUnit;
+        linkedItem.purchasePricePerUnit = (totalCostBefore + feeDelta) / linkedItem.quantityPurchased;
+      }
+    }
+    orderImportFeesEditing = null;
+    saveState();
+    showToast("Import fees updated");
     orderDetailModal(orderId);
     if(ui.tab==="orders") renderView();
   });
@@ -4947,6 +5070,21 @@ function renderAddExpenseModal(){
       source: "manual", fromEmail: null
     });
     saveState();
+    if(window.taxRecordsAPI){
+      window.taxRecordsAPI.saveManualEntry({
+        category: "Manual Entries",
+        dateISO: f.date,
+        title: `Expense - ${tag}`,
+        lines: [
+          `Manually-added expense`,
+          `Tag: ${tag}`,
+          `Date: ${f.date}`,
+          `Amount: ${fmtMoney(amount)}`,
+          `Description: ${f.description.trim() || "—"}`,
+          `Entered in Restock: ${new Date().toISOString()}`
+        ]
+      }).catch(()=>{});
+    }
     document.getElementById("modalRoot").innerHTML = "";
     if(ui.tab==="expenses") renderExpensesResults();
     showToast("Expense added");
@@ -5543,6 +5681,7 @@ function emailConnectedHTML(){
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
       <div class="hint" style="margin:0;">${emailUI.accounts.length} email account${emailUI.accounts.length===1?"":"s"} connected · auto-syncs every 60s</div>
       <div style="display:flex;gap:8px;">
+        <button class="btn-small" id="openTaxRecordsBtn" title="Every order and expense email that's been detected gets a copy saved here automatically, plus manually-entered orders/expenses/stock as plain-text records — organized by year and category for tax purposes.">${ICONS.download} Tax Records</button>
         <button class="btn-secondary" id="syncNowBtn" ${emailUI.syncing?"disabled":""}>${ICONS.refresh} ${emailUI.syncing ? "Syncing…" : "Sync Now"}</button>
         <button class="btn-small" id="showAddAccountBtn">${ICONS.plus} Add Another Account</button>
       </div>
@@ -5682,6 +5821,10 @@ function attachEmailEvents(){
   } else {
     const syncBtn = document.getElementById("syncNowBtn");
     if(syncBtn) syncBtn.addEventListener("click", ()=>syncNow(false));
+    const openTaxRecordsBtn = document.getElementById("openTaxRecordsBtn");
+    if(openTaxRecordsBtn) openTaxRecordsBtn.addEventListener("click", ()=>{
+      if(window.taxRecordsAPI) window.taxRecordsAPI.openFolder();
+    });
     const showAddAccountBtn = document.getElementById("showAddAccountBtn");
     if(showAddAccountBtn) showAddAccountBtn.addEventListener("click", ()=>{
       emailUI.showAddForm = true;
@@ -6616,17 +6759,20 @@ function createStockItemFromOrder(order){
   // placeholder using just the order total, the same core issue behind
   // the original PKC multi-item cost bug. Different orders can easily
   // contain the same product though — reselling the same restock item
-  // multiple times over is completely normal — so this checks for an
-  // existing, not-yet-a-preorder stock item with the same name (exact
-  // match after normalizing case/whitespace/punctuation, not fuzzy —
-  // fuzzy matching here previously caused genuinely different products to
-  // silently merge) and retailer, and adds to it with a proper
+  // multiple times over is completely normal, including buying it again
+  // from a different retailer than the first purchase — so this checks
+  // for an existing, not-yet-a-preorder stock item with the same name
+  // (exact match after normalizing case/whitespace/punctuation, not
+  // fuzzy — fuzzy matching here previously caused genuinely different
+  // products to silently merge, deliberately not restricted to the same
+  // retailer, since that was never the actual thing preventing wrong
+  // merges) and adds to it with a proper
   // weighted-average cost instead of creating a duplicate every time.
   const createdItems = [];
   lines.forEach(line=>{
     const normalizedName = normalizeForMatch(line.name);
     const existingStock = state.items.find(i=>
-      !i.isPreorder && i.retailer===order.retailer && normalizeForMatch(i.name)===normalizedName
+      !i.isPreorder && normalizeForMatch(i.name)===normalizedName
     );
     if(existingStock){
       const oldQty = existingStock.quantityPurchased;
