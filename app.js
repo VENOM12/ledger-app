@@ -1092,12 +1092,72 @@ function attachDashboardEvents(){
 // cancellation-survival-rate metrics, no join-a-service branding, since
 // this is meant as a personal bookkeeping export, not the kind of
 // checkout-group marketing card those track.
+// Real trailing-7-day trend (including today) for the mini sparklines in
+// the share image — genuine daily totals, not decorative filler, so the
+// chart actually means something rather than just looking busy.
+function computeWeekTrend(){
+  const days = [];
+  for(let i=6; i>=0; i--){
+    const d = new Date(); d.setDate(d.getDate()-i);
+    days.push(d.toDateString());
+  }
+  const orderCounts = days.map(()=>0);
+  const spendAmounts = days.map(()=>0);
+  const dayIndex = ds => days.indexOf(ds);
+
+  state.items.filter(i=>!(i.isPreorder && i.retailer==="Pokemon Center")).forEach(i=>{
+    const idx = dayIndex(i.purchaseDate ? new Date(i.purchaseDate).toDateString() : null);
+    if(idx===-1) return;
+    orderCounts[idx]++;
+    spendAmounts[idx] += totalCost(i);
+  });
+  state.pendingOrders.filter(p=>p.retailer!=="Pokemon Center" && !p.addedToStockId && p.status!=="cancelled").forEach(p=>{
+    const idx = dayIndex(p.orderDate ? new Date(p.orderDate).toDateString() : null);
+    if(idx===-1) return;
+    orderCounts[idx]++;
+    spendAmounts[idx] += p.lineItems && p.lineItems.length ? p.lineItems.reduce((s,li)=>s+li.quantity*li.price,0) : (p.price||0);
+  });
+  return { orderCounts, spendAmounts };
+}
+
+// Small line-chart sparkline with a soft gradient fill beneath — auto-scaled
+// to whatever range of values it's given, flat-lines gracefully at mid-height
+// if every value is the same (e.g. all zero) rather than dividing by zero.
+function drawSparkline(ctx, x, y, w, h, values, color){
+  const min = Math.min(...values), max = Math.max(...values);
+  const range = max-min || 1;
+  const points = values.map((v,i)=>({
+    x: x + (i/(values.length-1))*w,
+    y: max===min ? y+h/2 : y + h - ((v-min)/range)*h
+  }));
+  ctx.save();
+  const grad = ctx.createLinearGradient(0,y,0,y+h);
+  grad.addColorStop(0, color+"55");
+  grad.addColorStop(1, color+"00");
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, y+h);
+  points.forEach(p=>ctx.lineTo(p.x,p.y));
+  ctx.lineTo(points[points.length-1].x, y+h);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  ctx.beginPath();
+  points.forEach((p,i)=> i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.stroke();
+  ctx.restore();
+}
+
 function computeTodayStats(){
   const isToday = d => d && new Date(d).toDateString() === new Date().toDateString();
   const itemTotals = {};
   let spent = 0, orderCount = 0;
-  const addItem = (name, qty, lineSpent) => {
-    if(!itemTotals[name]) itemTotals[name] = {qty:0, spent:0};
+  const addItem = (name, qty, lineSpent, retailer) => {
+    if(!itemTotals[name]) itemTotals[name] = {qty:0, spent:0, retailer};
     itemTotals[name].qty += qty;
     itemTotals[name].spent += lineSpent;
   };
@@ -1106,7 +1166,7 @@ function computeTodayStats(){
     const cost = totalCost(i);
     spent += cost;
     orderCount++;
-    addItem(i.name, i.quantityPurchased, cost);
+    addItem(i.name, i.quantityPurchased, cost, i.retailer);
   });
   state.pendingOrders.filter(p=>p.retailer!=="Pokemon Center" && !p.addedToStockId && p.status!=="cancelled" && isToday(p.orderDate)).forEach(p=>{
     orderCount++;
@@ -1119,15 +1179,15 @@ function computeTodayStats(){
       p.lineItems.forEach(li=>{
         const lineSpent = li.quantity*li.price;
         spent += lineSpent;
-        addItem(li.name, li.quantity, lineSpent);
+        addItem(li.name, li.quantity, lineSpent, p.retailer);
       });
     } else {
       spent += (p.price||0);
-      addItem(`Order from ${p.retailer}`, 1, p.price||0);
+      addItem(`Order from ${p.retailer}`, 1, p.price||0, p.retailer);
     }
   });
 
-  return { orderCount, spent, items: Object.entries(itemTotals).map(([name,v])=>({name, qty:v.qty, spent:v.spent})).sort((a,b)=>b.spent-a.spent) };
+  return { orderCount, spent, items: Object.entries(itemTotals).map(([name,v])=>({name, qty:v.qty, spent:v.spent, retailer:v.retailer})).sort((a,b)=>b.spent-a.spent) };
 }
 
 // Measures and wraps text to fit a pixel width, up to maxLines — actual
@@ -1165,27 +1225,30 @@ function wrapTextLines(ctx, text, maxWidth, maxLines){
 function shareDailyStatsImage(){
   const stats = computeTodayStats();
   const totalItemsQty = stats.items.reduce((s,it)=>s+it.qty,0);
-  const itemsToShow = stats.items.slice(0,8);
+  const topItem = stats.items[0] || null;
+  const otherItems = stats.items.slice(1);
+  const trend = computeWeekTrend();
   const W = 900;
+  const headerH = 110, heroH = 300, heroGap = 24, statsH = 96, statsGap = 20, footerH = 40;
+
   const measureCanvas = document.createElement("canvas");
   const mctx = measureCanvas.getContext("2d");
 
-  // First pass: work out how many lines each item's name actually needs
-  // at the real card width, so the card (and the whole canvas) can be
-  // sized correctly before anything is drawn — rather than guessing a
-  // fixed row height and hoping names fit. Right side reserves space for
-  // the stacked qty/price block, not just a small badge, so this is
-  // narrower than before.
-  const cardPad = 20, rightBlockW = 110, nameMaxWidth = W-80-cardPad*2-50-rightBlockW-16;
-  mctx.font = "700 16px Arial";
-  const itemLayouts = itemsToShow.map(it=>{
+  // Other items' row heights, computed up front from actual wrapped text
+  // (same approach the original list used) so the canvas can be sized
+  // correctly before anything is drawn, rather than guessing.
+  const listX = 40, listW = W-80, rowPad = 16, rankW = 24, rightBlockW = 140;
+  const nameMaxWidth = listW - rowPad*2 - rankW - 14 - rightBlockW - 16;
+  mctx.font = "700 15px Arial";
+  const otherLayouts = otherItems.map(it=>{
     const lines = wrapTextLines(mctx, it.name, nameMaxWidth, 2);
-    return { ...it, lines, cardH: lines.length>1 ? 92 : 72 };
+    return { ...it, lines, rowH: 14+14+6+lines.length*19+14 };
   });
+  const listHeaderH = otherLayouts.length ? 34 : 0;
+  const listH = otherLayouts.length ? otherLayouts.reduce((s,l)=>s+l.rowH+10,0)-10 : 0;
+  const listGap = otherLayouts.length ? 24 : 0;
 
-  const headerH = 130, statsH = 116, itemsHeaderH = 40;
-  const itemsH = itemLayouts.length ? itemLayouts.reduce((s,l)=>s+l.cardH+12,0) : 50;
-  const H = headerH + statsH + itemsHeaderH + itemsH + 50;
+  const H = headerH + heroH + heroGap + listHeaderH + listH + listGap + statsH + statsGap + footerH;
 
   const canvas = document.createElement("canvas");
   canvas.width = W; canvas.height = H;
@@ -1198,131 +1261,202 @@ function shareDailyStatsImage(){
   ctx.fillStyle = topGrad;
   ctx.fillRect(0,0,W,6);
 
-  roundRectPath(ctx, 40, 30, 48, 48, 13);
-  const logoGrad = ctx.createLinearGradient(40,30,88,78);
+  // --- Header: circular avatar + brand, summary badge + date ---
+  ctx.save();
+  ctx.beginPath(); ctx.arc(60,50,20,0,Math.PI*2); ctx.clip();
+  const logoGrad = ctx.createLinearGradient(40,30,80,70);
   logoGrad.addColorStop(0,"#9B6BF5"); logoGrad.addColorStop(1,"#F55BC2");
   ctx.fillStyle = logoGrad;
-  ctx.fill();
+  ctx.fillRect(40,30,40,40);
+  ctx.restore();
   ctx.fillStyle = "#fff";
-  ctx.font = "700 22px Arial";
-  ctx.textAlign = "center";
-  ctx.fillText("R", 64, 62);
-  ctx.textAlign = "left";
+  ctx.font = "700 18px Arial";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("R", 60, 51);
+  ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
 
   ctx.fillStyle = "#8E8EA8";
   ctx.font = "700 11px Arial";
-  ctx.fillText("RESTOCK", 104, 44);
+  ctx.fillText("RESTOCK", 92, 42);
   ctx.fillStyle = "#EDEDF5";
-  ctx.font = "700 27px Arial";
-  ctx.fillText("Today's Purchases", 104, 70);
+  ctx.font = "700 24px Arial";
+  ctx.fillText("Today's Purchases", 92, 66);
 
+  const badgeText = "SUMMARY READY", badgeW = 168, badgeH = 30;
+  const badgeX = W-40-badgeW, badgeY = 30;
+  ctx.fillStyle = "rgba(61,214,140,0.13)";
+  roundRectPath(ctx, badgeX, badgeY, badgeW, badgeH, 15);
+  ctx.fill();
+  ctx.fillStyle = "#3DD68C";
+  ctx.beginPath(); ctx.arc(badgeX+18, badgeY+badgeH/2, 4, 0, Math.PI*2); ctx.fill();
+  ctx.font = "700 12px Arial";
+  ctx.fillText(badgeText, badgeX+30, badgeY+badgeH/2+4);
   ctx.fillStyle = "#8E8EA8";
-  ctx.font = "400 14px Arial";
+  ctx.font = "400 13px Arial";
   ctx.textAlign = "right";
-  ctx.fillText(new Date().toLocaleDateString(undefined,{weekday:'long', year:'numeric', month:'long', day:'numeric'}), W-40, 58);
+  ctx.fillText(new Date().toLocaleDateString(undefined,{weekday:'long', year:'numeric', month:'long', day:'numeric'}), W-40, badgeY+badgeH+22);
   ctx.textAlign = "left";
 
-  const boxes = [
-    { label: "Orders", value: String(stats.orderCount), color: "#F5B942", bg: "rgba(245,185,66,0.13)", icon: "cart" },
-    { label: "Items Bought", value: String(totalItemsQty), color: "#4FA9F7", bg: "rgba(79,169,247,0.14)", icon: "box" },
-    { label: "Total Spent", value: fmtMoney(stats.spent), color: "#3DD68C", bg: "rgba(61,214,140,0.13)", icon: "coin" }
-  ];
-  const boxW = (W-80-2*16)/3;
-  const statsY = headerH;
-  boxes.forEach((b,i)=>{
-    const x = 40 + i*(boxW+16);
-    ctx.fillStyle = "#15151F";
-    roundRectPath(ctx, x, statsY, boxW, 96, 12);
-    ctx.fill();
+  // --- Hero: dashed glow panel (left) + featured top item (right) ---
+  const heroY = headerH;
+  const panelW = 340, panelX = 40;
+  ctx.save();
+  ctx.strokeStyle = "#2A2A3A";
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([5,5]);
+  roundRectPath(ctx, panelX, heroY, panelW, heroH, 16);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.restore();
 
-    roundRectPath(ctx, x+16, statsY+16, 40, 40, 10);
-    ctx.fillStyle = b.bg;
+  const glowCx = panelX+panelW/2, glowCy = heroY+heroH/2;
+  const glow = ctx.createRadialGradient(glowCx,glowCy,0,glowCx,glowCy,150);
+  glow.addColorStop(0,"rgba(155,107,245,0.18)");
+  glow.addColorStop(1,"rgba(155,107,245,0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath(); ctx.arc(glowCx,glowCy,150,0,Math.PI*2); ctx.fill();
+
+  // Retailer shown as a bold wordmark in Restock's own accent colour —
+  // deliberately not attempting to reproduce any actual retailer's real
+  // logo, font, or brand colour, just a stylized name treatment.
+  ctx.fillStyle = "#B98CFF";
+  ctx.font = "italic 700 34px Arial";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  const wordmark = topItem ? (topItem.retailer || "Restock") : "Restock";
+  mctx.font = "italic 700 34px Arial";
+  const wmLines = wrapTextLines(mctx, wordmark, panelW-60, 2);
+  wmLines.forEach((line,i)=>ctx.fillText(line, glowCx, glowCy + (i-(wmLines.length-1)/2)*40));
+  ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+
+  const detailX = panelX+panelW+24, detailW = W-40-detailX;
+  if(topItem){
+    ctx.fillStyle = "rgba(155,107,245,0.14)";
+    mctx.font = "700 13px Arial";
+    const pillTextW = mctx.measureText(wordmark).width;
+    roundRectPath(ctx, detailX, heroY+8, pillTextW+28, 26, 13);
     ctx.fill();
-    ctx.fillStyle = b.color;
-    drawStatIcon(ctx, b.icon, x+36, statsY+36);
+    ctx.fillStyle = "#B98CFF";
+    ctx.beginPath(); ctx.arc(detailX+14, heroY+21, 3, 0, Math.PI*2); ctx.fill();
+    ctx.font = "700 13px Arial";
+    ctx.fillText(wordmark, detailX+24, heroY+25);
 
     ctx.fillStyle = "#EDEDF5";
-    ctx.font = "700 25px Arial";
-    ctx.fillText(b.value, x+16, statsY+78);
-    ctx.fillStyle = "#8E8EA8";
-    ctx.font = "400 12px Arial";
-    ctx.fillText(b.label.toUpperCase(), x+16, statsY+94);
-  });
+    ctx.font = "700 26px Arial";
+    mctx.font = "700 26px Arial";
+    const nameLines = wrapTextLines(mctx, topItem.name, detailW, 3);
+    let ny = heroY+70;
+    nameLines.forEach(line=>{ ctx.fillText(line, detailX, ny); ny += 34; });
 
-  const itemsHeaderY = statsY + statsH + 20;
-  ctx.fillStyle = "#EDEDF5";
-  ctx.font = "700 17px Arial";
-  ctx.fillText("Items", 40, itemsHeaderY);
-
-  let y = itemsHeaderY + 20;
-  if(itemLayouts.length===0){
     ctx.fillStyle = "#8E8EA8";
     ctx.font = "400 15px Arial";
-    ctx.fillText("Nothing bought today.", 40, y+16);
+    const perUnit = topItem.qty ? topItem.spent/topItem.qty : topItem.spent;
+    ctx.fillText(`Qty ${topItem.qty} · ${fmtMoney(perUnit)} each · ${fmtMoney(topItem.spent)} total`, detailX, ny+14);
   } else {
-    const maxSpend = Math.max(...itemLayouts.map(l=>l.spent), 1);
-    itemLayouts.forEach((l,i)=>{
-      const cardH = l.cardH;
-      const cardX = 40, cardW = W-80;
+    ctx.fillStyle = "#8E8EA8";
+    ctx.font = "400 16px Arial";
+    ctx.fillText("Nothing bought today yet.", detailX, heroY+heroH/2);
+  }
+
+  // --- Also bought: every remaining item, with retailer/qty/price/total ---
+  let cursorY = heroY+heroH+heroGap;
+  if(otherLayouts.length){
+    ctx.fillStyle = "#EDEDF5";
+    ctx.font = "700 16px Arial";
+    ctx.fillText(`Also bought (${otherLayouts.length})`, listX, cursorY+16);
+    cursorY += listHeaderH;
+
+    otherLayouts.forEach((l,i)=>{
+      const rowH = l.rowH;
       ctx.fillStyle = "#15151F";
-      roundRectPath(ctx, cardX, y, cardW, cardH, 12);
+      roundRectPath(ctx, listX, cursorY, listW, rowH, 10);
       ctx.fill();
 
-      const nameBlockH = l.lines.length*21;
-      const nameTopY = y + (cardH-8-nameBlockH)/2 + 15;
-
-      // Rank badge, vertically centered against the name block
+      // Rank badge
       ctx.beginPath();
-      ctx.arc(cardX+cardPad+15, y+(cardH-8)/2, 15, 0, Math.PI*2);
+      ctx.arc(listX+rowPad+11, cursorY+rowH/2, 11, 0, Math.PI*2);
       ctx.fillStyle = "rgba(155,107,245,0.16)";
       ctx.fill();
       ctx.fillStyle = "#9B6BF5";
-      ctx.font = "700 14px Arial";
-      ctx.textAlign = "center";
-      ctx.fillText(String(i+1), cardX+cardPad+15, y+(cardH-8)/2+5);
-      ctx.textAlign = "left";
+      ctx.font = "700 12px Arial";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(String(i+2), listX+rowPad+11, cursorY+rowH/2+1);
+      ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
 
-      // Name — wrapped to however many lines it actually needs, vertically
-      // centered in the card rather than pinned to the top
-      const nameX = cardX+cardPad+46;
-      ctx.fillStyle = "#EDEDF5";
-      ctx.font = "700 16px Arial";
-      l.lines.forEach((line,li)=>{
-        ctx.fillText(line, nameX, nameTopY+li*21);
-      });
-
-      // Quantity + price, stacked and right-aligned — same clean pattern
-      // as the reference images' right-aligned counts, instead of a
-      // small badge competing for space with a floating bar.
-      const rightX = cardX+cardW-cardPad;
-      ctx.textAlign = "right";
+      const textX = listX+rowPad+rankW+14;
+      const blockTopY = cursorY + (rowH - (14+6+l.lines.length*19))/2;
+      // Retailer, small caps with an accent dot
       ctx.fillStyle = "#9B6BF5";
-      ctx.font = "700 17px Arial";
-      ctx.fillText("×"+l.qty, rightX, y+(cardH-8)/2-2);
+      ctx.beginPath(); ctx.arc(textX+3, blockTopY+4, 3, 0, Math.PI*2); ctx.fill();
       ctx.fillStyle = "#8E8EA8";
-      ctx.font = "400 13px Arial";
-      ctx.fillText(fmtMoney(l.spent), rightX, y+(cardH-8)/2+16);
+      ctx.font = "700 11px Arial";
+      ctx.fillText((l.retailer||"Unknown").toUpperCase(), textX+12, blockTopY+8);
+      // Item name, wrapped
+      ctx.fillStyle = "#EDEDF5";
+      ctx.font = "700 15px Arial";
+      let nameY = blockTopY+14+19;
+      l.lines.forEach(line=>{ ctx.fillText(line, textX, nameY); nameY += 19; });
+
+      // Right side: qty × price-each on top, bold total below
+      const rightX = listX+listW-rowPad;
+      const perUnit = l.qty ? l.spent/l.qty : l.spent;
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#8E8EA8";
+      ctx.font = "400 12px Arial";
+      ctx.fillText(`×${l.qty} · ${fmtMoney(perUnit)} each`, rightX, cursorY+rowH/2-6);
+      ctx.fillStyle = "#EDEDF5";
+      ctx.font = "700 17px Arial";
+      ctx.fillText(fmtMoney(l.spent), rightX, cursorY+rowH/2+16);
       ctx.textAlign = "left";
 
-      // Proportional footer strip along the bottom edge, showing this
-      // item's share of today's total spend — subtle even when it's the
-      // only item and the strip runs the full width, unlike a floating
-      // bar competing with the text above it.
-      ctx.fillStyle = "#232332";
-      roundRectPath(ctx, cardX+cardPad, y+cardH-8, cardW-cardPad*2, 4, 2);
-      ctx.fill();
-      const stripW = Math.max(10, (l.spent/maxSpend)*(cardW-cardPad*2));
-      ctx.fillStyle = "#9B6BF5";
-      roundRectPath(ctx, cardX+cardPad, y+cardH-8, stripW, 4, 2);
-      ctx.fill();
-
-      y += cardH + 12;
+      cursorY += rowH + 10;
     });
+    cursorY += listGap-10;
   }
+
+  // --- Stats footer: two metrics with real 7-day trend sparklines ---
+  const statsY = cursorY;
+  ctx.fillStyle = "#15151F";
+  roundRectPath(ctx, 40, statsY, W-80, statsH, 14);
+  ctx.fill();
+  ctx.strokeStyle = "#232332";
+  ctx.lineWidth = 1;
+  roundRectPath(ctx, 40, statsY, W-80, statsH, 14);
+  ctx.stroke();
+
+  const metrics = [
+    { label: "ORDERS TODAY", value: String(stats.orderCount), color: "#F5B942", bg: "rgba(245,185,66,0.13)", icon: "cart", trend: trend.orderCounts },
+    { label: "TOTAL SPENT", value: fmtMoney(stats.spent), color: "#3DD68C", bg: "rgba(61,214,140,0.13)", icon: "coin", trend: trend.spendAmounts }
+  ];
+  const halfW = (W-80)/2;
+  metrics.forEach((m,i)=>{
+    const mx = 40 + i*halfW;
+    if(i===1){
+      ctx.strokeStyle = "#232332";
+      ctx.beginPath(); ctx.moveTo(mx,statsY+16); ctx.lineTo(mx,statsY+statsH-16); ctx.stroke();
+    }
+    const iconX = mx+(i===0?24:44);
+    roundRectPath(ctx, iconX, statsY+26, 44, 44, 11);
+    ctx.fillStyle = m.bg;
+    ctx.fill();
+    ctx.fillStyle = m.color;
+    drawStatIcon(ctx, m.icon, iconX+22, statsY+48);
+
+    ctx.fillStyle = "#8E8EA8";
+    ctx.font = "700 11px Arial";
+    ctx.fillText(m.label, iconX+56, statsY+40);
+    ctx.fillStyle = "#EDEDF5";
+    ctx.font = "700 22px Arial";
+    ctx.fillText(m.value, iconX+56, statsY+64);
+
+    const sparkX = iconX+140, sparkW = halfW-(sparkX-mx)-30;
+    if(sparkW>40) drawSparkline(ctx, sparkX, statsY+22, sparkW, statsH-44, m.trend, m.color);
+  });
 
   ctx.fillStyle = "#5C5C72";
   ctx.font = "400 12px Arial";
-  ctx.fillText("Generated with Restock", 40, H-22);
+  ctx.textAlign = "center";
+  ctx.fillText("Generated with Restock", W/2, H-18);
+  ctx.textAlign = "left";
 
   canvas.toBlob(blob=>{
     const url = URL.createObjectURL(blob);
