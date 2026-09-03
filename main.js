@@ -876,6 +876,27 @@ ipcMain.handle('taxRecords:openFolder', () => {
   }
 });
 
+// A price with no decimal or comma at all, and suspiciously high, is a
+// strong signal the pence got concatenated onto the pounds without a
+// separator — confirmed against a real Gmail-forwarded Amazon email
+// where "£419.99" became "£41999" during Gmail's plain-text
+// reconstruction of the original HTML (superscript pence styling has no
+// literal "." to survive once flattened to text). Deliberately
+// conservative: requires the separator to be completely absent (an
+// ordinary "£1,500.00" is untouched) and a threshold high enough that a
+// genuinely large whole-pound price for a sealed case or bulk order
+// isn't second-guessed. Shared between the order-level total and
+// individual line items, since either can independently hit this same
+// Gmail-forwarding data loss.
+function recoverMissingDecimal(rawStr) {
+  const cleaned = (rawStr || '').replace(/,/g, '');
+  let value = cleaned ? parseFloat(cleaned) : null;
+  if (cleaned && !/[.,]/.test(rawStr) && cleaned.length >= 4 && value > 2000) {
+    value = parseFloat(cleaned.slice(0, -2) + '.' + cleaned.slice(-2));
+  }
+  return value;
+}
+
 function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }) {
   // Invisible Unicode formatting characters (zero-width spaces, RTL/LTR
   // embedding marks, word joiners, BOM) show up in real marketing emails
@@ -897,7 +918,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // it doesn't interfere with line item/price/address extraction later,
   // after pulling the real sender out of it first. Also handles
   // Outlook's "Sent:" in place of Gmail's "Date:".
-  const forwardMatch = bodyText.match(/-{2,}\s*forwarded message\s*-{2,}\s*\n\s*from:\s*([^\n<]+?)\s*<([^\s<>]+@[^\s<>]+)>\s*\n(?:(?:date|sent):[^\n]*\n)?(?:subject:[^\n]*\n)?(?:to:[^\n]*\n)?(?:cc:[^\n]*\n)?/i);
+  const forwardMatch = bodyText.match(/-{2,}\s*forwarded message\s*-{2,}\s*\r?\n\s*from:\s*\*?([^\n<]+?)(?:\s*<[^<>\n]*>)?\*?\s*<([^\s<>]+@[^\s<>]+)>\s*\r?\n(?:(?:date|sent):[^\n]*\r?\n)?(?:subject:[^\n]*\r?\n)?(?:to:[^\n]*\r?\n)?(?:cc:[^\n]*\r?\n)?/i);
   if (forwardMatch) {
     fromName = forwardMatch[1].trim();
     fromEmail = forwardMatch[2].trim();
@@ -1110,7 +1131,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
     bodyText.match(/(?<!sub)\btotal\*?(?!\s*includes)(?!\s*tax)[\s\S]{0,15}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
     bodyText.match(/order\s+total(?!\s*includes)[\s\S]{0,30}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
     bodyText.match(/[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/);
-  const price = priceMatch ? parseFloat(priceMatch[1].replace(',', '')) : null;
+  const price = recoverMissingDecimal(priceMatch ? priceMatch[1] : null);
 
   // Require "order number/no./#" specifically — "order confirmation" is
   // too generic a phrase (shows up in intro sentences having nothing to do
@@ -1219,6 +1240,11 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       const line = rawLine.trim().replace(/,\s*$/, '');
       if (!line) continue;
       if (stopWordsAnchored.test(line)) break;
+      // A line that's just a URL — confirmed a real invoice email
+      // hyperlinks each address line to a Google Maps search, so the raw
+      // link text appears as its own line between the real address
+      // lines rather than terminating the block.
+      if (/^<?https?:\/\//i.test(line)) continue;
       addrLines.push(line);
       if (addrLines.length >= 6) break;
     }
@@ -1328,6 +1354,14 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       // tail end of that date ("25 August") bled into the captured name
       // since the lookback window started partway through it.
       cleanName = cleanName.replace(/^(?:\d{1,2}:\d{2}\s*(?:am|pm)?\s*)?(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+)?\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+/i, '');
+      // A leading "[Estim]ated Arrival [date] - [date]" prefix —
+      // confirmed against a real PSG email where "Estimated Arrival 7
+      // September - 9 September" sat right before the product name.
+      // Anchored on "Arrival" alone rather than "Estimated Arrival",
+      // since the lookback window starting mid-word can truncate
+      // "Estimated" down to just "ated" — same failure mode as the
+      // Argos date-prefix case above.
+      cleanName = cleanName.replace(/^.*?\bArrival\s+\d{1,2}\s+[A-Za-z]+\s*-\s*\d{1,2}\s+[A-Za-z]+\s+/i, '');
       // A purely numeric/price-shaped "name" means the real product name
       // was blocked by an intervening currency symbol or product code
       // and this only picked up leftover price digits — confirmed
@@ -1452,6 +1486,36 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
         name: qm[1].trim().replace(/\s{2,}/g, ' '),
         quantity: qty,
         price: qty ? price / qty : price
+      });
+    }
+  }
+  // Gmail-forwarded Amazon order confirmations, plain-text reconstructed
+  // — confirmed against a real one. The product name lives in an
+  // "[image: Name]" alt-text tag, often the only untruncated copy of it
+  // (the visible link text right after is frequently cut short with
+  // "..."), and the actual quantity/price sit several lines further down
+  // past "Sold by ..." / "Condition: ..." lines with no direct
+  // adjacency any other pattern could anchor on.
+  if (lineItems.length === 0) {
+    const imageAltRe = /\[image:\s*([\s\S]{4,150}?)\]/gi;
+    let imageAltMatch = null, iam;
+    while ((iam = imageAltRe.exec(bodyText)) !== null) {
+      const candidate = iam[1].replace(/\s{2,}/g, ' ').trim();
+      // Progress-tracker status icons ("Completed"/"Pending" for each
+      // Ordered/Dispatched/Out for delivery/Delivered stage) come before
+      // the actual product image in a real Amazon order email — skipped
+      // here rather than taking the first match found.
+      if (/^(?:Completed|Pending)$/i.test(candidate)) continue;
+      imageAltMatch = iam;
+      break;
+    }
+    const qtyPriceMatch = bodyText.match(/Quantity:\s*(\d{1,3})\s*\n+\s*[$£€]\s?([\d.,]+)/i);
+    if (imageAltMatch && qtyPriceMatch) {
+      const qty = parseInt(qtyPriceMatch[1], 10) || 1;
+      lineItems.push({
+        name: imageAltMatch[1].replace(/\s{2,}/g, ' ').trim(),
+        quantity: qty,
+        price: recoverMissingDecimal(qtyPriceMatch[2])
       });
     }
   }
