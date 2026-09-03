@@ -1130,7 +1130,13 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
     bodyText.match(/total\s+paid[\s\S]{0,15}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
     bodyText.match(/(?<!sub)\btotal\*?(?!\s*includes)(?!\s*tax)[\s\S]{0,15}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
     bodyText.match(/order\s+total(?!\s*includes)[\s\S]{0,30}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
-    bodyText.match(/[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/);
+    // Currency-code-before-number ("GBP 759.99") — confirmed against a
+    // real Microsoft order using this format throughout with no £/$/€
+    // symbol anywhere at all, the reverse of the "35.99 GBP" case
+    // already handled for Amazon elsewhere in this function.
+    bodyText.match(/order\s+total\*?\s*\*?\s*(?:GBP|USD|EUR|CAD|AUD|NZD)\s*([\d.,]+)/i) ||
+    bodyText.match(/[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/) ||
+    bodyText.match(/\b(?:GBP|USD|EUR|CAD|AUD|NZD)\s*([\d.,]+)/i);
   const price = recoverMissingDecimal(priceMatch ? priceMatch[1] : null);
 
   // Require "order number/no./#" specifically — "order confirmation" is
@@ -1220,7 +1226,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // Made the label separator optional, and added a global truncation
   // pass that finds the stop phrase wherever it actually appears, not
   // just at a line's start.
-  const addrLabelMatch = bodyText.match(/(?:shipping\s*(?:&|and)\s*billing address|shipping address|ship(?:ping)? to|delivery address|delivered to)\s*[:\n]?(?!\s*your\s+address\b)(?!\s*an?\s)/i);
+  const addrLabelMatch = bodyText.match(/\*?(?:shipping\s*(?:&|and)\s*billing address|shipping address|ship(?:ping)? to|delivery address|delivered to)\*?\s*[:\n]?\*?(?!\s*your\s+address\b)(?!\s*an?\s)/i);
   if (addrLabelMatch) {
     let afterLabel = bodyText.slice(addrLabelMatch.index + addrLabelMatch[0].length, addrLabelMatch.index + addrLabelMatch[0].length + 300);
     // Broad enough to catch the sign-off/next-section text that follows an
@@ -1516,6 +1522,24 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
         name: imageAltMatch[1].replace(/\s{2,}/g, ' ').trim(),
         quantity: qty,
         price: recoverMissingDecimal(qtyPriceMatch[2])
+      });
+    }
+  }
+  // Microsoft order layout — confirmed against a real Xbox pre-order.
+  // The product name appears twice in a row, optionally followed by
+  // labeled fields (Estimated Delivery Date / Shipping Method /
+  // Availability Date, present for pre-orders), then a bare "qty
+  // CURRENCY_CODE price" line with no £/$/€ symbol at all. The labels
+  // are optional in the pattern so a non-preorder Microsoft item
+  // (without those fields) still matches the same way.
+  if (lineItems.length === 0) {
+    const msMatch = bodyText.match(/([A-Za-z0-9][^\n]{4,120}?)\s*\n+\s*\1\s*\n+(?:\s*\*[^*\n]+:\*[^\n]*\n+)*\s*(\d{1,3})\s+(?:GBP|USD|EUR|CAD|AUD|NZD)\s*([\d.,]+)/i);
+    if (msMatch) {
+      const qty = parseInt(msMatch[2], 10) || 1;
+      lineItems.push({
+        name: msMatch[1].trim().replace(/\s{2,}/g, ' '),
+        quantity: qty,
+        price: recoverMissingDecimal(msMatch[3])
       });
     }
   }
