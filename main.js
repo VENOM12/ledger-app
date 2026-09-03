@@ -430,7 +430,7 @@ async function syncOneAccount(acc, { blockPromotions, excludeList, rules }) {
   const results = [];
   const expenseResults = [];
   const newlySeenIds = [];
-  const KEYWORDS = /(order|shipped|shipment|delivered|delivery|arriv|tracking|confirmation|receipt|out for delivery|sold|sale|payout|paid|payment received)/i;
+  const KEYWORDS = /(order|invoice|shipped|shipment|delivered|delivery|arriv|tracking|confirmation|receipt|out for delivery|sold|sale|payout|paid|payment received)/i;
 
   try {
     await client.connect();
