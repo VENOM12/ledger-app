@@ -254,6 +254,8 @@ if(!Array.isArray(state.invoices)) state.invoices = [];
 if(!state.invoiceSettings) state.invoiceSettings = { fromName: "", defaultSendAccountId: null, nextInvoiceNumber: 1, defaultVatRate: 20, defaultLogo: null, defaultBankDetails: "" };
 if(state.invoiceSettings.defaultLogo===undefined) state.invoiceSettings.defaultLogo = null;
 if(state.invoiceSettings.defaultBankDetails===undefined) state.invoiceSettings.defaultBankDetails = "";
+if(!Array.isArray(state.distributorItems)) state.distributorItems = [];
+if(!state.distributorName) state.distributorName = "";
 
 let ui = { tab: "dashboard", period: "Month", stockFilter: "In Stock", stockCategoryFilter: "All", search: "", detailItemId: null, chartType: "line" };
 let licenseExpiresAt = null; // shown next to "Saved locally" in the sidebar once known
@@ -323,6 +325,21 @@ function qtySold(item){ return item.sales.reduce((s,r)=>s+r.quantitySold,0); }
 function qtyRemaining(item){ return item.quantityPurchased - qtySold(item); }
 function isSoldOut(item){ return qtyRemaining(item) <= 0; }
 function totalCost(item){ return item.quantityPurchased * item.purchasePricePerUnit; }
+// Whether a preorder's cost should stay OUT of "money spent" for now.
+// Pokémon Center keeps its own existing all-or-nothing rule (excluded
+// entirely until it actually arrives — confirmed directly from their own
+// emails that they charge on shipment, not at confirmation). Every other
+// preorder is excluded only while BOTH it hasn't been paid for yet AND it
+// hasn't been dispatched — as soon as either happens, the money is real.
+// `paymentMade` defaults to undefined (not false) on every preorder
+// created before this feature existed, so this never changes what any
+// existing preorder already counted as — only a preorder where the user
+// has explicitly said "not paid yet" is affected.
+function preorderSpendPending(item){
+  if(!item.isPreorder) return false;
+  if(item.retailer === "Pokemon Center") return true;
+  return item.paymentMade === false && !item.isDispatched;
+}
 function costOfSoldUnits(item){ return qtySold(item) * item.purchasePricePerUnit; }
 function saleRevenue(sale){ return sale.salePricePerUnit * sale.quantitySold; } // gross, before fees
 function saleNet(sale){ return saleRevenue(sale) - (sale.fees||0); } // what actually lands in the bank
@@ -464,6 +481,7 @@ function render(){
         ${navBtn("analytics","trend","Analytics")}
         ${navBtn("stock","stock","Stock")}
         ${navBtn("orders","cart","Confirmed Orders")}
+        ${navBtn("distributor","layers","Distributor Orders", distributorDueSoonCount())}
         ${navBtn("sold","tag","Sold", state.pendingSales.length)}
         ${navBtn("add","plus","Add Stock")}
         ${navBtn("expenses","cash","Expenses")}
@@ -572,6 +590,7 @@ function renderView(){
   else if(ui.tab==="add"){ view.innerHTML = addFormHTML(); attachAddEvents(); }
   else if(ui.tab==="stock"){ view.innerHTML = stockListHTML(); attachStockEvents(); }
   else if(ui.tab==="orders"){ view.innerHTML = ordersHTML(); attachOrdersEvents(); }
+  else if(ui.tab==="distributor"){ view.innerHTML = distributorHTML(); attachDistributorEvents(); }
   else if(ui.tab==="sold"){ view.innerHTML = soldHTML(); attachSoldEvents(); }
   else if(ui.tab==="expenses"){ view.innerHTML = expensesHTML(); attachExpensesEvents(); }
   else if(ui.tab==="vcc-tracker"){ view.innerHTML = vccTrackerHTML(); attachVccTrackerEvents(); }
@@ -597,7 +616,7 @@ function dashboardHTML(){
   // a given retailer's billing timing in general, so anything other than
   // Pokémon Center is treated as charged at confirmation, which is the
   // more common default for online orders anyway.
-  const purchasesInPeriod = state.items.filter(i => !(i.isPreorder && i.retailer==="Pokemon Center") && inPeriod(i.purchaseDate));
+  const purchasesInPeriod = state.items.filter(i => !preorderSpendPending(i) && inPeriod(i.purchaseDate));
   // Confirmed orders that haven't been delivered yet don't have a stock
   // item to show up in the calculation above at all — counted here
   // instead, for anything that isn't a Pokémon Center preorder. The
@@ -1105,7 +1124,7 @@ function computeWeekTrend(){
   const spendAmounts = days.map(()=>0);
   const dayIndex = ds => days.indexOf(ds);
 
-  state.items.filter(i=>!(i.isPreorder && i.retailer==="Pokemon Center")).forEach(i=>{
+  state.items.filter(i=>!preorderSpendPending(i)).forEach(i=>{
     const idx = dayIndex(i.purchaseDate ? new Date(i.purchaseDate).toDateString() : null);
     if(idx===-1) return;
     orderCounts[idx]++;
@@ -1162,7 +1181,7 @@ function computeTodayStats(){
     itemTotals[name].spent += lineSpent;
   };
 
-  state.items.filter(i=>!(i.isPreorder && i.retailer==="Pokemon Center") && isToday(i.purchaseDate)).forEach(i=>{
+  state.items.filter(i=>!preorderSpendPending(i) && isToday(i.purchaseDate)).forEach(i=>{
     const cost = totalCost(i);
     spent += cost;
     orderCount++;
@@ -1630,7 +1649,7 @@ function analyticsHTML(){
   // confirmation. Reused here rather than re-derived so the two pages
   // can't quietly disagree with each other.
   const retailerSpend = {}, retailerSources = {};
-  state.items.filter(i=>!(i.isPreorder && i.retailer==="Pokemon Center") && inPeriod(i.purchaseDate)).forEach(i=>{
+  state.items.filter(i=>!preorderSpendPending(i) && inPeriod(i.purchaseDate)).forEach(i=>{
     const r = i.retailer || "Unknown";
     retailerSpend[r] = (retailerSpend[r]||0) + totalCost(i);
     (retailerSources[r] = retailerSources[r]||[]).push({name: i.name, date: i.purchaseDate, amount: totalCost(i)});
@@ -1652,7 +1671,7 @@ function analyticsHTML(){
   // there's no such thing as an emailed confirmation for an in-store
   // purchase, so those always count as online here.
   const purchaseMethodSpend = { online: 0, "in-store": 0 };
-  state.items.filter(i=>!(i.isPreorder && i.retailer==="Pokemon Center") && inPeriod(i.purchaseDate)).forEach(i=>{
+  state.items.filter(i=>!preorderSpendPending(i) && inPeriod(i.purchaseDate)).forEach(i=>{
     const method = i.purchaseMethod==="in-store" ? "in-store" : "online";
     purchaseMethodSpend[method] += totalCost(i);
   });
@@ -1872,7 +1891,7 @@ function freshAddForm(){
   return {
     name:"", category: CATEGORIES[0], customCategory:"",
     quantity:1, price:"", retailer:"", date: todayISO(), notes:"",
-    isPreorder:false, expectedArrival:"", image:null, purchaseMethod:"online"
+    isPreorder:false, expectedArrival:"", paymentMade:true, image:null, purchaseMethod:"online"
   };
 }
 
@@ -1972,6 +1991,14 @@ function addFormHTML(){
       <div class="field" style="margin:14px 0 0;">
         <label>Expected arrival date (optional)</label>
         <input type="date" id="f-expectedArrival" value="${f.expectedArrival}">
+      </div>
+      <div class="field" style="margin:14px 0 0;">
+        <label>Have you paid for this yet?</label>
+        <div class="segmented">
+          <button type="button" class="${f.paymentMade?'active':''}" data-payment-made="yes">Yes, paid now</button>
+          <button type="button" class="${!f.paymentMade?'active':''}" data-payment-made="no">Not yet</button>
+        </div>
+        <div class="sub" style="margin-top:6px;">${f.paymentMade ? "This will count towards Total Spent straight away." : "This won't count towards Total Spent until you mark it paid or dispatched."}</div>
       </div>` : ""}
     </div>
 
@@ -2021,6 +2048,9 @@ function attachAddEvents(){
   byId("f-notes").addEventListener("input", e=>{ f.notes = e.target.value; });
   byId("f-preorder").addEventListener("change", e=>{ f.isPreorder = e.target.checked; renderView(); });
   if(byId("f-expectedArrival")) byId("f-expectedArrival").addEventListener("change", e=>{ f.expectedArrival = e.target.value; });
+  document.querySelectorAll("[data-payment-made]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ f.paymentMade = btn.dataset.paymentMade==="yes"; renderView(); });
+  });
 
   byId("f-image").addEventListener("change", e=>{
     const file = e.target.files && e.target.files[0];
@@ -2116,6 +2146,8 @@ function savePurchase(){
     notes: f.notes,
     isPreorder: f.isPreorder,
     expectedArrival: f.isPreorder ? (f.expectedArrival || null) : null,
+    paymentMade: f.isPreorder ? !!f.paymentMade : true,
+    isDispatched: false,
     image: f.image || null,
     purchaseMethod: f.purchaseMethod || "online",
     orderNumber: null, deliveryAddress: null, recipientName: null, sentToEmail: null, lineItems: [], sourceEmailDetected: false,
@@ -2388,6 +2420,442 @@ function renderAllOrdersResults(){
   bindAllOrdersResultEvents();
 }
 
+/* ============================================================
+   DISTRIBUTOR ORDERS — products ordered through a partnered shop
+   that buys from the distributor on Brodie's behalf. Distinct from
+   the regular Orders tab (which tracks retailer emails) since these
+   never arrive as emails at all, and have their own per-product
+   payment/delivery due dates, partial-payment tracking, and
+   allocation cuts that regular orders don't need.
+   ============================================================ */
+
+let distributorUI = { sort: "deliveryDue", filter: "open" };
+
+function distributorItemQty(d){ return d.quantityAllocated!=null ? d.quantityAllocated : d.quantityOrdered; }
+function distributorItemTotalCost(d){ return distributorItemQty(d) * (d.costPerUnit||0); }
+function distributorItemAmountOwed(d){ return Math.max(0, distributorItemTotalCost(d) - (d.amountPaid||0)); }
+// Positive only when more has been paid than the item's CURRENT total cost
+// — the normal way this happens is an allocation getting cut after a
+// payment was already made against the original, larger quantity, which
+// leaves a credit/refund owed back rather than the other way around.
+function distributorItemOverpaidAmount(d){
+  const over = (d.amountPaid||0) - distributorItemTotalCost(d);
+  return over > 0.004 ? over : 0;
+}
+function distributorItemExpectedProfit(d){ return ((d.rrp||0) - (d.costPerUnit||0)) * distributorItemQty(d); }
+function distributorItemROI(d){ return d.costPerUnit>0 ? (((d.rrp||0)-d.costPerUnit)/d.costPerUnit)*100 : 0; }
+function distributorItemIsOverduePayment(d){
+  if(d.paymentStatus==="paid" || !d.paymentDueDate) return false;
+  const today = new Date(); today.setHours(0,0,0,0);
+  return new Date(d.paymentDueDate+"T00:00:00") < today;
+}
+// Nav-badge count — anything open (not yet delivered, or not yet paid)
+// with a due date landing within the next week, or already overdue, so
+// the sidebar surfaces it without needing to open the tab.
+function distributorDueSoonCount(){
+  const today = new Date(); today.setHours(0,0,0,0);
+  const soon = new Date(today); soon.setDate(soon.getDate()+7);
+  return (state.distributorItems||[]).filter(d=>{
+    const dueDates = [];
+    if(d.paymentStatus!=="paid" && d.paymentDueDate) dueDates.push(d.paymentDueDate);
+    if(!d.delivered && d.deliveryDueDate) dueDates.push(d.deliveryDueDate);
+    return dueDates.some(ds=>new Date(ds+"T00:00:00") <= soon);
+  }).length;
+}
+
+function sortedDistributorItems(){
+  let items = (state.distributorItems||[]).slice();
+  if(distributorUI.filter==="open") items = items.filter(d=>!d.delivered);
+  else if(distributorUI.filter==="delivered") items = items.filter(d=>d.delivered);
+  // Deliberately NOT sorted by when they were entered — the whole point
+  // raised directly is that items from the same distributor routinely
+  // arrive at wildly different times, so the default view sorts by each
+  // product's own due date instead, soonest first, with anything that
+  // has no date pushed to the very end rather than floating awkwardly at
+  // the top.
+  const dateOrInfinity = v => v ? new Date(v+"T00:00:00").getTime() : Infinity;
+  if(distributorUI.sort==="deliveryDue") items.sort((a,b)=>dateOrInfinity(a.deliveryDueDate)-dateOrInfinity(b.deliveryDueDate));
+  else if(distributorUI.sort==="paymentDue") items.sort((a,b)=>dateOrInfinity(a.paymentDueDate)-dateOrInfinity(b.paymentDueDate));
+  else items.sort((a,b)=>new Date(b.dateAdded)-new Date(a.dateAdded));
+  return items;
+}
+
+function distributorPaymentChip(d){
+  const map = {
+    paid: ["chip-delivered","Paid"],
+    partial: ["chip-shipped", `Partial · ${fmtMoney(d.amountPaid||0)} of ${fmtMoney(distributorItemTotalCost(d))}`],
+    unpaid: ["chip-cancelled","Unpaid"]
+  };
+  const [cls,label] = map[d.paymentStatus] || map.unpaid;
+  const overpaid = distributorItemOverpaidAmount(d);
+  return `<span class="status-chip ${cls}">${label}</span>${overpaid>0 ? `<div style="font-size:11px;color:var(--gold);margin-top:3px;">Paid ${fmtMoney(overpaid)} more than the current total — allocation was likely cut after paying</div>` : ""}`;
+}
+
+function distributorHTML(){
+  const all = state.distributorItems||[];
+  const open = all.filter(d=>!d.delivered);
+  const totalOwed = open.reduce((s,d)=>s+distributorItemAmountOwed(d),0);
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const monthEnd = new Date(now.getFullYear(), now.getMonth()+1, 0);
+  const dueThisMonth = open.filter(d=>d.paymentStatus!=="paid" && d.paymentDueDate && new Date(d.paymentDueDate+"T00:00:00")>=monthStart && new Date(d.paymentDueDate+"T00:00:00")<=monthEnd)
+    .reduce((s,d)=>s+distributorItemAmountOwed(d),0);
+  const expectedProfit = open.reduce((s,d)=>s+distributorItemExpectedProfit(d),0);
+  const overdueCount = open.filter(distributorItemIsOverduePayment).length;
+  const items = sortedDistributorItems();
+
+  return `
+    <div class="toolbar-row">
+      <button class="btn-primary" id="addDistributorBtn">${ICONS.plus} Add Product</button>
+      <div class="field" style="margin:0;max-width:220px;">
+        <input type="text" id="distributorNameInput" placeholder="Distributor/shop name (optional)" value="${escapeAttr(state.distributorName)}">
+      </div>
+      <select id="distributorSortSelect" style="width:auto;padding:9px 30px 9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
+        <option value="deliveryDue" ${distributorUI.sort==="deliveryDue"?"selected":""}>Sort: Delivery due</option>
+        <option value="paymentDue" ${distributorUI.sort==="paymentDue"?"selected":""}>Sort: Payment due</option>
+        <option value="recent" ${distributorUI.sort==="recent"?"selected":""}>Sort: Recently added</option>
+      </select>
+      <select id="distributorFilterSelect" style="width:auto;padding:9px 30px 9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
+        <option value="open" ${distributorUI.filter==="open"?"selected":""}>Open</option>
+        <option value="delivered" ${distributorUI.filter==="delivered"?"selected":""}>Delivered</option>
+        <option value="all" ${distributorUI.filter==="all"?"selected":""}>All</option>
+      </select>
+    </div>
+
+    <div class="stat-grid" style="margin-bottom:18px;">
+      ${statCard("cash","Outstanding Owed", fmtMoney(totalOwed), "var(--red)", "var(--red-bg)")}
+      ${statCard("clock","Due This Month", fmtMoney(dueThisMonth), "var(--gold)", "var(--gold-bg)")}
+      ${statCard("trend","Expected Profit at RRP", fmtMoney(expectedProfit), "var(--green)", "var(--green-bg)")}
+      ${statCard("box","Awaiting Delivery", open.length, "var(--blue)", "var(--blue-bg)")}
+      ${overdueCount>0 ? statCard("warning","Overdue Payments", overdueCount, "var(--red)", "var(--red-bg)") : ""}
+    </div>
+
+    ${items.length===0 ? `
+      <div class="empty-state">
+        ${ICONS.empty}
+        <div class="t">No distributor orders yet</div>
+        <div class="d">Track products ordered through a distributor partner — cost per unit, RRP, payment status, and delivery, each with its own due date since they rarely arrive together.</div>
+      </div>
+    ` : `
+      <div class="card table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Product</th><th>Qty</th><th>Cost/unit</th><th>RRP</th><th>Profit @ RRP</th><th>Payment</th><th>Delivery</th><th></th></tr></thead>
+          <tbody>
+            ${items.map(d=>distributorRowHTML(d)).join("")}
+          </tbody>
+        </table>
+      </div>
+    `}
+    <div style="height:24px;"></div>
+  `;
+}
+
+function distributorRowHTML(d){
+  const qty = distributorItemQty(d);
+  const isCut = d.quantityAllocated!=null && d.quantityAllocated !== d.quantityOrdered;
+  const overdue = distributorItemIsOverduePayment(d);
+  return `
+    <tr>
+      <td>
+        <div style="font-weight:600;">${escapeHTML(d.name)}</div>
+        <div class="dim" style="font-size:12px;">${escapeHTML(d.category||"Other")}${d.orderReference ? " · "+escapeHTML(d.orderReference) : ""}</div>
+      </td>
+      <td class="mono dim">
+        ${isCut ? `${d.quantityOrdered} &rarr; <span style="color:var(--gold);font-weight:600;">${d.quantityAllocated}</span>` : qty}
+        ${isCut ? `<div style="font-size:11px;color:var(--gold);">Allocation cut</div>` : ""}
+      </td>
+      <td class="mono dim">${fmtMoney(d.costPerUnit)}</td>
+      <td class="mono dim">${fmtMoney(d.rrp)}</td>
+      <td class="mono" style="color:var(--green);">${fmtMoney(distributorItemExpectedProfit(d))}</td>
+      <td>
+        ${distributorPaymentChip(d)}
+        ${d.paymentDueDate ? `<div style="font-size:11px;${overdue?'color:var(--red);font-weight:600;':'color:var(--text-mute);'}margin-top:4px;">${overdue?"Overdue — ":"Due "}${formatDate(d.paymentDueDate)}</div>` : ""}
+      </td>
+      <td>
+        ${d.delivered ? `<span class="status-chip chip-delivered">Delivered</span><div style="font-size:11px;color:var(--text-mute);margin-top:4px;">${formatDate(d.deliveredDate)}</div>` : `
+          ${d.deliveryDueDate ? `<div style="font-size:12px;">${formatDate(d.deliveryDueDate)}</div>` : `<div class="dim" style="font-size:12px;">No date set</div>`}
+          <button class="btn-small" data-mark-distributor-delivered="${d.id}" style="margin-top:4px;">${ICONS.check} Mark Delivered</button>
+        `}
+      </td>
+      <td style="text-align:right;white-space:nowrap;">
+        <button class="icon-btn" data-edit-distributor="${d.id}" title="Edit">${ICONS.pencil}</button>
+        <button class="icon-btn" data-delete-distributor="${d.id}" title="Delete" style="color:var(--red);">${ICONS.trash}</button>
+      </td>
+    </tr>
+  `;
+}
+
+function attachDistributorEvents(){
+  const byId = id => document.getElementById(id);
+  byId("addDistributorBtn").addEventListener("click", ()=>openDistributorModal(null));
+  byId("distributorNameInput").addEventListener("change", e=>{ state.distributorName = e.target.value.trim(); saveState(); });
+  byId("distributorSortSelect").addEventListener("change", e=>{ distributorUI.sort = e.target.value; renderView(); });
+  byId("distributorFilterSelect").addEventListener("change", e=>{ distributorUI.filter = e.target.value; renderView(); });
+  document.querySelectorAll("[data-edit-distributor]").forEach(btn=>{
+    btn.addEventListener("click", ()=>openDistributorModal(btn.dataset.editDistributor));
+  });
+  document.querySelectorAll("[data-delete-distributor]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const d = state.distributorItems.find(x=>x.id===btn.dataset.deleteDistributor);
+      if(!d) return;
+      if(!confirm(`Delete "${d.name}" from Distributor Orders? This can't be undone.`)) return;
+      state.distributorItems = state.distributorItems.filter(x=>x.id!==d.id);
+      saveState();
+      showToast("Deleted");
+      renderView();
+    });
+  });
+  document.querySelectorAll("[data-mark-distributor-delivered]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const d = state.distributorItems.find(x=>x.id===btn.dataset.markDistributorDelivered);
+      if(!d || d.delivered) return;
+      // Reuses the exact same stock-creation/consolidation logic the
+      // regular Orders flow uses for an arriving line item — same
+      // weighted-average handling if this product already exists in
+      // Stock, same placeholder shape otherwise, so distributor
+      // deliveries behave identically to any other restock once they
+      // land, rather than needing their own separate stock-creation path.
+      const stockItem = addOrderLineToStock(
+        { retailer: state.distributorName || "Distributor", orderDate: d.dateAdded, fromEmail: null },
+        { name: d.name, quantity: distributorItemQty(d), price: d.costPerUnit }
+      );
+      d.delivered = true;
+      d.deliveredDate = todayISO();
+      d.stockItemId = stockItem.id;
+      saveState();
+      showToast(`${d.name} marked delivered and added to Stock`);
+      renderView();
+    });
+  });
+}
+
+let distributorFormState = null;
+let distributorModalId = null; // "new" or an existing item's id
+
+function openDistributorModal(itemId){
+  distributorModalId = itemId || "new";
+  const existing = itemId ? state.distributorItems.find(d=>d.id===itemId) : null;
+  distributorFormState = existing ? {
+    name: existing.name,
+    category: CATEGORIES.includes(existing.category) ? existing.category : "Other",
+    customCategory: CATEGORIES.includes(existing.category) ? "" : (existing.category||""),
+    quantityOrdered: existing.quantityOrdered,
+    quantityAllocated: existing.quantityAllocated!=null ? existing.quantityAllocated : existing.quantityOrdered,
+    costPerUnit: existing.costPerUnit, rrp: existing.rrp,
+    paymentStatus: existing.paymentStatus||"unpaid", amountPaid: existing.amountPaid||0,
+    paymentDueDate: existing.paymentDueDate||"", deliveryDueDate: existing.deliveryDueDate||"",
+    orderReference: existing.orderReference||"", notes: existing.notes||""
+  } : {
+    name:"", category: CATEGORIES[0], customCategory:"",
+    quantityOrdered:1, quantityAllocated:1, costPerUnit:"", rrp:"",
+    paymentStatus:"unpaid", amountPaid:0, paymentDueDate:"", deliveryDueDate:"",
+    orderReference:"", notes:""
+  };
+  renderDistributorModal();
+}
+
+function renderDistributorModal(){
+  const f = distributorFormState;
+  const isNew = distributorModalId==="new";
+  const qty = parseInt(f.quantityAllocated,10) || parseInt(f.quantityOrdered,10) || 0;
+  const totalCost = (parseFloat(f.costPerUnit)||0) * qty;
+  const expectedProfit = ((parseFloat(f.rrp)||0) - (parseFloat(f.costPerUnit)||0)) * qty;
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open" id="distributorModalBackdrop">
+      <div class="modal" style="width:540px;max-height:85vh;overflow-y:auto;">
+        <div class="modal-header">
+          <h2>${isNew ? "Add Distributor Product" : "Edit Product"}</h2>
+          <button class="icon-btn" id="closeDistributorModal">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-grid">
+            <div class="field" style="grid-column:1/-1;">
+              <label>Product name</label>
+              <input type="text" id="d-name" value="${escapeAttr(f.name)}" placeholder="e.g. Charizard VMAX Booster Box">
+            </div>
+            <div class="field">
+              <label>Category</label>
+              <select id="d-category">
+                ${CATEGORIES.map(c=>`<option value="${c}" ${f.category===c?"selected":""}>${c}</option>`).join("")}
+              </select>
+            </div>
+            ${f.category==="Other" ? `
+            <div class="field">
+              <label>Custom category</label>
+              <input type="text" id="d-customCategory" value="${escapeAttr(f.customCategory)}">
+            </div>` : `<div></div>`}
+            <div class="field" style="grid-column:1/-1;">
+              <label>Order reference (optional)</label>
+              <input type="text" id="d-orderReference" value="${escapeAttr(f.orderReference)}" placeholder="e.g. October batch, Invoice #214">
+            </div>
+          </div>
+
+          <div class="section-title" style="margin-top:4px;">Quantity &amp; Cost</div>
+          <div class="form-grid">
+            <div class="field">
+              <label>Quantity ordered</label>
+              <input type="number" id="d-qtyOrdered" value="${f.quantityOrdered}" min="1" step="1">
+            </div>
+            <div class="field">
+              <label>Quantity allocated</label>
+              <input type="number" id="d-qtyAllocated" value="${f.quantityAllocated}" min="0" step="1">
+              <div class="sub">Leave equal to ordered unless the distributor has actually cut your allocation.</div>
+            </div>
+            <div class="field">
+              <label>Cost per unit (${state.displayCurrency})</label>
+              <input type="number" id="d-costPerUnit" value="${f.costPerUnit}" step="0.01" min="0">
+            </div>
+            <div class="field">
+              <label>RRP per unit (${state.displayCurrency})</label>
+              <input type="number" id="d-rrp" value="${f.rrp}" step="0.01" min="0">
+            </div>
+          </div>
+          <div class="card total-card" style="margin-top:4px;">
+            <div class="total-line">
+              <span class="label">Total cost (at allocated qty)</span>
+              <span class="value" id="distributorTotalCostValue">${fmtMoney(totalCost)}</span>
+            </div>
+            <div class="total-line">
+              <span class="label">Expected profit at RRP</span>
+              <span class="value" id="distributorExpectedProfitValue" style="color:var(--green);">${fmtMoney(expectedProfit)}</span>
+            </div>
+          </div>
+
+          <div class="section-title">Payment</div>
+          <div class="segmented" style="margin-bottom:10px;">
+            <button type="button" class="${f.paymentStatus==="unpaid"?"active":""}" data-d-payment-status="unpaid">Unpaid</button>
+            <button type="button" class="${f.paymentStatus==="partial"?"active":""}" data-d-payment-status="partial">Partial</button>
+            <button type="button" class="${f.paymentStatus==="paid"?"active":""}" data-d-payment-status="paid">Paid</button>
+          </div>
+          <div class="form-grid">
+            ${f.paymentStatus==="partial" ? `
+            <div class="field">
+              <label>Amount paid so far (${state.displayCurrency})</label>
+              <input type="number" id="d-amountPaid" value="${f.amountPaid}" step="0.01" min="0">
+            </div>` : `<div></div>`}
+            <div class="field">
+              <label>Payment due date</label>
+              <input type="date" id="d-paymentDueDate" value="${f.paymentDueDate}">
+            </div>
+          </div>
+
+          <div class="section-title">Delivery</div>
+          <div class="form-grid">
+            <div class="field">
+              <label>Delivery due date</label>
+              <input type="date" id="d-deliveryDueDate" value="${f.deliveryDueDate}">
+            </div>
+            <div></div>
+          </div>
+
+          <div class="field">
+            <label>Notes (optional)</label>
+            <input type="text" id="d-notes" value="${escapeAttr(f.notes)}">
+          </div>
+
+          <div style="display:flex;gap:10px;margin-top:14px;">
+            <button class="btn-primary" id="saveDistributorBtn">${isNew ? "Add Product" : "Save Changes"}</button>
+            ${!isNew ? `<button class="btn-secondary" id="deleteDistributorModalBtn" style="border-color:var(--red);color:var(--red);">${ICONS.trash} Delete</button>` : ""}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  attachDistributorModalEvents();
+}
+
+function updateDistributorTotals(){
+  const f = distributorFormState;
+  const qty = parseInt(f.quantityAllocated,10) || parseInt(f.quantityOrdered,10) || 0;
+  const cost = (parseFloat(f.costPerUnit)||0) * qty;
+  const profit = ((parseFloat(f.rrp)||0) - (parseFloat(f.costPerUnit)||0)) * qty;
+  const c = document.getElementById("distributorTotalCostValue"); if(c) c.textContent = fmtMoney(cost);
+  const p = document.getElementById("distributorExpectedProfitValue"); if(p) p.textContent = fmtMoney(profit);
+}
+
+function attachDistributorModalEvents(){
+  const byId = id => document.getElementById(id);
+  byId("closeDistributorModal").addEventListener("click", ()=>{
+    document.getElementById("modalRoot").innerHTML = "";
+    distributorFormState = null; distributorModalId = null;
+  });
+  byId("d-name").addEventListener("input", e=>{ distributorFormState.name = e.target.value; });
+  byId("d-category").addEventListener("change", e=>{ distributorFormState.category = e.target.value; renderDistributorModal(); });
+  if(byId("d-customCategory")) byId("d-customCategory").addEventListener("input", e=>{ distributorFormState.customCategory = e.target.value; });
+  byId("d-orderReference").addEventListener("input", e=>{ distributorFormState.orderReference = e.target.value; });
+  byId("d-qtyOrdered").addEventListener("input", e=>{ distributorFormState.quantityOrdered = e.target.value; updateDistributorTotals(); });
+  byId("d-qtyAllocated").addEventListener("input", e=>{ distributorFormState.quantityAllocated = e.target.value; updateDistributorTotals(); });
+  byId("d-costPerUnit").addEventListener("input", e=>{ distributorFormState.costPerUnit = e.target.value; updateDistributorTotals(); });
+  byId("d-rrp").addEventListener("input", e=>{ distributorFormState.rrp = e.target.value; updateDistributorTotals(); });
+  document.querySelectorAll("[data-d-payment-status]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{ distributorFormState.paymentStatus = btn.dataset.dPaymentStatus; renderDistributorModal(); });
+  });
+  if(byId("d-amountPaid")) byId("d-amountPaid").addEventListener("input", e=>{ distributorFormState.amountPaid = e.target.value; });
+  byId("d-paymentDueDate").addEventListener("change", e=>{ distributorFormState.paymentDueDate = e.target.value; });
+  byId("d-deliveryDueDate").addEventListener("change", e=>{ distributorFormState.deliveryDueDate = e.target.value; });
+  byId("d-notes").addEventListener("input", e=>{ distributorFormState.notes = e.target.value; });
+  byId("saveDistributorBtn").addEventListener("click", saveDistributorItem);
+  const delBtn = byId("deleteDistributorModalBtn");
+  if(delBtn) delBtn.addEventListener("click", ()=>{
+    const existing = state.distributorItems.find(d=>d.id===distributorModalId);
+    if(!confirm(`Delete "${existing ? existing.name : 'this product'}" from Distributor Orders? This can't be undone.`)) return;
+    state.distributorItems = state.distributorItems.filter(d=>d.id!==distributorModalId);
+    saveState();
+    document.getElementById("modalRoot").innerHTML = "";
+    distributorFormState = null; distributorModalId = null;
+    showToast("Deleted");
+    if(ui.tab==="distributor") renderView();
+  });
+}
+
+function saveDistributorItem(){
+  const f = distributorFormState;
+  const name = f.name.trim();
+  if(!name){ showToast("Enter a product name", "close"); return; }
+  const effCat = f.category==="Other" && f.customCategory.trim() ? f.customCategory.trim() : f.category;
+  const quantityOrdered = Math.max(1, parseInt(f.quantityOrdered,10)||1);
+  // Blank/invalid allocated quantity defaults back to the ordered amount
+  // — only an explicit, deliberately-lower number counts as a real cut.
+  const quantityAllocated = (f.quantityAllocated===""||f.quantityAllocated==null||isNaN(parseInt(f.quantityAllocated,10)))
+    ? quantityOrdered : Math.max(0, parseInt(f.quantityAllocated,10));
+  const costPerUnit = parseFloat(f.costPerUnit)||0;
+  const rrp = parseFloat(f.rrp)||0;
+  const totalCost = quantityAllocated * costPerUnit;
+  let amountPaid = 0;
+  if(f.paymentStatus==="paid") amountPaid = totalCost;
+  // Deliberately NOT capped at the current total cost — if an allocation
+  // gets cut after a payment was already made against the original,
+  // larger quantity, the real amount paid can legitimately exceed what's
+  // now owed, and that's exactly the overpaid/credit situation the list
+  // view flags rather than something to silently clamp away.
+  else if(f.paymentStatus==="partial") amountPaid = Math.max(0, parseFloat(f.amountPaid)||0);
+
+  const payload = {
+    name, category: effCat, orderReference: f.orderReference.trim(),
+    quantityOrdered, quantityAllocated,
+    costPerUnit, rrp,
+    paymentStatus: f.paymentStatus, amountPaid,
+    paymentDueDate: f.paymentDueDate || null, deliveryDueDate: f.deliveryDueDate || null,
+    notes: f.notes.trim()
+  };
+
+  if(distributorModalId==="new"){
+    state.distributorItems.unshift({
+      id: uid(), ...payload, delivered:false, deliveredDate:null, stockItemId:null, dateAdded: todayISO()
+    });
+    showToast("Added to Distributor Orders");
+  } else {
+    const existing = state.distributorItems.find(d=>d.id===distributorModalId);
+    if(existing) Object.assign(existing, payload);
+    showToast("Updated");
+  }
+  saveState();
+  document.getElementById("modalRoot").innerHTML = "";
+  distributorFormState = null; distributorModalId = null;
+  if(ui.tab==="distributor") renderView();
+}
+
 let addOrderFormState = null;
 const ORDER_STATUSES = [
   ["confirmed","Order Placed"], ["shipped","Shipped"],
@@ -2626,12 +3094,25 @@ function orderDetailModal(orderId){
             ${p.lineItems && p.lineItems.length>0 ? `
               <div class="card table-wrap" style="box-shadow:none;">
                 <table class="data-table">
-                  <thead><tr><th>Item</th><th>Qty</th><th style="text-align:right;">Price</th></tr></thead>
+                  <thead><tr><th>Item</th><th>Qty</th><th style="text-align:right;">Price</th><th></th></tr></thead>
                   <tbody>
-                    ${p.lineItems.map(li=>`<tr><td>${escapeHTML(li.name)}</td><td class="mono dim">${li.quantity}</td><td class="mono" style="text-align:right;">${fmtMoney(li.price)}</td></tr>`).join("")}
+                    ${p.lineItems.map((li,idx)=>`<tr>
+                      <td>${escapeHTML(li.name)}</td>
+                      <td class="mono dim">${li.quantity}</td>
+                      <td class="mono" style="text-align:right;">${fmtMoney(li.price)}</td>
+                      <td style="text-align:right;">
+                        ${li.delivered
+                          ? `<span class="status-chip chip-delivered">Received</span>`
+                          : (p.status!=="delivered" && p.status!=="cancelled"
+                              ? `<button class="btn-small" data-mark-line-delivered="${idx}" title="Use this if the retailer split this order into separate deliveries and only this item has actually arrived — doesn't affect the rest of the order.">Mark Delivered</button>`
+                              : "")}
+                      </td>
+                    </tr>`).join("")}
                   </tbody>
                 </table>
               </div>
+              ${!p.lineItems.every(li=>li.delivered) && p.lineItems.some(li=>li.delivered) ? `<div class="hint" style="margin-top:8px;">Some items from this order have arrived separately — still waiting on the rest.</div>` : ""}
+              ${p.partialItemList ? `<div class="hint" style="margin-top:8px;color:var(--gold);">${p.additionalItemsNotShown ? `+ ${p.additionalItemsNotShown} more item${p.additionalItemsNotShown===1?"":"s"} in this order haven't been detected yet` : "This order may have more items than shown"} — the price and item list above may be incomplete. A fuller confirmation email, if one arrives, will fill in the rest automatically; otherwise use "Edit" above to add them yourself.</div>` : ""}
             ` : `<div class="hint">No itemized product list could be found in this order's emails.</div>`}
           `}
 
@@ -2720,7 +3201,13 @@ function orderDetailModal(orderId){
   });
   const saveOliBtn = document.getElementById("saveOliBtn");
   if(saveOliBtn) saveOliBtn.addEventListener("click", ()=>{
-    p.lineItems = orderLineItemsDraft.filter(li=>li.name.trim()).map(li=>({name:li.name.trim(), quantity:Math.max(1,li.quantity||1), price:li.price||0}));
+    // Preserves `delivered`/`stockItemId` from whichever line this used to
+    // be (carried through unchanged in orderLineItemsDraft since that's a
+    // full {...li} copy) — editing a name/qty/price typo must not silently
+    // un-mark an item that was already received via split-delivery, which
+    // would otherwise get it added to stock a second time once the rest
+    // of the order catches up.
+    p.lineItems = orderLineItemsDraft.filter(li=>li.name.trim()).map(li=>({...li, name:li.name.trim(), quantity:Math.max(1,li.quantity||1), price:li.price||0}));
     // The order's own overall price (shown separately above, and what
     // feeds the All Orders table and the dashboard's spending totals)
     // doesn't update itself just because the line items changed — has to
@@ -2728,12 +3215,38 @@ function orderDetailModal(orderId){
     // whatever it was before (often £0.00 for an order that started with
     // no items at all, exactly what was reported).
     p.price = p.lineItems.reduce((s,li)=>s+li.quantity*li.price, 0);
+    // Manually editing the item list is the user confirming it's now
+    // complete — clears the "and N more items" partial flag so the
+    // incomplete-data hint stops showing and a later partial-read email
+    // for this same order can't second-guess what was just entered.
+    p.partialItemList = false;
+    p.additionalItemsNotShown = null;
     orderLineItemsEditing = null;
     orderLineItemsDraft = null;
     saveState();
     showToast("Items updated");
     orderDetailModal(orderId);
     if(ui.tab==="orders") renderView();
+  });
+  document.querySelectorAll("[data-mark-line-delivered]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const idx = parseInt(btn.dataset.markLineDelivered, 10);
+      const line = p.lineItems && p.lineItems[idx];
+      if(!line || line.delivered) return;
+      const stockItem = addOrderLineToStock(p, line);
+      line.delivered = true;
+      line.stockItemId = stockItem.id;
+      if(!p.addedToStockId) p.addedToStockId = stockItem.id;
+      // Only finish the whole order once every line has actually arrived —
+      // this is purely additive to the existing all-at-once flow, so an
+      // order that never uses this control is never touched by it.
+      const allDelivered = p.lineItems.every(li=>li.delivered);
+      if(allDelivered) p.status = "delivered";
+      saveState();
+      showToast(allDelivered ? `${line.name} marked delivered — order complete` : `${line.name} marked delivered`);
+      orderDetailModal(orderId);
+      if(ui.tab==="orders") renderView();
+    });
   });
   const viewStockBtn = document.getElementById("orderDetailViewStock");
   if(viewStockBtn) viewStockBtn.addEventListener("click", ()=>{
@@ -5267,8 +5780,17 @@ function detailHTML(itemId){
           <div class="meta">${escapeHTML(item.category)} · ${escapeHTML(item.retailer||"Unknown retailer")}${item.isPreorder && item.expectedArrival ? ` · Expected ${formatDate(item.expectedArrival)}` : ""}</div>
         </div>
       </div>
-      ${item.isPreorder ? `<button class="btn-primary" id="markArrivedBtn">${ICONS.check} Mark Arrived</button>` : (remaining>0 ? `<button class="btn-primary" id="sellBtn">${ICONS.check} Mark as Sold</button>` : "")}
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        ${item.isPreorder && item.retailer!=="Pokemon Center" && item.paymentMade===false && !item.isDispatched ? `<button class="btn-secondary" id="markDispatchedBtn">${ICONS.check} Mark Dispatched</button>` : ""}
+        ${item.isPreorder ? `<button class="btn-primary" id="markArrivedBtn">${ICONS.check} Mark Arrived</button>` : (remaining>0 ? `<button class="btn-primary" id="sellBtn">${ICONS.check} Mark as Sold</button>` : "")}
+      </div>
     </div>
+    ${item.isPreorder && item.retailer!=="Pokemon Center" ? `
+    <div class="hint" style="margin-top:8px;">
+      ${item.paymentMade===false && !item.isDispatched
+        ? `${ICONS.close || ""} Payment not made yet — not counted in Total Spent until paid or dispatched.`
+        : `${ICONS.check || ""} ${item.paymentMade===false && item.isDispatched ? "Dispatched — now counted in Total Spent." : "Payment made — counted in Total Spent."}`}
+    </div>` : ""}
 
     <div class="two-col" style="margin-top:18px;">
       <div>
@@ -5416,6 +5938,14 @@ function attachDetailEvents(){
     item.isPreorder = false;
     saveState();
     showToast(`${item.name} moved to Stock`);
+    render();
+  });
+
+  const markDispatchedBtn = document.getElementById("markDispatchedBtn");
+  if(markDispatchedBtn) markDispatchedBtn.addEventListener("click", ()=>{
+    item.isDispatched = true;
+    saveState();
+    showToast(`${item.name} marked as dispatched — now counted in Total Spent`);
     render();
   });
 
@@ -6653,22 +7183,63 @@ function mergeSyncResults(results){
           expectedDelivery:r.expectedDelivery, expectedDeliveryTime:r.expectedDeliveryTime||null,
           carrier:r.carrier||null, trackingNumber:r.trackingNumber||null,
           toEmail:r.toEmail||null, deliveryAddress:r.deliveryAddress||null, recipientName:r.recipientName||null, lineItems:r.lineItems||[],
+          // Amazon's "Ordered: X and N more items" notification only ever
+          // details one representative item, never the rest — flagged so
+          // this never gets mistaken for the order's real total, and so a
+          // fuller confirmation for the same order (if one exists) is
+          // still free to correct it later instead of being permanently
+          // blocked.
+          partialItemList: !!r.partialItemList,
+          additionalItemsNotShown: r.partialItemList ? (r.additionalItemsNotShown||0) : null,
           orderNumber:r.orderNumber, status:"confirmed", addedToStockId:null, isPKCPreorder:false
         });
-      } else if((!existing.lineItems || !existing.lineItems.length || existing.lineItems.every(li=>looksLikeGarbageItemName(li.name))) && r.lineItems && r.lineItems.length){
-        // An order that's still missing its line items means the
-        // original sync either failed to extract them entirely or hit a
-        // parsing bug that's since been fixed — a Full Re-scan is
-        // exactly when this should get picked up and corrected, but
-        // there was previously no path for an already-existing
-        // "confirmed" order to ever be updated by a later sync at all.
-        // Trusting the fresh price alongside the line items here too,
-        // since both come from the same corrected parse of the same
-        // email, and a case that reached this branch means the original
-        // price was extracted under the same broken conditions that
-        // produced empty line items in the first place.
-        existing.lineItems = r.lineItems;
-        if(r.price != null) existing.price = r.price;
+      } else if(r.lineItems && r.lineItems.length){
+        const existingIsEmpty = !existing.lineItems || !existing.lineItems.length || existing.lineItems.every(li=>looksLikeGarbageItemName(li.name));
+        const existingIsPartial = !!existing.partialItemList;
+        if(existingIsEmpty){
+          // An order that's still missing its line items means the
+          // original sync either failed to extract them entirely or hit a
+          // parsing bug that's since been fixed — a Full Re-scan is
+          // exactly when this should get picked up and corrected, but
+          // there was previously no path for an already-existing
+          // "confirmed" order to ever be updated by a later sync at all.
+          // Taking whatever this email offers even if it's itself only a
+          // partial read (still far better than nothing), flagged the
+          // same way a brand new order would be.
+          existing.lineItems = r.lineItems;
+          if(r.price != null) existing.price = r.price;
+          existing.partialItemList = !!r.partialItemList;
+          existing.additionalItemsNotShown = r.partialItemList ? (r.additionalItemsNotShown||0) : null;
+        } else if(existingIsPartial && !r.partialItemList){
+          // A genuinely fuller confirmation has turned up for an order
+          // this app only ever had a partial "and N more items" read on
+          // — always trusted over that partial guess, since this is the
+          // only way such a read ever gets corrected.
+          existing.lineItems = r.lineItems;
+          if(r.price != null) existing.price = r.price;
+          existing.partialItemList = false;
+          existing.additionalItemsNotShown = null;
+        } else if(existingIsPartial && r.partialItemList){
+          // Two different partial reads of the SAME order — confirmed
+          // this happens when a retailer splits a multi-item order across
+          // delivery dates and sends one "and N more items"-style email
+          // per group, each naming a different representative item.
+          // Merging keeps every distinct item found so far instead of
+          // the latest partial read overwriting the previous one.
+          const priorEstimate = existing.lineItems.length + (existing.additionalItemsNotShown||0);
+          const newEstimate = r.lineItems.length + (r.additionalItemsNotShown||0);
+          const existingNames = new Set(existing.lineItems.map(li=>normalizeForMatch(li.name)));
+          r.lineItems.forEach(li=>{
+            const n = normalizeForMatch(li.name);
+            if(!existingNames.has(n)){ existing.lineItems.push(li); existingNames.add(n); }
+          });
+          existing.price = existing.lineItems.reduce((s,li)=>s+(li.quantity||1)*(li.price||0),0);
+          existing.additionalItemsNotShown = Math.max(0, Math.max(priorEstimate, newEstimate) - existing.lineItems.length);
+        }
+        // existingIsEmpty===false && existingIsPartial===false means
+        // existing already holds a real, complete confirmation — left
+        // untouched, same as before: a later partial read never replaces
+        // good data that's already there.
         if(r.deliveryAddress && !existing.deliveryAddress) existing.deliveryAddress = r.deliveryAddress;
         if(r.recipientName && !existing.recipientName) existing.recipientName = r.recipientName;
       }
@@ -6904,35 +7475,55 @@ function createStockItemFromOrder(order){
   // weighted-average cost instead of creating a duplicate every time.
   const createdItems = [];
   lines.forEach(line=>{
-    const normalizedName = normalizeForMatch(line.name);
-    const existingStock = state.items.find(i=>
-      !i.isPreorder && normalizeForMatch(i.name)===normalizedName
-    );
-    if(existingStock){
-      const oldQty = existingStock.quantityPurchased;
-      const oldPrice = existingStock.purchasePricePerUnit;
-      const newQty = line.quantity || 1;
-      const newPrice = line.price || 0;
-      const combinedQty = oldQty + newQty;
-      existingStock.quantityPurchased = combinedQty;
-      // Weighted average, not a straight overwrite — buying the same
-      // product again at a different price shouldn't blow away what the
-      // earlier units actually cost, which matters for accurate profit
-      // figures on whichever units end up sold.
-      existingStock.purchasePricePerUnit = combinedQty>0 ? ((oldQty*oldPrice)+(newQty*newPrice))/combinedQty : newPrice;
-      createdItems.push(existingStock);
-    } else {
-      const item = {
-        id: uid(), name: line.name, category: "Other", quantityPurchased: line.quantity || 1,
-        purchasePricePerUnit: line.price || 0, retailer: order.retailer, purchaseDate: order.orderDate || todayISO(),
-        notes: order.fromEmail ? "Auto-added from email sync — please verify item name, quantity, and price." : "",
-        isPreorder: false, expectedArrival: null, isCancelled: false, image: null, purchaseMethod: "online", sales: []
-      };
-      state.items.unshift(item);
-      createdItems.push(item);
+    // A line already converted to stock via the per-item "Mark Delivered"
+    // split-delivery control (below) must not be added again here —
+    // confirmed this is the only place `line.delivered`/`stockItemId` are
+    // ever set, so for every order that never touches that control this
+    // is always false and behaves exactly as before.
+    if(line.delivered && line.stockItemId){
+      const already = state.items.find(i=>i.id===line.stockItemId);
+      if(already){ createdItems.push(already); return; }
     }
+    const item = addOrderLineToStock(order, line);
+    line.delivered = true;
+    line.stockItemId = item.id;
+    createdItems.push(item);
   });
   return createdItems[0];
+}
+
+// Shared by createStockItemFromOrder (the whole order arriving at once,
+// the existing default behavior) and the per-line "Mark Delivered"
+// split-delivery control (one item of a multi-item order arriving ahead
+// of the rest) — same matching/weighted-average logic either way, just
+// applied to one line instead of looping every line at once.
+function addOrderLineToStock(order, line){
+  const normalizedName = normalizeForMatch(line.name);
+  const existingStock = state.items.find(i=>
+    !i.isPreorder && normalizeForMatch(i.name)===normalizedName
+  );
+  if(existingStock){
+    const oldQty = existingStock.quantityPurchased;
+    const oldPrice = existingStock.purchasePricePerUnit;
+    const newQty = line.quantity || 1;
+    const newPrice = line.price || 0;
+    const combinedQty = oldQty + newQty;
+    existingStock.quantityPurchased = combinedQty;
+    // Weighted average, not a straight overwrite — buying the same
+    // product again at a different price shouldn't blow away what the
+    // earlier units actually cost, which matters for accurate profit
+    // figures on whichever units end up sold.
+    existingStock.purchasePricePerUnit = combinedQty>0 ? ((oldQty*oldPrice)+(newQty*newPrice))/combinedQty : newPrice;
+    return existingStock;
+  }
+  const item = {
+    id: uid(), name: line.name, category: "Other", quantityPurchased: line.quantity || 1,
+    purchasePricePerUnit: line.price || 0, retailer: order.retailer, purchaseDate: order.orderDate || todayISO(),
+    notes: order.fromEmail ? "Auto-added from email sync — please verify item name, quantity, and price." : "",
+    isPreorder: false, expectedArrival: null, isCancelled: false, image: null, purchaseMethod: "online", sales: []
+  };
+  state.items.unshift(item);
+  return item;
 }
 
 /* ============================================================

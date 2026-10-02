@@ -998,7 +998,7 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // pattern already fixed once for delivered/out_for_delivery above.
   // Excluding that specific future-tense construction while still
   // catching genuine shipped notifications.
-  else if (/shipped|on its way|tracking number|has shipped|getting a shipment|being prepared to ship/.test(hay) && !/will\s+be\s+shipped|will\s+ship\b|be\s+shipped\s+after|ready\s+to\s+be\s+shipped|to\s+be\s+shipped/i.test(hay)) status = 'shipped';
+  else if (/shipped|on its way|tracking number|has shipped|getting a shipment|being prepared to ship/.test(hay) && !/will\s+be\s+shipped|will\s+ship\b|be\s+shipped\s+after|ready\s+to\s+be\s+shipped|to\s+be\s+shipped|(?:once|when|until|as\s+soon\s+as)\s+(?:it|your\s+order|the\s+order|your\s+items?)\s+(?:has|have|is|are)\s+(?:been\s+)?(?:shipped|dispatched)/i.test(hay)) status = 'shipped';
   // Real order confirmations often say "Thanks for your order" rather than
   // the "Thank you for your order" this used to require exactly.
   else if (/order confirmation|thanks?\s*(?:you\s*)?for\s*(?:your\s+(?:order|purchase)|placing\s+(?:your|an)\s+order|shopping)|order received|we.ve received your order|your order has been placed|order summary|order details|processing\s+(?:your\s+)?order|currently\s+processing\s+your\s+order|pre-?order\s+(?:is\s+confirmed|has\s+been\s+(?:confirmed|received))/i.test(hay)) status = 'confirmed';
@@ -1054,6 +1054,14 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       retailer = retailer.charAt(0).toUpperCase() + retailer.slice(1).toLowerCase();
     }
   }
+
+  // Some retailers send from a display name that's really just the
+  // storefront's generic platform label, not the brand itself — confirmed
+  // directly against a real Hamleys order sent as "Hamleys Online Store",
+  // which should just read "Hamleys". Stripping this generic suffix only
+  // (never a brand word itself) so it can't misfire on retailers who
+  // legitimately have a word like "Shop" baked into their own name.
+  retailer = retailer.replace(/\s+(?:Online\s+Store|Online\s+Shop|UK\s+Store|US\s+Store)\s*$/i, '').trim();
 
   if (status === 'sold') {
     // eBay's real "item sold" email just says "Sold: £64.70" — confirmed
@@ -1166,22 +1174,36 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
 
   // Delivery date AND time, when the email gives one — e.g. "arriving by 8pm"
   // or "between 10am and 2pm" often appears right after the date phrase.
-  const deliveryMatch = bodyText.match(/(?:estimated delivery|arriving|expected by|delivery date)[^\n]{0,40}?([A-Za-z]{3,9}\.?\s+\d{1,2}(?:,?\s+\d{4})?)/i);
+  // Two alternatives for the date itself: month-first ("October 11", the
+  // US-style format this originally only supported) and day-first
+  // ("11 October", confirmed directly against a real Amazon.co.uk email
+  // using "Arriving 11 October" — UK retailers routinely write dates this
+  // way, and the month-first-only version of this pattern silently never
+  // matched it at all, leaving expectedDelivery null on an email that
+  // very much had one.
+  const deliveryMatch = bodyText.match(/(?:estimated delivery|arriving|expected by|delivery date)[^\n]{0,40}?(?:([A-Za-z]{3,9})\.?\s+(\d{1,2})|(\d{1,2})\s+([A-Za-z]{3,9})\.?)(?:,?\s+(\d{4}))?/i);
   let expectedDelivery = null;
   if (deliveryMatch) {
-    let dateStr = deliveryMatch[1];
+    // Groups 1/2 are the month-first form, 3/4 the day-first form —
+    // exactly one pair is populated depending on which alternative
+    // matched, so normalize both down to a single "Month Day" string
+    // `new Date()` can actually parse.
+    const month = deliveryMatch[1] || deliveryMatch[4];
+    const day = deliveryMatch[2] || deliveryMatch[3];
+    const yearPart = deliveryMatch[5];
+    let dateStr = `${month} ${day}`;
     const emailDate = new Date(date);
     const emailYear = emailDate.getFullYear();
     // "July 15" with no year, parsed bare, is a well-known JS Date footgun
     // (silently defaults to 2001) — so if there's no 4-digit year in the
     // match, explicitly anchor it to the email's own year instead.
-    if (!/\d{4}/.test(dateStr)) dateStr = `${dateStr}, ${emailYear}`;
+    dateStr = yearPart ? `${dateStr}, ${yearPart}` : `${dateStr}, ${emailYear}`;
     let d = new Date(dateStr);
     if (!isNaN(d)) {
       // Year-end wraparound: a "January" delivery mentioned in a
       // November/December email almost certainly means next year.
       if (d.getMonth() < emailDate.getMonth() - 6) {
-        d = new Date(dateStr.replace(String(emailYear), String(emailYear + 1)));
+        d = new Date(dateStr.replace(String(yearPart || emailYear), String((yearPart ? parseInt(yearPart, 10) : emailYear) + 1)));
       }
       if (!isNaN(d)) expectedDelivery = localISO(d);
     }
@@ -1576,6 +1598,25 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       lineItems.push({ name, quantity: qty, price: parseFloat(wm[3].replace(',', '')) });
     }
   }
+  // "Name SKU: XXXX Qty Price" all run together on effectively one line
+  // (HTML-only email, no text/plain part, table cells collapsed with no
+  // real separation) — confirmed against a real Miniso order confirmation.
+  // Distinct from the SKU-anchored pattern at the top of this section,
+  // which expects the qty/price to carry their own "Qty:"/"Price:" labels
+  // a little further down; here the bare quantity digit and the price sit
+  // immediately after "SKU: <code>" with no labels at all. Table column
+  // headers ("Qty Price") bleeding into the front of the captured name is
+  // the same failure mode fixed elsewhere in this section, so it's
+  // stripped the same way.
+  if (lineItems.length === 0) {
+    const skuInlineRe = /([A-Za-z0-9][^\n]{4,150}?)\s*SKU:\s*[A-Za-z0-9]+\s+(\d{1,3})\s+[$£€]\s?([\d.,]+)/gi;
+    let sim;
+    while ((sim = skuInlineRe.exec(bodyText)) !== null && lineItems.length < 20) {
+      const qty = parseInt(sim[2], 10) || 1;
+      const name = sim[1].trim().replace(/\s{2,}/g, ' ').replace(/^.*\bQty\s+Price\s+/i, '');
+      lineItems.push({ name, quantity: qty, price: parseFloat(sim[3].replace(',', '')) });
+    }
+  }
   result.lineItems = lineItems;
   // No currency-symbol-based total pattern matched anything — confirmed
   // directly against a real email (Amazon's plain-text order
@@ -1586,6 +1627,25 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // total that was never in a format any of those patterns could catch.
   if (result.price === null && lineItems.length > 0) {
     result.price = lineItems.reduce((s, li) => s + (li.quantity || 1) * (li.price || 0), 0);
+  }
+
+  // Amazon's "Ordered: '[item]' and N more items" notification — confirmed
+  // directly against a real one — only ever shows ONE representative
+  // item's full name/qty/price (whichever is arriving first), and simply
+  // never lists the other N anywhere in the email at all; this isn't a
+  // parsing gap, it's genuinely how Amazon writes this specific
+  // notification type. Treating that one item's price as if it were the
+  // WHOLE order's total was the actual bug reported — the order looked
+  // right at a glance but was quietly short by however many items this
+  // email never mentioned. Flagged here instead so the app can keep what
+  // this email DOES tell us without presenting it as the complete order,
+  // and so a fuller confirmation email for the same order (if one exists)
+  // is still free to correct it later rather than being permanently
+  // blocked by this partial read getting there first.
+  const moreItemsMatch = subject.match(/\band\s+(\d+)\s+more\s+items?\b/i);
+  if (moreItemsMatch && status === 'confirmed') {
+    result.partialItemList = true;
+    result.additionalItemsNotShown = parseInt(moreItemsMatch[1], 10) || 0;
   }
 
   // Pokémon Center preorders additionally get flagged so the app routes
