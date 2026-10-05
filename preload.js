@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('shellAPI', {
 
 contextBridge.exposeInMainWorld('taxRecordsAPI', {
   saveManualEntry: (opts) => ipcRenderer.invoke('taxRecords:saveManualEntry', opts),
+  deleteManualEntry: (filePath) => ipcRenderer.invoke('taxRecords:deleteManualEntry', filePath),
   openFolder: () => ipcRenderer.invoke('taxRecords:openFolder')
 });
 

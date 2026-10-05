@@ -628,11 +628,16 @@ function dashboardHTML(){
     p.retailer!=="Pokemon Center" && !p.addedToStockId && p.status!=="cancelled" && inPeriod(p.orderDate)
   );
   const pendingOrdersSpent = immediateChargeOrdersInPeriod.reduce((s,p)=>s+(p.price||0),0);
+  // A distributor payment is real inventory cash-out the moment it's
+  // actually paid — logged with its own date, so marking one paid or
+  // partially paid updates Total Spent for whichever period that payment
+  // date falls into, same as any other purchase.
+  const distributorSpentInPeriod = distributorPaymentsInPeriod(inPeriod);
   const salesInPeriod = [];
   state.items.forEach(item => item.sales.forEach(s => { if(inPeriod(s.saleDate)) salesInPeriod.push({sale:s, item}); }));
   const expensesInPeriod = (state.expenses||[]).filter(e => inPeriod(e.date));
 
-  const inventorySpent = purchasesInPeriod.reduce((s,i)=>s+totalCost(i),0) + pendingOrdersSpent;
+  const inventorySpent = purchasesInPeriod.reduce((s,i)=>s+totalCost(i),0) + pendingOrdersSpent + distributorSpentInPeriod;
   const totalExpenses = expensesInPeriod.reduce((s,e)=>s+(e.amount||0),0);
   // Total Spent is now the full "money out" picture — inventory purchases
   // plus running costs — not just inventory alone.
@@ -732,6 +737,7 @@ function dashboardHTML(){
       ${miniCard("percent","Sell-Through", sellThrough.toFixed(0)+"%", "var(--green)","var(--green-bg)")}
       ${miniCard("layers","Products In-Stock", ""+activeStock, "var(--gold)","var(--gold-bg)")}
       ${miniCard("mail","Confirmed Orders", ""+pendingDeliveryCount, "var(--magenta)","var(--magenta-bg)")}
+      ${distributorOutstandingOwed()>0 ? miniCard("cash","Owed to Distributor", fmtMoney(distributorOutstandingOwed()), "var(--red)","var(--red-bg)") : ""}
     </div>
 
     <div class="section-title">Most Profitable Items</div>
@@ -2429,44 +2435,76 @@ function renderAllOrdersResults(){
    allocation cuts that regular orders don't need.
    ============================================================ */
 
-let distributorUI = { sort: "deliveryDue", filter: "open" };
+let distributorUI = { sort: "deliveryDue", filter: "open", search: "", view: "list", calendarMonth: todayISO().slice(0,7) };
 
 function distributorItemQty(d){ return d.quantityAllocated!=null ? d.quantityAllocated : d.quantityOrdered; }
 function distributorItemTotalCost(d){ return distributorItemQty(d) * (d.costPerUnit||0); }
-function distributorItemAmountOwed(d){ return Math.max(0, distributorItemTotalCost(d) - (d.amountPaid||0)); }
+// The payment log (one entry per actual payment made, each with its own
+// date and amount) is the real source of truth once it exists. An item
+// saved before this log existed only has the old flat amountPaid number,
+// so that's kept as a fallback rather than losing/zeroing out its history.
+function distributorItemAmountPaid(d){
+  if(Array.isArray(d.paymentLog) && d.paymentLog.length) return d.paymentLog.reduce((s,p)=>s+(p.amount||0),0);
+  return d.amountPaid||0;
+}
+// Payment status is derived from the log rather than stored separately —
+// a stored status could drift out of sync with the actual payments; a
+// derived one never can.
+function distributorItemPaymentStatus(d){
+  const total = distributorItemTotalCost(d);
+  const paid = distributorItemAmountPaid(d);
+  if(total<=0.004) return "paid";
+  if(paid >= total - 0.004) return "paid";
+  if(paid > 0.004) return "partial";
+  return "unpaid";
+}
+function distributorItemAmountOwed(d){ return Math.max(0, distributorItemTotalCost(d) - distributorItemAmountPaid(d)); }
 // Positive only when more has been paid than the item's CURRENT total cost
 // — the normal way this happens is an allocation getting cut after a
 // payment was already made against the original, larger quantity, which
 // leaves a credit/refund owed back rather than the other way around.
 function distributorItemOverpaidAmount(d){
-  const over = (d.amountPaid||0) - distributorItemTotalCost(d);
+  const over = distributorItemAmountPaid(d) - distributorItemTotalCost(d);
   return over > 0.004 ? over : 0;
 }
 function distributorItemExpectedProfit(d){ return ((d.rrp||0) - (d.costPerUnit||0)) * distributorItemQty(d); }
 function distributorItemROI(d){ return d.costPerUnit>0 ? (((d.rrp||0)-d.costPerUnit)/d.costPerUnit)*100 : 0; }
 function distributorItemIsOverduePayment(d){
-  if(d.paymentStatus==="paid" || !d.paymentDueDate) return false;
+  if(distributorItemPaymentStatus(d)==="paid" || !d.paymentDueDate) return false;
   const today = new Date(); today.setHours(0,0,0,0);
   return new Date(d.paymentDueDate+"T00:00:00") < today;
 }
-// Nav-badge count — anything open (not yet delivered, or not yet paid)
-// with a due date landing within the next week, or already overdue, so
-// the sidebar surfaces it without needing to open the tab.
-function distributorDueSoonCount(){
+// Mirrors the payment-overdue check, but for the delivery side — these are
+// deliberately two separate signals (money owed vs. goods not arrived),
+// never combined into one "something's wrong" flag.
+function distributorItemIsOverdueDelivery(d){
+  if(d.delivered || !d.deliveryDueDate) return false;
   const today = new Date(); today.setHours(0,0,0,0);
-  const soon = new Date(today); soon.setDate(soon.getDate()+7);
-  return (state.distributorItems||[]).filter(d=>{
-    const dueDates = [];
-    if(d.paymentStatus!=="paid" && d.paymentDueDate) dueDates.push(d.paymentDueDate);
-    if(!d.delivered && d.deliveryDueDate) dueDates.push(d.deliveryDueDate);
-    return dueDates.some(ds=>new Date(ds+"T00:00:00") <= soon);
-  }).length;
+  return new Date(d.deliveryDueDate+"T00:00:00") < today;
+}
+// Nav-badge count — ONLY overdue payments. A delivery date a few days out,
+// or a payment simply due soon but not yet late, is normal and expected —
+// surfacing those in the sidebar made the badge light up almost
+// permanently, which defeats the point of a badge. Overdue delivery is
+// still visible inside the tab itself (row flag + Overdue filter), just
+// not pushed into the nav.
+function distributorDueSoonCount(){
+  return (state.distributorItems||[]).filter(d=>!d.delivered && distributorItemIsOverduePayment(d)).length;
 }
 
 function sortedDistributorItems(){
   let items = (state.distributorItems||[]).slice();
   if(distributorUI.filter==="open") items = items.filter(d=>!d.delivered);
   else if(distributorUI.filter==="delivered") items = items.filter(d=>d.delivered);
+  else if(distributorUI.filter==="overdue") items = items.filter(d=>!d.delivered && (distributorItemIsOverduePayment(d) || distributorItemIsOverdueDelivery(d)));
+  if(distributorUI.search){
+    const q = distributorUI.search.toLowerCase();
+    items = items.filter(d=>
+      (d.name||"").toLowerCase().includes(q) ||
+      (d.category||"").toLowerCase().includes(q) ||
+      (d.orderReference||"").toLowerCase().includes(q)
+    );
+  }
   // Deliberately NOT sorted by when they were entered — the whole point
   // raised directly is that items from the same distributor routinely
   // arrive at wildly different times, so the default view sorts by each
@@ -2481,35 +2519,121 @@ function sortedDistributorItems(){
 }
 
 function distributorPaymentChip(d){
+  const status = distributorItemPaymentStatus(d);
   const map = {
     paid: ["chip-delivered","Paid"],
-    partial: ["chip-shipped", `Partial · ${fmtMoney(d.amountPaid||0)} of ${fmtMoney(distributorItemTotalCost(d))}`],
+    partial: ["chip-shipped", `Partial · ${fmtMoney(distributorItemAmountPaid(d))} of ${fmtMoney(distributorItemTotalCost(d))}`],
     unpaid: ["chip-cancelled","Unpaid"]
   };
-  const [cls,label] = map[d.paymentStatus] || map.unpaid;
-  const overpaid = distributorItemOverpaidAmount(d);
-  return `<span class="status-chip ${cls}">${label}</span>${overpaid>0 ? `<div style="font-size:11px;color:var(--gold);margin-top:3px;">Paid ${fmtMoney(overpaid)} more than the current total — allocation was likely cut after paying</div>` : ""}`;
+  const [cls,label] = map[status];
+  return `<span class="status-chip ${cls}">${label}</span>`;
+}
+
+// The five-stage lifecycle strip shown per product. "Paid" and "Delivery
+// Due" are deliberately independent of each other (payment and delivery
+// run on their own timelines in reality), but for an at-a-glance strip
+// they're shown in this fixed order since that's the usual path.
+function distributorTimelineHTML(d){
+  const status = distributorItemPaymentStatus(d);
+  const qty = distributorItemQty(d);
+  const deliveredQty = d.quantityDelivered||0;
+  const partiallyDelivered = !d.delivered && deliveredQty>0;
+  const stages = [
+    { label: "Ordered", state: "done" },
+    { label: "Payment Due", state: status==="unpaid" ? "current" : "done" },
+    { label: "Paid", state: status==="paid" ? "done" : status==="partial" ? "current" : "pending" },
+    { label: "Delivery Due", state: d.delivered ? "done" : (partiallyDelivered || status==="paid") ? "current" : "pending" },
+    { label: partiallyDelivered ? `Delivered (${deliveredQty}/${qty})` : "Delivered", state: d.delivered ? "done" : "pending" }
+  ];
+  return `
+    <div style="display:flex;align-items:center;gap:3px;">
+      ${stages.map((s,i)=>`
+        <span style="font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;white-space:nowrap;
+          background:${s.state==="done"?"var(--green-bg)":s.state==="current"?"var(--gold-bg)":"var(--card-2)"};
+          color:${s.state==="done"?"var(--green)":s.state==="current"?"var(--gold)":"var(--text-mute)"};">${s.label}</span>
+        ${i<stages.length-1 ? `<span style="color:var(--border);font-size:10px;">&rarr;</span>` : ""}
+      `).join("")}
+    </div>
+  `;
+}
+
+// Used by the main dashboard, so the distributor relationship doesn't live
+// in total isolation from the rest of the business's numbers.
+function distributorOutstandingOwed(){
+  return (state.distributorItems||[]).filter(d=>!d.delivered).reduce((s,d)=>s+distributorItemAmountOwed(d),0);
+}
+// Each payment has its own real date (from the payment log), so this
+// slots correctly into whatever period the dashboard is currently
+// showing — paying a distributor invoice counts as money out that day,
+// the same way any other purchase does.
+function distributorPaymentsInPeriod(inPeriodFn){
+  let total = 0;
+  (state.distributorItems||[]).forEach(d=>{
+    if(Array.isArray(d.paymentLog) && d.paymentLog.length){
+      d.paymentLog.forEach(p=>{ if(inPeriodFn(p.date)) total += (p.amount||0); });
+    } else if((d.amountPaid||0)>0 && inPeriodFn(d.dateAdded)){
+      // Back-compat: an item saved before the payment log existed is
+      // counted once, dated to when it was added, so it isn't silently
+      // dropped from historical spend just for predating the log.
+      total += d.amountPaid;
+    }
+  });
+  return total;
+}
+
+// "Owed now" and "committed but not due yet" are kept as two completely
+// separate sums, each from its own set of orders — never added together
+// into one figure, and never implying one shared due date. Which bucket a
+// given order falls into depends only on that order's own payment due
+// date; an order with no due date at all is treated as owed now, since
+// there's nothing to wait on.
+function distributorItemIsOwedNow(d){
+  if(distributorItemPaymentStatus(d)==="paid") return false;
+  if(!d.paymentDueDate) return true;
+  const today = new Date(); today.setHours(0,0,0,0);
+  return new Date(d.paymentDueDate+"T00:00:00") <= today;
+}
+function distributorItemIsCommittedFuture(d){
+  if(distributorItemPaymentStatus(d)==="paid" || !d.paymentDueDate) return false;
+  const today = new Date(); today.setHours(0,0,0,0);
+  return new Date(d.paymentDueDate+"T00:00:00") > today;
 }
 
 function distributorHTML(){
   const all = state.distributorItems||[];
   const open = all.filter(d=>!d.delivered);
-  const totalOwed = open.reduce((s,d)=>s+distributorItemAmountOwed(d),0);
+  const unpaid = open.filter(d=>distributorItemPaymentStatus(d)!=="paid");
+  const owedNowTotal = unpaid.filter(distributorItemIsOwedNow).reduce((s,d)=>s+distributorItemAmountOwed(d),0);
+  const committedFutureTotal = unpaid.filter(distributorItemIsCommittedFuture).reduce((s,d)=>s+distributorItemAmountOwed(d),0);
+  // Credit owed back to Brodie can exist on a delivered item too (the cut
+  // can happen after it's already arrived), so this scans everything, not
+  // just open orders.
+  const creditOwedTotal = all.reduce((s,d)=>s+distributorItemOverpaidAmount(d),0);
+  const expectedProfit = open.reduce((s,d)=>s+distributorItemExpectedProfit(d),0);
+  const overdueCount = open.filter(d=>distributorItemIsOverduePayment(d) || distributorItemIsOverdueDelivery(d)).length;
+
+  // Forward-looking — when (not whether overdue) each still-unpaid order's
+  // payment falls due. Purely a calendar bucket, independent of the
+  // owed-now/committed split above.
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const monthEnd = new Date(now.getFullYear(), now.getMonth()+1, 0);
-  const dueThisMonth = open.filter(d=>d.paymentStatus!=="paid" && d.paymentDueDate && new Date(d.paymentDueDate+"T00:00:00")>=monthStart && new Date(d.paymentDueDate+"T00:00:00")<=monthEnd)
-    .reduce((s,d)=>s+distributorItemAmountOwed(d),0);
-  const expectedProfit = open.reduce((s,d)=>s+distributorItemExpectedProfit(d),0);
-  const overdueCount = open.filter(distributorItemIsOverduePayment).length;
-  const items = sortedDistributorItems();
+  const nextMonthStart = new Date(now.getFullYear(), now.getMonth()+1, 1);
+  const nextMonthEnd = new Date(now.getFullYear(), now.getMonth()+2, 0);
+  const dueDated = unpaid.filter(d=>d.paymentDueDate);
+  const dueThisMonth = dueDated.filter(d=>new Date(d.paymentDueDate+"T00:00:00") < nextMonthStart).reduce((s,d)=>s+distributorItemAmountOwed(d),0);
+  const dueNextMonth = dueDated.filter(d=>{ const dt=new Date(d.paymentDueDate+"T00:00:00"); return dt>=nextMonthStart && dt<=nextMonthEnd; }).reduce((s,d)=>s+distributorItemAmountOwed(d),0);
+  const dueLater = dueDated.filter(d=>new Date(d.paymentDueDate+"T00:00:00") > nextMonthEnd).reduce((s,d)=>s+distributorItemAmountOwed(d),0);
 
   return `
     <div class="toolbar-row">
       <button class="btn-primary" id="addDistributorBtn">${ICONS.plus} Add Product</button>
-      <div class="field" style="margin:0;max-width:220px;">
-        <input type="text" id="distributorNameInput" placeholder="Distributor/shop name (optional)" value="${escapeAttr(state.distributorName)}">
+      <div class="search-bar" style="max-width:240px;">
+        ${ICONS.search}
+        <input type="text" id="distributorSearchInput" placeholder="Search products" value="${escapeAttr(distributorUI.search)}">
       </div>
+      <input type="text" id="distributorNameInput" placeholder="Distributor/shop name (optional)"
+        value="${escapeAttr(state.distributorName)}"
+        style="width:auto;max-width:200px;padding:9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
       <select id="distributorSortSelect" style="width:auto;padding:9px 30px 9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
         <option value="deliveryDue" ${distributorUI.sort==="deliveryDue"?"selected":""}>Sort: Delivery due</option>
         <option value="paymentDue" ${distributorUI.sort==="paymentDue"?"selected":""}>Sort: Payment due</option>
@@ -2517,48 +2641,162 @@ function distributorHTML(){
       </select>
       <select id="distributorFilterSelect" style="width:auto;padding:9px 30px 9px 13px;border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);color:var(--text);">
         <option value="open" ${distributorUI.filter==="open"?"selected":""}>Open</option>
+        <option value="overdue" ${distributorUI.filter==="overdue"?"selected":""}>Overdue</option>
         <option value="delivered" ${distributorUI.filter==="delivered"?"selected":""}>Delivered</option>
         <option value="all" ${distributorUI.filter==="all"?"selected":""}>All</option>
       </select>
+      <div class="segmented" style="margin:0;">
+        <button type="button" class="${distributorUI.view==="list"?"active":""}" data-distributor-view="list">List</button>
+        <button type="button" class="${distributorUI.view==="calendar"?"active":""}" data-distributor-view="calendar">Calendar</button>
+      </div>
+      <button class="btn-small" id="exportDistributorCsvBtn" style="margin-left:auto;">${ICONS.download} Export CSV</button>
     </div>
 
-    <div class="stat-grid" style="margin-bottom:18px;">
-      ${statCard("cash","Outstanding Owed", fmtMoney(totalOwed), "var(--red)", "var(--red-bg)")}
-      ${statCard("clock","Due This Month", fmtMoney(dueThisMonth), "var(--gold)", "var(--gold-bg)")}
+    <div class="stat-grid" style="margin-bottom:14px;">
+      ${statCard("warning","Owed Now", fmtMoney(owedNowTotal), "var(--red)", "var(--red-bg)", "Due today or overdue — across every open order that owes this, each with its own due date")}
+      ${statCard("clock","Committed — Not Due Yet", fmtMoney(committedFutureTotal), "var(--blue)", "var(--blue-bg)", "Owed in total, but not due yet — each order on its own future date, not one combined date")}
+      ${creditOwedTotal>0 ? statCard("cash","Credit Owed To You", fmtMoney(creditOwedTotal), "var(--gold)", "var(--gold-bg)", "Paid more than currently owed — usually an allocation cut after payment") : ""}
       ${statCard("trend","Expected Profit at RRP", fmtMoney(expectedProfit), "var(--green)", "var(--green-bg)")}
       ${statCard("box","Awaiting Delivery", open.length, "var(--blue)", "var(--blue-bg)")}
-      ${overdueCount>0 ? statCard("warning","Overdue Payments", overdueCount, "var(--red)", "var(--red-bg)") : ""}
+      ${overdueCount>0 ? statCard("warning","Overdue (Payment or Delivery)", overdueCount, "var(--red)", "var(--red-bg)") : ""}
     </div>
 
-    ${items.length===0 ? `
+    <div class="card" style="padding:14px 16px;margin-bottom:18px;">
+      <div style="font-size:11.5px;font-weight:700;color:var(--text-mute);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;">When unpaid balances fall due</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;">
+        <div><div class="dim" style="font-size:12px;">This month</div><div style="font-size:16px;font-weight:700;margin-top:2px;">${fmtMoney(dueThisMonth)}</div></div>
+        <div><div class="dim" style="font-size:12px;">Next month</div><div style="font-size:16px;font-weight:700;margin-top:2px;">${fmtMoney(dueNextMonth)}</div></div>
+        <div><div class="dim" style="font-size:12px;">Later / no date yet</div><div style="font-size:16px;font-weight:700;margin-top:2px;">${fmtMoney(dueLater + unpaid.filter(d=>!d.paymentDueDate).reduce((s,d)=>s+distributorItemAmountOwed(d),0))}</div></div>
+      </div>
+    </div>
+
+    <div id="distributorResultsContainer">${distributorResultsHTML()}</div>
+    <div style="height:24px;"></div>
+  `;
+}
+
+function distributorResultsHTML(){
+  if(distributorUI.view==="calendar"){
+    return distributorCalendarHTML();
+  }
+  const items = sortedDistributorItems();
+  if(items.length===0){
+    return `
       <div class="empty-state">
         ${ICONS.empty}
         <div class="t">No distributor orders yet</div>
         <div class="d">Track products ordered through a distributor partner — cost per unit, RRP, payment status, and delivery, each with its own due date since they rarely arrive together.</div>
       </div>
-    ` : `
-      <div class="card table-wrap">
-        <table class="data-table">
-          <thead><tr><th>Product</th><th>Qty</th><th>Cost/unit</th><th>RRP</th><th>Profit @ RRP</th><th>Payment</th><th>Delivery</th><th></th></tr></thead>
-          <tbody>
-            ${items.map(d=>distributorRowHTML(d)).join("")}
-          </tbody>
-        </table>
-      </div>
-    `}
-    <div style="height:24px;"></div>
+    `;
+  }
+  return `
+    <div class="card table-wrap" style="margin-top:14px;">
+      <table class="data-table">
+        <thead><tr><th>Product</th><th>Qty</th><th>Cost/unit</th><th>RRP</th><th>Profit @ RRP</th><th>Payment</th><th>Delivery</th><th></th></tr></thead>
+        <tbody>
+          ${items.map(d=>distributorRowHTML(d)).join("")}
+        </tbody>
+      </table>
+    </div>
   `;
+}
+
+// Calendar view — each distributor product can have its own payment-due
+// and delivery-due date, landing on completely different days, so this
+// lays the current month out as a grid and drops a small chip on every
+// day that has a payment or delivery due, rather than the flat
+// entry-order list. Clicking a chip opens that product for editing.
+function distributorCalendarHTML(){
+  let items = (state.distributorItems||[]).slice();
+  if(distributorUI.filter==="open") items = items.filter(d=>!d.delivered);
+  else if(distributorUI.filter==="delivered") items = items.filter(d=>d.delivered);
+  if(distributorUI.search){
+    const q = distributorUI.search.toLowerCase();
+    items = items.filter(d=>(d.name||"").toLowerCase().includes(q) || (d.category||"").toLowerCase().includes(q) || (d.orderReference||"").toLowerCase().includes(q));
+  }
+
+  const [y, m] = distributorUI.calendarMonth.split("-").map(Number); // m is 1-12
+  const monthDate = new Date(y, m-1, 1);
+  const monthLabel = monthDate.toLocaleDateString(undefined, { month:"long", year:"numeric" });
+  const firstDow = (monthDate.getDay()+6)%7; // Monday=0
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const todayStr = todayISO();
+
+  const eventsByDate = {};
+  items.forEach(d=>{
+    if(distributorItemPaymentStatus(d)!=="paid" && d.paymentDueDate){
+      (eventsByDate[d.paymentDueDate] = eventsByDate[d.paymentDueDate]||[]).push({type:"payment", d});
+    }
+    if(!d.delivered && d.deliveryDueDate){
+      (eventsByDate[d.deliveryDueDate] = eventsByDate[d.deliveryDueDate]||[]).push({type:"delivery", d});
+    }
+  });
+
+  const dayCell = (day)=>{
+    const dateStr = `${y}-${String(m).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+    const evs = eventsByDate[dateStr]||[];
+    const isToday = dateStr===todayStr;
+    return `
+      <div style="background:var(--card);min-height:84px;padding:6px;${isToday?"box-shadow:inset 0 0 0 2px var(--violet);":""}">
+        <div style="font-size:11px;font-weight:700;color:${isToday?"var(--violet)":"var(--text-mute)"};margin-bottom:4px;">${day}</div>
+        ${evs.slice(0,3).map(ev=>`
+          <div data-cal-edit="${ev.d.id}" title="${escapeAttr(ev.d.name)} — ${ev.type==='payment'?'payment due':'delivery due'}"
+            style="cursor:pointer;font-size:10.5px;font-weight:600;padding:2px 5px;border-radius:4px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:${ev.type==='payment'?'var(--gold-bg)':'var(--blue-bg)'};color:${ev.type==='payment'?'var(--gold)':'var(--blue)'};">
+            ${escapeHTML(ev.d.name)}
+          </div>
+        `).join("")}
+        ${evs.length>3 ? `<div style="font-size:10px;color:var(--text-mute);">+${evs.length-3} more</div>` : ""}
+      </div>
+    `;
+  };
+
+  let cells = "";
+  for(let i=0;i<firstDow;i++) cells += `<div style="background:var(--card-2);min-height:84px;"></div>`;
+  for(let day=1; day<=daysInMonth; day++) cells += dayCell(day);
+  const trailing = (7 - ((firstDow+daysInMonth)%7)) % 7;
+  for(let i=0;i<trailing;i++) cells += `<div style="background:var(--card-2);min-height:84px;"></div>`;
+
+  return `
+    <div class="card" style="padding:16px;margin-top:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+        <button class="icon-btn" data-cal-nav="-1">${ICONS.chev}</button>
+        <div style="font-weight:700;font-size:15px;">${monthLabel}</div>
+        <button class="icon-btn" data-cal-nav="1" style="transform:scaleX(-1);">${ICONS.chev}</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:1px;background:var(--border);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;font-size:11px;">
+        ${["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map(d=>`<div style="background:var(--card-2);padding:6px;text-align:center;font-weight:700;color:var(--text-mute);">${d}</div>`).join("")}
+        ${cells}
+      </div>
+      <div style="display:flex;gap:16px;margin-top:12px;font-size:11.5px;color:var(--text-mute);">
+        <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--gold);margin-right:5px;"></span>Payment due</span>
+        <span><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:var(--blue);margin-right:5px;"></span>Delivery due</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderDistributorResults(){
+  const c = document.getElementById("distributorResultsContainer");
+  if(!c) return;
+  c.innerHTML = distributorResultsHTML();
+  attachDistributorResultEvents();
 }
 
 function distributorRowHTML(d){
   const qty = distributorItemQty(d);
   const isCut = d.quantityAllocated!=null && d.quantityAllocated !== d.quantityOrdered;
-  const overdue = distributorItemIsOverduePayment(d);
+  const paymentOverdue = distributorItemIsOverduePayment(d);
+  const deliveryOverdue = distributorItemIsOverdueDelivery(d);
+  const status = distributorItemPaymentStatus(d);
+  const deliveredQty = d.quantityDelivered||0;
+  const remainingQty = Math.max(0, qty - deliveredQty);
+  const overpaid = distributorItemOverpaidAmount(d);
   return `
     <tr>
       <td>
         <div style="font-weight:600;">${escapeHTML(d.name)}</div>
         <div class="dim" style="font-size:12px;">${escapeHTML(d.category||"Other")}${d.orderReference ? " · "+escapeHTML(d.orderReference) : ""}</div>
+        <div style="margin-top:6px;">${distributorTimelineHTML(d)}</div>
       </td>
       <td class="mono dim">
         ${isCut ? `${d.quantityOrdered} &rarr; <span style="color:var(--gold);font-weight:600;">${d.quantityAllocated}</span>` : qty}
@@ -2569,15 +2807,22 @@ function distributorRowHTML(d){
       <td class="mono" style="color:var(--green);">${fmtMoney(distributorItemExpectedProfit(d))}</td>
       <td>
         ${distributorPaymentChip(d)}
-        ${d.paymentDueDate ? `<div style="font-size:11px;${overdue?'color:var(--red);font-weight:600;':'color:var(--text-mute);'}margin-top:4px;">${overdue?"Overdue — ":"Due "}${formatDate(d.paymentDueDate)}</div>` : ""}
+        ${d.paymentDueDate ? `<div style="font-size:11px;${paymentOverdue?'color:var(--red);font-weight:600;':'color:var(--text-mute);'}margin-top:4px;">${paymentOverdue?"Payment overdue — was due ":"Payment due "}${formatDate(d.paymentDueDate)}</div>` : ""}
+        ${overpaid>0 ? `<div style="font-size:11px;color:var(--gold);margin-top:3px;">${fmtMoney(overpaid)} credit owed to you</div>` : ""}
+        ${status!=="paid" ? `<button class="btn-small" data-quick-payment="${d.id}" style="margin-top:5px;">${ICONS.cash} Add Payment</button>` : ""}
       </td>
       <td>
         ${d.delivered ? `<span class="status-chip chip-delivered">Delivered</span><div style="font-size:11px;color:var(--text-mute);margin-top:4px;">${formatDate(d.deliveredDate)}</div>` : `
-          ${d.deliveryDueDate ? `<div style="font-size:12px;">${formatDate(d.deliveryDueDate)}</div>` : `<div class="dim" style="font-size:12px;">No date set</div>`}
-          <button class="btn-small" data-mark-distributor-delivered="${d.id}" style="margin-top:4px;">${ICONS.check} Mark Delivered</button>
+          ${d.deliveryDueDate ? `<div style="font-size:12px;${deliveryOverdue?'color:var(--red);font-weight:600;':''}">${deliveryOverdue?"Delivery overdue — was due ":"Delivery due "}${formatDate(d.deliveryDueDate)}</div>` : `<div class="dim" style="font-size:12px;">No date set</div>`}
+          ${deliveredQty>0 ? `<div style="font-size:11px;color:var(--blue);margin-top:2px;">${deliveredQty} of ${qty} already in stock</div>` : ""}
+          <div style="display:flex;gap:4px;align-items:center;margin-top:4px;">
+            <input type="number" min="1" max="${remainingQty}" value="${remainingQty}" data-delivered-qty-input="${d.id}" style="width:50px;padding:5px 6px;border:1px solid var(--border);background:var(--card-2);border-radius:var(--radius-sm);color:var(--text);font-size:12px;">
+            <button class="btn-small" data-mark-distributor-delivered="${d.id}">${ICONS.check} Mark Delivered</button>
+          </div>
         `}
       </td>
       <td style="text-align:right;white-space:nowrap;">
+        <button class="icon-btn" data-duplicate-distributor="${d.id}" title="Duplicate">${ICONS.layers}</button>
         <button class="icon-btn" data-edit-distributor="${d.id}" title="Edit">${ICONS.pencil}</button>
         <button class="icon-btn" data-delete-distributor="${d.id}" title="Delete" style="color:var(--red);">${ICONS.trash}</button>
       </td>
@@ -2589,8 +2834,30 @@ function attachDistributorEvents(){
   const byId = id => document.getElementById(id);
   byId("addDistributorBtn").addEventListener("click", ()=>openDistributorModal(null));
   byId("distributorNameInput").addEventListener("change", e=>{ state.distributorName = e.target.value.trim(); saveState(); });
-  byId("distributorSortSelect").addEventListener("change", e=>{ distributorUI.sort = e.target.value; renderView(); });
-  byId("distributorFilterSelect").addEventListener("change", e=>{ distributorUI.filter = e.target.value; renderView(); });
+  byId("distributorSortSelect").addEventListener("change", e=>{ distributorUI.sort = e.target.value; renderDistributorResults(); });
+  byId("distributorFilterSelect").addEventListener("change", e=>{ distributorUI.filter = e.target.value; renderDistributorResults(); });
+  byId("distributorSearchInput").addEventListener("input", e=>{ distributorUI.search = e.target.value; renderDistributorResults(); });
+  document.querySelectorAll("[data-distributor-view]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      distributorUI.view = btn.dataset.distributorView;
+      renderView(); // toolbar's List/Calendar active state lives outside the results container, so this needs the full tab re-render
+    });
+  });
+  byId("exportDistributorCsvBtn").addEventListener("click", ()=>{
+    const items = sortedDistributorItems();
+    downloadCSV(`distributor-orders-${todayISO()}.csv`,
+      ["Product","Category","Qty Ordered","Qty Allocated","Qty Delivered","Cost/Unit","RRP","Expected Profit","Payment Status","Amount Paid","Amount Owed","Payment Due","Delivery Due","Delivered","Order Reference"],
+      items.map(d=>[d.name, d.category||"", d.quantityOrdered, d.quantityAllocated!=null?d.quantityAllocated:d.quantityOrdered, d.quantityDelivered||0, d.costPerUnit, d.rrp, distributorItemExpectedProfit(d), distributorItemPaymentStatus(d), distributorItemAmountPaid(d), distributorItemAmountOwed(d), d.paymentDueDate||"", d.deliveryDueDate||"", d.delivered?"Yes":"No", d.orderReference||""])
+    );
+  });
+  attachDistributorResultEvents();
+}
+
+// Bindings for whatever is currently inside #distributorResultsContainer
+// (the table rows, or the calendar's nav buttons and day chips) — split out
+// from attachDistributorEvents so a search/sort/filter/view change can
+// re-render just that container and re-bind without touching the toolbar.
+function attachDistributorResultEvents(){
   document.querySelectorAll("[data-edit-distributor]").forEach(btn=>{
     btn.addEventListener("click", ()=>openDistributorModal(btn.dataset.editDistributor));
   });
@@ -2609,32 +2876,159 @@ function attachDistributorEvents(){
     btn.addEventListener("click", ()=>{
       const d = state.distributorItems.find(x=>x.id===btn.dataset.markDistributorDelivered);
       if(!d || d.delivered) return;
+      const totalQty = distributorItemQty(d);
+      const already = d.quantityDelivered||0;
+      const remaining = Math.max(0, totalQty - already);
+      const qtyInput = document.querySelector(`[data-delivered-qty-input="${d.id}"]`);
+      let qtyNow = qtyInput ? parseInt(qtyInput.value,10) : remaining;
+      if(isNaN(qtyNow) || qtyNow<1) qtyNow = remaining;
+      qtyNow = Math.min(qtyNow, remaining);
+      if(qtyNow<=0) return;
       // Reuses the exact same stock-creation/consolidation logic the
       // regular Orders flow uses for an arriving line item — same
       // weighted-average handling if this product already exists in
       // Stock, same placeholder shape otherwise, so distributor
       // deliveries behave identically to any other restock once they
       // land, rather than needing their own separate stock-creation path.
+      // Only the quantity actually arriving now goes to Stock — the rest
+      // stays open and tracked, exactly like a split-delivery order.
       const stockItem = addOrderLineToStock(
         { retailer: state.distributorName || "Distributor", orderDate: d.dateAdded, fromEmail: null },
-        { name: d.name, quantity: distributorItemQty(d), price: d.costPerUnit }
+        { name: d.name, quantity: qtyNow, price: d.costPerUnit }
       );
-      d.delivered = true;
-      d.deliveredDate = todayISO();
+      d.quantityDelivered = already + qtyNow;
       d.stockItemId = stockItem.id;
+      const fullyDelivered = d.quantityDelivered >= totalQty;
+      if(fullyDelivered){ d.delivered = true; d.deliveredDate = todayISO(); }
       saveState();
-      showToast(`${d.name} marked delivered and added to Stock`);
+      showToast(fullyDelivered ? `${d.name} marked delivered and added to Stock` : `${qtyNow} of ${d.name} added to Stock — ${totalQty-d.quantityDelivered} still to come`);
       renderView();
     });
+  });
+  document.querySelectorAll("[data-duplicate-distributor]").forEach(btn=>{
+    btn.addEventListener("click", ()=>openDistributorModal(null, btn.dataset.duplicateDistributor));
+  });
+  document.querySelectorAll("[data-quick-payment]").forEach(btn=>{
+    btn.addEventListener("click", ()=>openQuickPaymentModal(btn.dataset.quickPayment));
+  });
+  // Calendar-only bindings — harmless no-ops when the list view is showing,
+  // since these selectors simply won't match anything in that case.
+  document.querySelectorAll("[data-cal-nav]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      const [y,m] = distributorUI.calendarMonth.split("-").map(Number);
+      const d = new Date(y, m-1+parseInt(btn.dataset.calNav,10), 1);
+      distributorUI.calendarMonth = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+      renderDistributorResults();
+    });
+  });
+  document.querySelectorAll("[data-cal-edit]").forEach(chip=>{
+    chip.addEventListener("click", ()=>openDistributorModal(chip.dataset.calEdit));
+  });
+}
+
+// Records one real-money payment to the distributor as a tax/accounting
+// record, the same way a manual stock purchase already does — one record
+// per actual payment, not one lump record for the whole order, so the
+// paper trail matches what actually happened and when.
+function saveDistributorPaymentTaxRecord(productName, orderReference, amount, dateISO){
+  if(!window.taxRecordsAPI) return Promise.resolve(null);
+  return window.taxRecordsAPI.saveManualEntry({
+    category: "Manual Entries",
+    dateISO,
+    title: `Distributor Payment - ${state.distributorName || "Distributor"} - ${productName}`,
+    lines: [
+      `Payment to distributor`,
+      `Product: ${productName}`,
+      `Distributor: ${state.distributorName || "—"}`,
+      `Date: ${dateISO}`,
+      `Amount: ${fmtMoney(amount)}`,
+      `Order reference: ${orderReference || "—"}`,
+      `Entered in Restock: ${new Date().toISOString()}`
+    ]
+  }).then(res=> (res && res.ok) ? res.path : null).catch(()=>null);
+}
+
+// Removing a logged payment also removes the tax record that payment
+// created, so the paper trail doesn't keep a record of a payment that
+// was entered by mistake. Only ever touches the specific file that
+// payment's own record was saved to.
+function deleteDistributorPaymentTaxRecord(filePath){
+  if(!filePath || !window.taxRecordsAPI || !window.taxRecordsAPI.deleteManualEntry) return;
+  window.taxRecordsAPI.deleteManualEntry(filePath).catch(()=>{});
+}
+
+// A lightweight standalone modal for logging a payment against an existing
+// product without opening the full edit form — the quick action requested
+// alongside the payment history log.
+let quickPaymentState = null;
+function openQuickPaymentModal(itemId){
+  const d = state.distributorItems.find(x=>x.id===itemId);
+  if(!d) return;
+  quickPaymentState = { itemId, amount: "", date: todayISO() };
+  renderQuickPaymentModal();
+}
+function renderQuickPaymentModal(){
+  const d = state.distributorItems.find(x=>x.id===quickPaymentState.itemId);
+  if(!d){ document.getElementById("modalRoot").innerHTML=""; return; }
+  const owed = distributorItemAmountOwed(d);
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open" id="quickPaymentBackdrop">
+      <div class="modal" style="width:380px;">
+        <div class="modal-header">
+          <h2>Add Payment — ${escapeHTML(d.name)}</h2>
+          <button class="icon-btn" id="closeQuickPayment">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          <div class="dim" style="font-size:12px;margin-bottom:12px;">Currently owed: ${fmtMoney(owed)}</div>
+          <div class="form-grid">
+            <div class="field">
+              <label>Amount (${state.displayCurrency})</label>
+              <input type="number" id="qp-amount" step="0.01" min="0" value="${quickPaymentState.amount}" placeholder="${owed>0?owed.toFixed(2):'0.00'}">
+            </div>
+            <div class="field">
+              <label>Date paid</label>
+              <input type="date" id="qp-date" value="${quickPaymentState.date}">
+            </div>
+          </div>
+          <button class="btn-primary block" id="saveQuickPaymentBtn">Add Payment</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.getElementById("closeQuickPayment").addEventListener("click", ()=>{ root.innerHTML=""; quickPaymentState=null; });
+  document.getElementById("qp-amount").addEventListener("input", e=>{ quickPaymentState.amount = e.target.value; });
+  document.getElementById("qp-date").addEventListener("change", e=>{ quickPaymentState.date = e.target.value; });
+  document.getElementById("saveQuickPaymentBtn").addEventListener("click", ()=>{
+    const amount = parseFloat(quickPaymentState.amount);
+    if(isNaN(amount) || amount<=0){ showToast("Enter a valid amount", "close"); return; }
+    const date = quickPaymentState.date || todayISO();
+    if(!Array.isArray(d.paymentLog)) d.paymentLog = [];
+    const entry = { id: uid(), date, amount };
+    d.paymentLog.push(entry);
+    saveState();
+    saveDistributorPaymentTaxRecord(d.name, d.orderReference, amount, date).then(path=>{
+      if(path){ entry.taxRecordPath = path; saveState(); }
+    });
+    showToast(`Payment of ${fmtMoney(amount)} logged`);
+    root.innerHTML = "";
+    quickPaymentState = null;
+    if(ui.tab==="distributor") renderView();
   });
 }
 
 let distributorFormState = null;
 let distributorModalId = null; // "new" or an existing item's id
 
-function openDistributorModal(itemId){
+// itemId: an existing product's id to edit, or null/"new" to add one.
+// duplicateFromId: when adding, pre-fill name/category/cost/RRP/reference
+// from another existing product — everything about THIS being a fresh
+// order (quantity, dates, payment, delivery) starts blank, since it's a
+// new order, not a continuation of the one it was copied from.
+function openDistributorModal(itemId, duplicateFromId){
   distributorModalId = itemId || "new";
   const existing = itemId ? state.distributorItems.find(d=>d.id===itemId) : null;
+  const dupeFrom = (!existing && duplicateFromId) ? state.distributorItems.find(d=>d.id===duplicateFromId) : null;
   distributorFormState = existing ? {
     name: existing.name,
     category: CATEGORIES.includes(existing.category) ? existing.category : "Other",
@@ -2642,14 +3036,26 @@ function openDistributorModal(itemId){
     quantityOrdered: existing.quantityOrdered,
     quantityAllocated: existing.quantityAllocated!=null ? existing.quantityAllocated : existing.quantityOrdered,
     costPerUnit: existing.costPerUnit, rrp: existing.rrp,
-    paymentStatus: existing.paymentStatus||"unpaid", amountPaid: existing.amountPaid||0,
+    // An item saved before the payment log existed only has the old flat
+    // amountPaid number — surfaced here as a single legacy log entry
+    // (dated when the product was added) so it shows up consistently
+    // alongside any real entries, and becomes a real entry once saved.
+    paymentLog: Array.isArray(existing.paymentLog) ? existing.paymentLog.slice() :
+      (existing.amountPaid>0 ? [{id:"legacy", date: existing.dateAdded, amount: existing.amountPaid}] : []),
+    newPaymentAmount: "", newPaymentDate: todayISO(),
     paymentDueDate: existing.paymentDueDate||"", deliveryDueDate: existing.deliveryDueDate||"",
-    orderReference: existing.orderReference||"", notes: existing.notes||""
+    orderReference: existing.orderReference||"", notes: existing.notes||"",
+    quantityDelivered: existing.quantityDelivered||0
   } : {
-    name:"", category: CATEGORIES[0], customCategory:"",
-    quantityOrdered:1, quantityAllocated:1, costPerUnit:"", rrp:"",
-    paymentStatus:"unpaid", amountPaid:0, paymentDueDate:"", deliveryDueDate:"",
-    orderReference:"", notes:""
+    name: dupeFrom ? dupeFrom.name : "",
+    category: dupeFrom ? (CATEGORIES.includes(dupeFrom.category)?dupeFrom.category:"Other") : CATEGORIES[0],
+    customCategory: dupeFrom && !CATEGORIES.includes(dupeFrom.category) ? (dupeFrom.category||"") : "",
+    quantityOrdered:1, quantityAllocated:1,
+    costPerUnit: dupeFrom ? dupeFrom.costPerUnit : "", rrp: dupeFrom ? dupeFrom.rrp : "",
+    paymentLog: [], newPaymentAmount: "", newPaymentDate: todayISO(),
+    paymentDueDate: "", deliveryDueDate: "",
+    orderReference: dupeFrom ? dupeFrom.orderReference||"" : "", notes:"",
+    quantityDelivered: 0
   };
   renderDistributorModal();
 }
@@ -2723,21 +3129,36 @@ function renderDistributorModal(){
           </div>
 
           <div class="section-title">Payment</div>
-          <div class="segmented" style="margin-bottom:10px;">
-            <button type="button" class="${f.paymentStatus==="unpaid"?"active":""}" data-d-payment-status="unpaid">Unpaid</button>
-            <button type="button" class="${f.paymentStatus==="partial"?"active":""}" data-d-payment-status="partial">Partial</button>
-            <button type="button" class="${f.paymentStatus==="paid"?"active":""}" data-d-payment-status="paid">Paid</button>
-          </div>
+          ${(()=>{
+            return `
+            <div id="distributorPaymentSummary" style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">${distributorPaymentSummaryInnerHTML(f, totalCost)}</div>
+            ${f.paymentLog.length>0 ? `
+            <div class="card" style="padding:0;margin-bottom:10px;overflow:hidden;">
+              ${f.paymentLog.map((p,i)=>`
+                <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;${i<f.paymentLog.length-1?'border-bottom:1px solid var(--border-soft);':''}">
+                  <span style="font-size:12.5px;">${formatDate(p.date)}</span>
+                  <span class="mono" style="font-size:12.5px;">${fmtMoney(p.amount)}</span>
+                  <button type="button" class="icon-btn" data-remove-payment-log="${i}" title="Remove" style="color:var(--red);width:26px;height:26px;">${ICONS.close}</button>
+                </div>
+              `).join("")}
+            </div>` : `<div class="dim" style="font-size:12px;margin-bottom:10px;">No payments logged yet.</div>`}
+            <div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:14px;">
+              <div class="field" style="margin-bottom:0;flex:1;">
+                <label>Add a payment</label>
+                <input type="number" id="d-newPaymentAmount" value="${f.newPaymentAmount}" step="0.01" min="0" placeholder="Amount">
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <input type="date" id="d-newPaymentDate" value="${f.newPaymentDate}">
+              </div>
+              <button type="button" class="btn-small" id="addPaymentLogBtn">${ICONS.plus} Add</button>
+            </div>
+          `; })()}
           <div class="form-grid">
-            ${f.paymentStatus==="partial" ? `
-            <div class="field">
-              <label>Amount paid so far (${state.displayCurrency})</label>
-              <input type="number" id="d-amountPaid" value="${f.amountPaid}" step="0.01" min="0">
-            </div>` : `<div></div>`}
             <div class="field">
               <label>Payment due date</label>
               <input type="date" id="d-paymentDueDate" value="${f.paymentDueDate}">
             </div>
+            <div></div>
           </div>
 
           <div class="section-title">Delivery</div>
@@ -2765,6 +3186,21 @@ function renderDistributorModal(){
   attachDistributorModalEvents();
 }
 
+// The paid / owed / status line at the top of the modal's Payment section.
+// Split out so it can be refreshed in place when quantity or cost is
+// edited (which changes what's owed) without re-rendering the whole form
+// and losing the cursor in whichever field is being typed in.
+function distributorPaymentSummaryInnerHTML(f, totalCost){
+  const paidSoFar = f.paymentLog.reduce((s,p)=>s+(p.amount||0),0);
+  const owed = Math.max(0, totalCost - paidSoFar);
+  const statusLabel = owed<=0.004 && totalCost>0 ? ["chip-delivered","Paid"] : paidSoFar>0.004 ? ["chip-shipped","Partial"] : ["chip-cancelled","Unpaid"];
+  return `
+    <span class="status-chip ${statusLabel[0]}">${statusLabel[1]}</span>
+    <span class="dim" style="font-size:12.5px;">${fmtMoney(paidSoFar)} paid of ${fmtMoney(totalCost)}${owed>0.004?` &middot; ${fmtMoney(owed)} owed`:""}${paidSoFar-totalCost>0.004?` &middot; ${fmtMoney(paidSoFar-totalCost)} credit owed to you`:""}</span>
+    ${owed>0.004 ? `<button type="button" class="btn-small" id="markFullyPaidBtn" style="margin-left:auto;">Mark Fully Paid</button>` : ""}
+  `;
+}
+
 function updateDistributorTotals(){
   const f = distributorFormState;
   const qty = parseInt(f.quantityAllocated,10) || parseInt(f.quantityOrdered,10) || 0;
@@ -2772,6 +3208,26 @@ function updateDistributorTotals(){
   const profit = ((parseFloat(f.rrp)||0) - (parseFloat(f.costPerUnit)||0)) * qty;
   const c = document.getElementById("distributorTotalCostValue"); if(c) c.textContent = fmtMoney(cost);
   const p = document.getElementById("distributorExpectedProfitValue"); if(p) p.textContent = fmtMoney(profit);
+  const summary = document.getElementById("distributorPaymentSummary");
+  if(summary){
+    summary.innerHTML = distributorPaymentSummaryInnerHTML(f, cost);
+    bindMarkFullyPaid();
+  }
+}
+
+function bindMarkFullyPaid(){
+  const btn = document.getElementById("markFullyPaidBtn");
+  if(!btn) return;
+  btn.addEventListener("click", ()=>{
+    const f = distributorFormState;
+    const qty = parseInt(f.quantityAllocated,10) || parseInt(f.quantityOrdered,10) || 0;
+    const total = (parseFloat(f.costPerUnit)||0) * qty;
+    const paidSoFar = f.paymentLog.reduce((s,p)=>s+(p.amount||0),0);
+    const remaining = total - paidSoFar;
+    if(remaining<=0.004) return;
+    f.paymentLog.push({ id: uid(), date: todayISO(), amount: remaining, isNew: true });
+    renderDistributorModal();
+  });
 }
 
 function attachDistributorModalEvents(){
@@ -2788,10 +3244,28 @@ function attachDistributorModalEvents(){
   byId("d-qtyAllocated").addEventListener("input", e=>{ distributorFormState.quantityAllocated = e.target.value; updateDistributorTotals(); });
   byId("d-costPerUnit").addEventListener("input", e=>{ distributorFormState.costPerUnit = e.target.value; updateDistributorTotals(); });
   byId("d-rrp").addEventListener("input", e=>{ distributorFormState.rrp = e.target.value; updateDistributorTotals(); });
-  document.querySelectorAll("[data-d-payment-status]").forEach(btn=>{
-    btn.addEventListener("click", ()=>{ distributorFormState.paymentStatus = btn.dataset.dPaymentStatus; renderDistributorModal(); });
+  if(byId("d-newPaymentAmount")) byId("d-newPaymentAmount").addEventListener("input", e=>{ distributorFormState.newPaymentAmount = e.target.value; });
+  if(byId("d-newPaymentDate")) byId("d-newPaymentDate").addEventListener("change", e=>{ distributorFormState.newPaymentDate = e.target.value; });
+  if(byId("addPaymentLogBtn")) byId("addPaymentLogBtn").addEventListener("click", ()=>{
+    const f = distributorFormState;
+    const amount = parseFloat(f.newPaymentAmount);
+    if(isNaN(amount) || amount<=0){ showToast("Enter a valid payment amount", "close"); return; }
+    const date = f.newPaymentDate || todayISO();
+    // isNew marks an entry added during THIS editing session — its tax
+    // record is only written when the form is actually saved, so adding a
+    // payment and then cancelling the modal doesn't leave a record behind
+    // for a payment that was never kept.
+    f.paymentLog.push({ id: uid(), date, amount, isNew: true });
+    f.newPaymentAmount = "";
+    renderDistributorModal();
   });
-  if(byId("d-amountPaid")) byId("d-amountPaid").addEventListener("input", e=>{ distributorFormState.amountPaid = e.target.value; });
+  bindMarkFullyPaid();
+  document.querySelectorAll("[data-remove-payment-log]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      distributorFormState.paymentLog.splice(parseInt(btn.dataset.removePaymentLog,10), 1);
+      renderDistributorModal();
+    });
+  });
   byId("d-paymentDueDate").addEventListener("change", e=>{ distributorFormState.paymentDueDate = e.target.value; });
   byId("d-deliveryDueDate").addEventListener("change", e=>{ distributorFormState.deliveryDueDate = e.target.value; });
   byId("d-notes").addEventListener("input", e=>{ distributorFormState.notes = e.target.value; });
@@ -2821,32 +3295,51 @@ function saveDistributorItem(){
     ? quantityOrdered : Math.max(0, parseInt(f.quantityAllocated,10));
   const costPerUnit = parseFloat(f.costPerUnit)||0;
   const rrp = parseFloat(f.rrp)||0;
-  const totalCost = quantityAllocated * costPerUnit;
-  let amountPaid = 0;
-  if(f.paymentStatus==="paid") amountPaid = totalCost;
-  // Deliberately NOT capped at the current total cost — if an allocation
-  // gets cut after a payment was already made against the original,
-  // larger quantity, the real amount paid can legitimately exceed what's
-  // now owed, and that's exactly the overpaid/credit situation the list
-  // view flags rather than something to silently clamp away.
-  else if(f.paymentStatus==="partial") amountPaid = Math.max(0, parseFloat(f.amountPaid)||0);
+  // Payment status is no longer stored directly — it's derived from this
+  // log everywhere it's needed, so there's nothing here that can drift
+  // out of sync with the actual payments.
+  const paymentLog = f.paymentLog.map(p=>{
+    const e = { id: p.id==="legacy" ? uid() : p.id, date: p.date, amount: p.amount };
+    if(p.taxRecordPath) e.taxRecordPath = p.taxRecordPath;
+    return e;
+  });
+  // Tax records follow what's actually kept: payments removed during this
+  // edit have their record deleted, and payments newly added during it
+  // get one written now (not at the moment they were typed in, so a
+  // cancelled edit leaves nothing behind).
+  const original = distributorModalId==="new" ? null : state.distributorItems.find(d=>d.id===distributorModalId);
+  const keptIds = new Set(f.paymentLog.map(p=>p.id));
+  ((original && original.paymentLog) || []).forEach(p=>{
+    if(!keptIds.has(p.id) && p.taxRecordPath) deleteDistributorPaymentTaxRecord(p.taxRecordPath);
+  });
+  f.paymentLog.forEach((p,i)=>{
+    if(!p.isNew) return;
+    const entry = paymentLog[i];
+    saveDistributorPaymentTaxRecord(name, f.orderReference.trim(), p.amount, p.date).then(path=>{
+      if(path){ entry.taxRecordPath = path; saveState(); }
+    });
+  });
 
   const payload = {
     name, category: effCat, orderReference: f.orderReference.trim(),
     quantityOrdered, quantityAllocated,
     costPerUnit, rrp,
-    paymentStatus: f.paymentStatus, amountPaid,
+    paymentLog,
     paymentDueDate: f.paymentDueDate || null, deliveryDueDate: f.deliveryDueDate || null,
     notes: f.notes.trim()
   };
 
   if(distributorModalId==="new"){
     state.distributorItems.unshift({
-      id: uid(), ...payload, delivered:false, deliveredDate:null, stockItemId:null, dateAdded: todayISO()
+      id: uid(), ...payload, delivered:false, deliveredDate:null, stockItemId:null, quantityDelivered:0, dateAdded: todayISO()
     });
     showToast("Added to Distributor Orders");
   } else {
     const existing = state.distributorItems.find(d=>d.id===distributorModalId);
+    // quantityDelivered/delivered/deliveredDate/stockItemId are managed by
+    // the row's own Mark Delivered action, not this form — Object.assign
+    // only touches the fields in payload, so editing a product's cost or
+    // dates here never resets how much of it has already arrived.
     if(existing) Object.assign(existing, payload);
     showToast("Updated");
   }
@@ -3000,6 +3493,7 @@ let orderStatusEditing = null;
 let orderRetailerEditing = null;
 let orderLineItemsEditing = null;
 let orderImportFeesEditing = null;
+let orderPostageEditing = null;
 let orderLineItemsDraft = null;
 
 const ALL_ORDER_STATUSES = ["confirmed", "action_required", "shipped", "out_for_delivery", "ready_for_collection", "delivered", "cancelled"];
@@ -3011,6 +3505,7 @@ function orderDetailModal(orderId){
   const editingRetailer = orderRetailerEditing === orderId;
   const editingLineItems = orderLineItemsEditing === orderId;
   const editingImportFees = orderImportFeesEditing === orderId;
+  const editingPostage = orderPostageEditing === orderId;
   const root = document.getElementById("modalRoot");
   root.innerHTML = `
     <div class="modal-backdrop open" id="orderDetailBackdrop">
@@ -3044,6 +3539,18 @@ function orderDetailModal(orderId){
             ${kvRow("Order #", p.orderNumber ? escapeHTML(p.orderNumber) : "—")}
             ${kvRow("Order date", p.orderDate ? formatDate(p.orderDate) : "—")}
             ${kvRow("Price", p.price!=null ? fmtMoney(p.price) : "—")}
+            ${editingPostage ? `
+              <div class="kv-row"><span class="k">Postage / delivery</span><span class="v" style="display:flex;gap:8px;align-items:center;justify-content:flex-end;">
+                <div class="field" style="margin:0;width:110px;"><input type="number" id="orderPostageInput" value="${p.postage||0}" step="0.01" min="0"></div>
+                <button class="icon-btn" id="saveOrderPostageBtn" title="Save">${ICONS.check}</button>
+                <button class="icon-btn" id="cancelOrderPostageBtn" title="Cancel">${ICONS.close}</button>
+              </span></div>
+            ` : `
+              <div class="kv-row"><span class="k">Postage / delivery</span><span class="v" style="display:flex;gap:8px;align-items:center;justify-content:flex-end;">
+                ${p.postage ? fmtMoney(p.postage) : "—"}
+                <button class="icon-btn" id="editOrderPostageBtn" title="Use this if the detected price is missing the delivery charge. It's added on top of the price above, and spread across the items' cost when they go into Stock." style="width:22px;height:22px;">${ICONS.pencil}</button>
+              </span></div>
+            `}
             ${editingImportFees ? `
               <div class="kv-row"><span class="k">Import fees</span><span class="v" style="display:flex;gap:8px;align-items:center;justify-content:flex-end;">
                 <div class="field" style="margin:0;width:110px;"><input type="number" id="orderImportFeesInput" value="${p.importFees||0}" step="0.01" min="0"></div>
@@ -3140,6 +3647,25 @@ function orderDetailModal(orderId){
     orderDetailModal(orderId);
     if(ui.tab==="orders") renderView();
   });
+  const editPostageBtn = document.getElementById("editOrderPostageBtn");
+  if(editPostageBtn) editPostageBtn.addEventListener("click", ()=>{ orderPostageEditing = orderId; orderDetailModal(orderId); });
+  const cancelPostageBtn = document.getElementById("cancelOrderPostageBtn");
+  if(cancelPostageBtn) cancelPostageBtn.addEventListener("click", ()=>{ orderPostageEditing = null; orderDetailModal(orderId); });
+  const savePostageBtn = document.getElementById("saveOrderPostageBtn");
+  if(savePostageBtn) savePostageBtn.addEventListener("click", ()=>{
+    const newPostage = Math.max(0, parseFloat(document.getElementById("orderPostageInput").value) || 0);
+    const delta = newPostage - (p.postage || 0);
+    p.postage = newPostage;
+    // The order's total reflects the postage straight away — this is the
+    // whole point: the detected price was missing it.
+    p.price = Math.max(0, (p.price || 0) + delta);
+    if(Math.abs(delta) > 0.004) applyPostageDeltaToDeliveredStock(p, delta);
+    orderPostageEditing = null;
+    saveState();
+    showToast("Postage updated");
+    orderDetailModal(orderId);
+    if(ui.tab==="orders") renderView();
+  });
   const editImportFeesBtn = document.getElementById("editOrderImportFeesBtn");
   if(editImportFeesBtn) editImportFeesBtn.addEventListener("click", ()=>{ orderImportFeesEditing = orderId; orderDetailModal(orderId); });
   const cancelImportFeesBtn = document.getElementById("cancelOrderImportFeesBtn");
@@ -3214,7 +3740,7 @@ function orderDetailModal(orderId){
     // be recalculated from them explicitly, or it's left showing
     // whatever it was before (often £0.00 for an order that started with
     // no items at all, exactly what was reported).
-    p.price = p.lineItems.reduce((s,li)=>s+li.quantity*li.price, 0);
+    p.price = p.lineItems.reduce((s,li)=>s+li.quantity*li.price, 0) + (p.postage||0);
     // Manually editing the item list is the user confirming it's now
     // complete — clears the "and N more items" partial flag so the
     // incomplete-data hint stops showing and a later partial-read email
@@ -7207,7 +7733,7 @@ function mergeSyncResults(results){
           // partial read (still far better than nothing), flagged the
           // same way a brand new order would be.
           existing.lineItems = r.lineItems;
-          if(r.price != null) existing.price = r.price;
+          if(r.price != null) existing.price = r.price + (existing.postage||0); // keep any manually-added postage on top
           existing.partialItemList = !!r.partialItemList;
           existing.additionalItemsNotShown = r.partialItemList ? (r.additionalItemsNotShown||0) : null;
         } else if(existingIsPartial && !r.partialItemList){
@@ -7216,7 +7742,7 @@ function mergeSyncResults(results){
           // — always trusted over that partial guess, since this is the
           // only way such a read ever gets corrected.
           existing.lineItems = r.lineItems;
-          if(r.price != null) existing.price = r.price;
+          if(r.price != null) existing.price = r.price + (existing.postage||0); // keep any manually-added postage on top
           existing.partialItemList = false;
           existing.additionalItemsNotShown = null;
         } else if(existingIsPartial && r.partialItemList){
@@ -7233,7 +7759,7 @@ function mergeSyncResults(results){
             const n = normalizeForMatch(li.name);
             if(!existingNames.has(n)){ existing.lineItems.push(li); existingNames.add(n); }
           });
-          existing.price = existing.lineItems.reduce((s,li)=>s+(li.quantity||1)*(li.price||0),0);
+          existing.price = existing.lineItems.reduce((s,li)=>s+(li.quantity||1)*(li.price||0),0) + (existing.postage||0);
           existing.additionalItemsNotShown = Math.max(0, Math.max(priorEstimate, newEstimate) - existing.lineItems.length);
         }
         // existingIsEmpty===false && existingIsPartial===false means
@@ -7497,16 +8023,60 @@ function createStockItemFromOrder(order){
 // split-delivery control (one item of a multi-item order arriving ahead
 // of the rest) — same matching/weighted-average logic either way, just
 // applied to one line instead of looping every line at once.
+// How much of an order's postage belongs to one line, split by that
+// line's share of the order's item value (by quantity instead if every
+// line is priced at zero). Shares across all of an order's lines always
+// add back up to the postage, whichever order the lines arrive in.
+function orderLinePostageShare(order, line){
+  const postage = order.postage || 0;
+  if(postage <= 0 || !order.lineItems || !order.lineItems.length) return 0;
+  const subtotal = order.lineItems.reduce((s,li)=>s+(li.quantity||1)*(li.price||0),0);
+  if(subtotal > 0) return postage * (((line.quantity||1)*(line.price||0)) / subtotal);
+  const totalQty = order.lineItems.reduce((s,li)=>s+(li.quantity||1),0);
+  return totalQty > 0 ? postage * ((line.quantity||1) / totalQty) : 0;
+}
+
+// Postage added or changed AFTER items have already gone into Stock —
+// adjusts the total cost of those stock items so profit figures include
+// it, the same idea as the import-fee handling. Lines still to arrive
+// pick their share up later via addOrderLineToStock instead.
+function applyPostageDeltaToDeliveredStock(order, delta){
+  const lines = order.lineItems || [];
+  const deliveredLines = lines.filter(li=>li.delivered && li.stockItemId);
+  if(deliveredLines.length){
+    deliveredLines.forEach(li=>{
+      const item = state.items.find(i=>i.id===li.stockItemId);
+      if(!item || !(item.quantityPurchased>0)) return;
+      const subtotal = lines.reduce((s,x)=>s+(x.quantity||1)*(x.price||0),0);
+      const frac = subtotal>0 ? ((li.quantity||1)*(li.price||0))/subtotal
+                              : (li.quantity||1)/lines.reduce((s,x)=>s+(x.quantity||1),0);
+      const share = delta * frac;
+      item.purchasePricePerUnit = (item.quantityPurchased*item.purchasePricePerUnit + share) / item.quantityPurchased;
+    });
+  } else if(order.addedToStockId){
+    // No itemized lines: the stock entry is the single placeholder built
+    // from the order total, so the whole change lands on it.
+    const item = state.items.find(i=>i.id===order.addedToStockId);
+    if(item && item.quantityPurchased>0){
+      item.purchasePricePerUnit = (item.quantityPurchased*item.purchasePricePerUnit + delta) / item.quantityPurchased;
+    }
+  }
+}
+
 function addOrderLineToStock(order, line){
   const normalizedName = normalizeForMatch(line.name);
+  // Unit cost = the line's own price plus its share of any postage added
+  // to the order, so Stock reflects what the items truly cost.
+  const lineQty = line.quantity || 1;
+  const unitCost = (line.price || 0) + orderLinePostageShare(order, line) / lineQty;
   const existingStock = state.items.find(i=>
     !i.isPreorder && normalizeForMatch(i.name)===normalizedName
   );
   if(existingStock){
     const oldQty = existingStock.quantityPurchased;
     const oldPrice = existingStock.purchasePricePerUnit;
-    const newQty = line.quantity || 1;
-    const newPrice = line.price || 0;
+    const newQty = lineQty;
+    const newPrice = unitCost;
     const combinedQty = oldQty + newQty;
     existingStock.quantityPurchased = combinedQty;
     // Weighted average, not a straight overwrite — buying the same
@@ -7518,7 +8088,7 @@ function addOrderLineToStock(order, line){
   }
   const item = {
     id: uid(), name: line.name, category: "Other", quantityPurchased: line.quantity || 1,
-    purchasePricePerUnit: line.price || 0, retailer: order.retailer, purchaseDate: order.orderDate || todayISO(),
+    purchasePricePerUnit: unitCost, retailer: order.retailer, purchaseDate: order.orderDate || todayISO(),
     notes: order.fromEmail ? "Auto-added from email sync — please verify item name, quantity, and price." : "",
     isPreorder: false, expectedArrival: null, isCancelled: false, image: null, purchaseMethod: "online", sales: []
   };

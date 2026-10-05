@@ -865,6 +865,24 @@ ipcMain.handle('taxRecords:saveManualEntry', (evt, { category, dateISO, title, l
   }
 });
 
+// Deletes one manual tax record the app itself created earlier (used when
+// a logged distributor payment is removed). Refuses anything outside the
+// Restock Tax Records folder, and anything that isn't one of the .txt
+// manual entries, so it can't be pointed at an arbitrary file.
+ipcMain.handle('taxRecords:deleteManualEntry', (evt, filePath) => {
+  try {
+    const base = path.resolve(taxRecordsBaseDir());
+    const target = path.resolve(String(filePath || ''));
+    if (!target.startsWith(base + path.sep) || !target.toLowerCase().endsWith('.txt')) {
+      return { ok: false, error: 'Not a Restock manual tax record' };
+    }
+    if (fs.existsSync(target)) fs.unlinkSync(target);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message || e) };
+  }
+});
+
 ipcMain.handle('taxRecords:openFolder', () => {
   try {
     const dir = taxRecordsBaseDir();
