@@ -16,6 +16,13 @@ contextBridge.exposeInMainWorld('taxRecordsAPI', {
   openFolder: () => ipcRenderer.invoke('taxRecords:openFolder')
 });
 
+contextBridge.exposeInMainWorld('marketAPI', {
+  getConfig: () => ipcRenderer.invoke('market:getConfig'),
+  saveConfig: (cfg) => ipcRenderer.invoke('market:saveConfig', cfg),
+  clearConfig: () => ipcRenderer.invoke('market:clearConfig'),
+  lookup: (query) => ipcRenderer.invoke('market:lookup', { query })
+});
+
 contextBridge.exposeInMainWorld('emailAPI', {
   getAccounts: () => ipcRenderer.invoke('email:getAccounts'),
   addAccount: (config) => ipcRenderer.invoke('email:addAccount', config),

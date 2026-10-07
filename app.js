@@ -4,7 +4,7 @@
    live encrypted in the main process (see main.js / preload.js).
    ========================================================= */
 
-const CATEGORIES = ["Pokemon", "Sports Cards", "Sneakers", "Video Games", "Electronics", "Other"];
+const CATEGORIES = ["Pokemon", "One Piece", "Lorcana", "Topps", "Sports Cards", "Sneakers", "Video Games", "Electronics", "Other"];
 const EXPENSE_TAGS = ["Proxies", "Bots", "Shipping", "Packing Materials", "Petrol", "Rent", "Electricity", "Software/Subscriptions", "Other"];
 
 const THEMES = {
@@ -27,6 +27,9 @@ const CURRENCIES = ["USD","EUR","GBP","JPY","CAD","AUD","CHF","CNY","HKD","SGD",
 
 const CAT_STYLES = {
   "Pokemon":      { fg:"#E8B23D", bg:"rgba(232,178,61,0.14)",  icon:"bolt"  },
+  "One Piece":    { fg:"#F25C54", bg:"rgba(242,92,84,0.14)",   icon:"bolt"  },
+  "Lorcana":      { fg:"#8B7CF6", bg:"rgba(139,124,246,0.14)", icon:"bolt"  },
+  "Topps":        { fg:"#2DB87A", bg:"rgba(45,184,122,0.14)",  icon:"court" },
   "Sports Cards": { fg:"#4FA9F7", bg:"rgba(79,169,247,0.14)",  icon:"court" },
   "Sneakers":     { fg:"#FB923C", bg:"rgba(251,146,60,0.14)",  icon:"foot"  },
   "Video Games":  { fg:"#E869E0", bg:"rgba(232,105,224,0.14)", icon:"pad"   },
@@ -245,6 +248,7 @@ if(!state.pendingSales) state.pendingSales = [];
 if(!state.displayCurrency) state.displayCurrency = "USD";
 if(!state.emailFilters) state.emailFilters = { blockPromotions: true, excludedSenders: [] };
 if(!Array.isArray(state.vccs)) state.vccs = [];
+if(!Array.isArray(state.orderExpenseKeys)) state.orderExpenseKeys = [];
 if(!Array.isArray(state.addresses)) state.addresses = [];
 if(!Array.isArray(state.generatedProfiles)) state.generatedProfiles = [];
 if(!state.profileBuilderSettings) state.profileBuilderSettings = { catchallDomains: [], emailList: [] };
@@ -338,6 +342,7 @@ function totalCost(item){ return item.quantityPurchased * item.purchasePricePerU
 function preorderSpendPending(item){
   if(!item.isPreorder) return false;
   if(item.retailer === "Pokemon Center") return true;
+  if(item.isCancelled) return true; // a cancelled preorder was never charged
   return item.paymentMade === false && !item.isDispatched;
 }
 function costOfSoldUnits(item){ return qtySold(item) * item.purchasePricePerUnit; }
@@ -715,7 +720,9 @@ function dashboardHTML(){
       ${statCard("cart", `Expenses ${periodQualifier(ui.period)}`, fmtMoney(totalExpenses), "var(--red)", "var(--red-bg)")}
     </div>
 
-    <div class="dash-grid">
+ ${marketDashboardHTML()}
+
+    <div class="dash-grid" style="margin-top:14px;">
       <div class="card panel">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">
           <div class="panel-title" style="margin-bottom:0;">Profit — ${periodQualifier(ui.period)}</div>
@@ -1109,6 +1116,14 @@ function attachDashboardEvents(){
     btn.addEventListener("click", ()=>{ ui.chartType = btn.dataset.chartType; renderView(); });
   });
   document.getElementById("shareDailyStatsBtn").addEventListener("click", shareDailyStatsImage);
+  const mSetup = document.getElementById("marketSetupBtn");
+  if(mSetup) mSetup.addEventListener("click", ()=>{
+    // Straight to pricing once keys exist; otherwise to the key form.
+    if(window.marketAPI) window.marketAPI.getConfig().then(c=>{ if(c.configured) refreshAllMarketPrices(); else openMarketSettingsModal(); });
+    else openMarketSettingsModal();
+  });
+  const mAll = document.getElementById("marketRefreshAllBtn");
+  if(mAll) mAll.addEventListener("click", refreshAllMarketPrices);
   bindChartHoverEvents();
 }
 
@@ -2208,11 +2223,234 @@ function stockListHTML(){
         ${ICONS.search}
         <input type="text" id="searchInput" placeholder="Search stock" value="${escapeAttr(ui.search)}">
       </div>
-      <button class="btn-small" id="exportStockCsvBtn" style="margin-left:auto;">${ICONS.download} Export CSV</button>
+      <button class="btn-small" id="marketSettingsBtn" style="margin-left:auto;">Market Prices</button>
+      <button class="btn-small" id="exportStockCsvBtn">${ICONS.download} Export CSV</button>
     </div>
     <div id="stockResultsContainer">${stockResultsHTML()}</div>
     <div style="height:20px;"></div>
   `;
+}
+
+/* ============================================================
+   MARKET PRICES (eBay)
+   ============================================================ */
+
+function marketUnitPrice(item){
+  return (item && item.marketPrice>0) ? item.marketPrice : null;
+}
+function marketQueryFor(item){
+  return (item.marketQuery && item.marketQuery.trim()) || item.name;
+}
+function marketSourceLabel(item){
+  return item.marketSource==="sold" ? "eBay sold" : item.marketSource==="listed" ? "eBay listed (asking)" : item.marketSource==="manual" ? "Manual" : "";
+}
+// Value of what's still in stock at market price, next to what it cost.
+// Only items that actually have a market price count, so coverage is
+// reported alongside — a total over 3 of 40 items shouldn't look complete.
+function marketValueSummary(){
+  const live = state.items.filter(i=>!i.isPreorder && !i.isCancelled && qtyRemaining(i)>0);
+  const priced = live.filter(i=>marketUnitPrice(i));
+  const value = priced.reduce((s,i)=>s+qtyRemaining(i)*marketUnitPrice(i),0);
+  const cost = priced.reduce((s,i)=>s+qtyRemaining(i)*i.purchasePricePerUnit,0);
+  return { value, cost, profit: value-cost, roi: cost>0 ? ((value-cost)/cost)*100 : 0, pricedCount: priced.length, liveCount: live.length };
+}
+
+function applyMarketResult(item, res){
+  const today = todayISO();
+  const prev = item.marketPrice || null;
+  item.marketPrice = res.median;
+  item.marketLow = res.low; item.marketHigh = res.high; item.marketCount = res.count;
+  item.marketSource = res.source;
+  item.marketUpdated = new Date().toISOString();
+  item.marketPrev = prev && prev!==res.median ? prev : (item.marketPrev || null);
+  if(!Array.isArray(item.marketHistory)) item.marketHistory = [];
+  const last = item.marketHistory[item.marketHistory.length-1];
+  if(last && last.d===today) last.p = res.median; else item.marketHistory.push({d:today, p:res.median});
+  if(item.marketHistory.length>60) item.marketHistory = item.marketHistory.slice(-60);
+}
+
+// Looks up one query; returns {ok,...}. Rejects a result in a different
+// currency to the one the app displays, since values aren't converted.
+async function marketLookupChecked(query){
+  if(!window.marketAPI) return { ok:false, error:"Market prices need the desktop app." };
+  const res = await window.marketAPI.lookup(query);
+  if(res.ok && res.currency && state.displayCurrency && res.currency!==state.displayCurrency){
+    return { ok:false, error:`eBay returned ${res.currency} but the app is set to ${state.displayCurrency}. Change the app currency or the eBay marketplace.` };
+  }
+  return res;
+}
+
+async function refreshItemMarketPrice(item){
+  const res = await marketLookupChecked(marketQueryFor(item));
+  if(!res.ok) return res;
+  item.marketLock = false;
+  applyMarketResult(item, res);
+  saveState();
+  return res;
+}
+
+let marketRefreshing = false;
+async function refreshAllMarketPrices(){
+  if(marketRefreshing) return;
+  const cfg = window.marketAPI ? await window.marketAPI.getConfig() : null;
+  if(!cfg || !cfg.configured){ openMarketSettingsModal(); return; }
+  const items = state.items.filter(i=>!i.isPreorder && !i.isCancelled && qtyRemaining(i)>0 && !i.marketLock);
+  if(!items.length){ showToast("Nothing in stock to price"); return; }
+  marketRefreshing = true;
+  const cache = {};
+  let done=0, updated=0, failed=0, lastError="";
+  for(const item of items){
+    const q = marketQueryFor(item);
+    const key = q.trim().toLowerCase();
+    let res = cache[key];
+    if(!res){
+      res = await marketLookupChecked(q);
+      cache[key] = res;
+      await new Promise(r=>setTimeout(r,350)); // stay well inside eBay's rate limits
+    }
+    done++;
+    if(res.ok){ applyMarketResult(item, res); updated++; }
+    else { failed++; lastError = res.error||""; }
+    if(done%5===0) showToast(`Updating market prices… ${done}/${items.length}`);
+  }
+  marketRefreshing = false;
+  saveState();
+  showToast(failed ? `Priced ${updated} of ${items.length}. ${lastError}` : `Market prices updated for ${updated} item${updated===1?"":"s"}`, failed?"close":undefined);
+  renderView();
+}
+
+function marketDashboardHTML(){
+  const m = marketValueSummary();
+  if(m.pricedCount===0){
+    return `
+    <div class="card" style="padding:14px 18px;margin-top:14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:220px;">
+        <div style="font-weight:700;font-size:13.5px;">Track what your stock is worth</div>
+        <div class="hint" style="margin:3px 0 0;">Pull market prices from eBay to see your stock's current value and unrealised profit here.</div>
+      </div>
+      <button class="btn-small" id="marketSetupBtn">Set Up Market Prices</button>
+    </div>`;
+  }
+  const tip = `${m.pricedCount} of ${m.liveCount} in-stock products have a market price. Before selling fees and postage.`;
+  return `
+    <div class="stat-grid" style="margin-top:14px;">
+      ${statCard("layers","Stock Market Value", fmtMoney(m.value), "var(--cyan)", "var(--cyan-bg)", tip)}
+      ${statCard("trend","Unrealised Profit", (m.profit>=0?"+":"")+fmtMoney(m.profit), m.profit>=0?"var(--green)":"var(--red)", m.profit>=0?"var(--green-bg)":"var(--red-bg)", tip)}
+      ${statCard("percent","Unrealised ROI", fmtPct(m.roi), m.roi>=0?"var(--green)":"var(--red)", m.roi>=0?"var(--green-bg)":"var(--red-bg)", tip)}
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap;">
+      <span class="hint" style="margin:0;">${m.pricedCount} of ${m.liveCount} products priced · at cost ${fmtMoney(m.cost)} · before fees</span>
+      <button class="btn-small" id="marketRefreshAllBtn" style="margin-left:auto;">Refresh Prices</button>
+    </div>`;
+}
+
+function marketItemCardHTML(item){
+  const price = marketUnitPrice(item);
+  const cost = item.purchasePricePerUnit;
+  const diff = price ? price-cost : null;
+  const updated = item.marketUpdated ? new Date(item.marketUpdated).toLocaleDateString(undefined,{month:"short",day:"numeric"}) : "";
+  const caveat = item.marketSource==="listed" ? `<div class="hint" style="margin:6px 0 0;">Based on current asking prices — your eBay account doesn't have access to sold data, so this tends to run higher than what things actually sell for.</div>` : "";
+  return `
+    <div class="section-title">Market Price</div>
+    <div class="card" style="padding:16px 18px;">
+      ${price ? `
+      <div class="card kv-card" style="box-shadow:none;">
+        ${kvRow("Market price (each)", fmtMoney(price))}
+        ${kvRow("You paid (each)", fmtMoney(cost))}
+        ${kvRow("Difference", (diff>=0?"+":"")+fmtMoney(diff)+(cost>0?` (${diff>=0?"+":""}${((diff/cost)*100).toFixed(0)}%)`:""), diff>=0?"var(--green)":"var(--red)")}
+        ${qtyRemaining(item)>0 ? kvRow(`Unrealised (${qtyRemaining(item)} left)`, (diff>=0?"+":"")+fmtMoney(diff*qtyRemaining(item)), diff>=0?"var(--green)":"var(--red)") : ""}
+        ${item.marketLow!=null && item.marketSource!=="manual" ? kvRow("Range", `${fmtMoney(item.marketLow)} – ${fmtMoney(item.marketHigh)} · ${item.marketCount} ${item.marketSource==="sold"?"sales":"listings"}`) : ""}
+        ${kvRow("Source", marketSourceLabel(item)+(updated?` · ${updated}`:""))}
+        ${item.marketPrev ? kvRow("Previous", fmtMoney(item.marketPrev)) : ""}
+      </div>
+      ${caveat}` : `<div class="hint" style="margin:0 0 10px;">No market price yet.</div>`}
+      <div class="field" style="margin-top:12px;">
+        <label>eBay search term</label>
+        <input type="text" id="marketQueryInput" value="${escapeAttr(item.marketQuery||"")}" placeholder="${escapeAttr(item.name)}">
+        <div class="hint" style="margin:4px 0 0;">Leave blank to search by the item name. Shorter, more exact terms match better.</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <button class="btn-small" id="marketRefreshBtn">Look Up on eBay</button>
+        <div class="field" style="margin:0;width:120px;"><label>Or set manually</label><input type="number" id="marketManualInput" step="0.01" min="0" placeholder="0.00" value="${item.marketSource==="manual" && price ? price : ""}"></div>
+        <button class="btn-small" id="marketManualSaveBtn">Save Price</button>
+        ${price ? `<button class="btn-small" id="marketClearBtn" style="border-color:var(--red);color:var(--red);">Clear</button>` : ""}
+      </div>
+    </div>`;
+}
+
+function attachMarketItemEvents(item){
+  const q = document.getElementById("marketQueryInput");
+  if(q) q.addEventListener("change", e=>{ item.marketQuery = e.target.value.trim(); saveState(); });
+  const refresh = document.getElementById("marketRefreshBtn");
+  if(refresh) refresh.addEventListener("click", async ()=>{
+    const cfg = window.marketAPI ? await window.marketAPI.getConfig() : null;
+    if(!cfg || !cfg.configured){ openMarketSettingsModal(); return; }
+    if(q) item.marketQuery = q.value.trim();
+    refresh.disabled = true; refresh.textContent = "Looking up…";
+    const res = await refreshItemMarketPrice(item);
+    if(!res.ok){ showToast(res.error||"Lookup failed","close"); refresh.disabled=false; refresh.textContent="Look Up on eBay"; return; }
+    showToast(`Market price ${fmtMoney(res.median)} (${res.source==="sold"?"sold":"listed"}, ${res.count})`);
+    render();
+  });
+  const save = document.getElementById("marketManualSaveBtn");
+  if(save) save.addEventListener("click", ()=>{
+    const v = parseFloat(document.getElementById("marketManualInput").value);
+    if(isNaN(v) || v<=0){ showToast("Enter a price","close"); return; }
+    if(q) item.marketQuery = q.value.trim();
+    applyMarketResult(item, { median:v, low:null, high:null, count:0, source:"manual" });
+    item.marketLow = null; item.marketHigh = null;
+    item.marketLock = true; // a price you typed isn't overwritten by Refresh All
+    saveState(); showToast("Market price saved"); render();
+  });
+  const clear = document.getElementById("marketClearBtn");
+  if(clear) clear.addEventListener("click", ()=>{
+    ["marketPrice","marketLow","marketHigh","marketCount","marketSource","marketUpdated","marketPrev","marketLock"].forEach(k=>{ delete item[k]; });
+    saveState(); render();
+  });
+}
+
+function openMarketSettingsModal(){
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open" id="marketSettingsBackdrop">
+      <div class="modal" style="width:480px;">
+        <div class="modal-header"><h2>Market Prices (eBay)</h2><button class="icon-btn" id="closeMarketSettings">${ICONS.close}</button></div>
+        <div class="modal-body" id="marketSettingsBody"><div class="hint">Loading…</div></div>
+      </div>
+    </div>`;
+  document.getElementById("closeMarketSettings").addEventListener("click", ()=>{ root.innerHTML=""; });
+  if(!window.marketAPI){ document.getElementById("marketSettingsBody").innerHTML = `<div class="hint">Market prices need the desktop app.</div>`; return; }
+  window.marketAPI.getConfig().then(cfg=>{
+    const body = document.getElementById("marketSettingsBody");
+    if(!body) return;
+    body.innerHTML = `
+      <div class="hint" style="margin:0 0 12px;">Uses eBay's official developer API with your own free keys. Create a developer account at developer.ebay.com, make a <strong>Production</strong> keyset, and paste the App ID and Cert ID here. The Cert ID is stored encrypted on this computer.</div>
+      <div class="hint" style="margin:0 0 12px;">With a standard account you get current <strong>listed</strong> (asking) prices. Real <strong>sold</strong> prices come from eBay's Marketplace Insights API, which eBay only enables for approved accounts — if yours is approved, the app uses it automatically.</div>
+      <div class="field"><label>App ID (Client ID)</label><input type="text" id="mk-appId" value="${escapeAttr(cfg.appId||"")}" autocomplete="off"></div>
+      <div class="field"><label>Cert ID (Client Secret)</label><input type="password" id="mk-certId" placeholder="${cfg.configured ? "Saved — leave blank to keep" : ""}" autocomplete="off"></div>
+      <div class="field"><label>Marketplace</label>
+        <select id="mk-marketplace">
+          ${[["EBAY_GB","eBay UK"],["EBAY_US","eBay US"],["EBAY_DE","eBay Germany"],["EBAY_AU","eBay Australia"],["EBAY_CA","eBay Canada"]].map(([v,l])=>`<option value="${v}" ${cfg.marketplace===v?"selected":""}>${l}</option>`).join("")}
+        </select>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:6px;">
+        <button class="btn-primary" id="mkSaveBtn" style="flex:1;">Save</button>
+        ${cfg.configured ? `<button class="btn-small" id="mkClearBtn" style="border-color:var(--red);color:var(--red);">Remove Keys</button>` : ""}
+      </div>`;
+    document.getElementById("mkSaveBtn").addEventListener("click", async ()=>{
+      const r = await window.marketAPI.saveConfig({
+        appId: document.getElementById("mk-appId").value,
+        certId: document.getElementById("mk-certId").value,
+        marketplace: document.getElementById("mk-marketplace").value
+      });
+      if(!r.ok){ showToast(r.error||"Couldn't save","close"); return; }
+      showToast("Saved — now use Refresh Prices");
+      root.innerHTML = "";
+      if(ui.tab==="dashboard") renderView();
+    });
+    const clr = document.getElementById("mkClearBtn");
+    if(clr) clr.addEventListener("click", async ()=>{ await window.marketAPI.clearConfig(); showToast("Keys removed"); openMarketSettingsModal(); });
+  });
 }
 
 function filteredStock(){
@@ -2237,7 +2475,7 @@ function stockResultsHTML(){
   return `
     <div class="card table-wrap" style="margin-top:14px;">
       <table class="data-table">
-        <thead><tr><th>Item</th><th>Category</th><th>Left</th><th>Cost</th><th style="text-align:right;">Profit</th></tr></thead>
+        <thead><tr><th>Item</th><th>Category</th><th>Left</th><th>Cost</th><th>Market</th><th style="text-align:right;">Profit</th></tr></thead>
         <tbody>
           ${filtered.map(i=>{
             const style = CAT_STYLES[i.category]||CAT_STYLES.Other;
@@ -2247,6 +2485,7 @@ function stockResultsHTML(){
               <td><span style="color:${style.fg};font-size:12px;font-weight:600;">${escapeHTML(i.category)}</span></td>
               <td class="mono dim">${qtyRemaining(i)}/${i.quantityPurchased}</td>
               <td class="mono">${fmtMoney(totalCost(i))}</td>
+              <td class="mono ${marketUnitPrice(i) ? (marketUnitPrice(i)>=i.purchasePricePerUnit?'pos':'neg') : 'dim'}" title="${marketUnitPrice(i) ? escapeAttr(marketSourceLabel(i)+' · per unit') : ''}">${marketUnitPrice(i) ? fmtMoney(marketUnitPrice(i)) : '—'}</td>
               <td class="mono ${qtySold(i)>0?(p>=0?'pos':'neg'):'dim'}" style="text-align:right;">${qtySold(i)>0 ? (p>=0?'+':'')+fmtMoney(p) : '—'}</td>
             </tr>`;
           }).join("")}
@@ -2274,11 +2513,12 @@ function attachStockEvents(){
   });
   const search = document.getElementById("searchInput");
   search.addEventListener("input", e=>{ ui.search = e.target.value; renderStockResults(); });
+  document.getElementById("marketSettingsBtn").addEventListener("click", openMarketSettingsModal);
   document.getElementById("exportStockCsvBtn").addEventListener("click", ()=>{
     const items = filteredStock();
     downloadCSV(`stock-${todayISO()}.csv`,
-      ["Name","Category","Retailer","Quantity Purchased","Quantity Remaining","Purchase Price","Purchase Date","Order Number"],
-      items.map(i=>[i.name, i.category, i.retailer||"", i.quantityPurchased, qtyRemaining(i), i.purchasePricePerUnit, i.purchaseDate||"", i.orderNumber||""])
+      ["Name","Category","Retailer","Quantity Purchased","Quantity Remaining","Purchase Price","Market Price","Purchase Date","Order Number"],
+      items.map(i=>[i.name, i.category, i.retailer||"", i.quantityPurchased, qtyRemaining(i), i.purchasePricePerUnit, marketUnitPrice(i)||"", i.purchaseDate||"", i.orderNumber||""])
     );
   });
   document.querySelectorAll("tr[data-id]").forEach(row=>{
@@ -2298,7 +2538,7 @@ function ordersHTML(){
   // below is order-centric (one card per order, however many products it
   // has), so this tab label needs to match that, not the item count.
   const pkcOrderNumbers = new Set(
-    state.items.filter(i=>i.isPreorder && i.retailer==="Pokemon Center" && !i.isCancelled)
+    state.items.filter(i=>i.isPreorder && !i.isCancelled)
       .map(i=>i.orderNumber || i.id)
   );
   const pkcCount = pkcOrderNumbers.size;
@@ -2306,7 +2546,7 @@ function ordersHTML(){
   return `
     <div class="segmented" style="margin-bottom:4px;">
       <button class="${ordersUI.subTab==='all'?'active':''}" data-orders-subtab="all">All Orders (${allCount})</button>
-      <button class="${ordersUI.subTab==='pkc'?'active':''}" data-orders-subtab="pkc">PKC Preorders (${pkcCount})</button>
+      <button class="${ordersUI.subTab==='pkc'?'active':''}" data-orders-subtab="pkc">Preorders (${pkcCount})</button>
       <button class="${ordersUI.subTab==='cancelled'?'active':''}" data-orders-subtab="cancelled">Cancelled (${cancelledCount})</button>
     </div>
     ${ordersUI.subTab==='all' ? allOrdersContentHTML() : ordersUI.subTab==='pkc' ? pkcOrdersContentHTML() : cancelledOrdersContentHTML()}
@@ -2692,7 +2932,7 @@ function distributorResultsHTML(){
   return `
     <div class="card table-wrap" style="margin-top:14px;">
       <table class="data-table">
-        <thead><tr><th>Product</th><th>Qty</th><th>Cost/unit</th><th>RRP</th><th>Profit @ RRP</th><th>Payment</th><th>Delivery</th><th></th></tr></thead>
+        <thead><tr><th>Product</th><th>Qty</th><th>Cost/unit</th><th>Total Cost</th><th>RRP</th><th>Profit @ RRP</th><th>Payment</th><th>Delivery</th><th></th></tr></thead>
         <tbody>
           ${items.map(d=>distributorRowHTML(d)).join("")}
         </tbody>
@@ -2803,6 +3043,7 @@ function distributorRowHTML(d){
         ${isCut ? `<div style="font-size:11px;color:var(--gold);">Allocation cut</div>` : ""}
       </td>
       <td class="mono dim">${fmtMoney(d.costPerUnit)}</td>
+      <td class="mono" style="font-weight:600;">${fmtMoney(distributorItemTotalCost(d))}</td>
       <td class="mono dim">${fmtMoney(d.rrp)}</td>
       <td class="mono" style="color:var(--green);">${fmtMoney(distributorItemExpectedProfit(d))}</td>
       <td>
@@ -2846,8 +3087,8 @@ function attachDistributorEvents(){
   byId("exportDistributorCsvBtn").addEventListener("click", ()=>{
     const items = sortedDistributorItems();
     downloadCSV(`distributor-orders-${todayISO()}.csv`,
-      ["Product","Category","Qty Ordered","Qty Allocated","Qty Delivered","Cost/Unit","RRP","Expected Profit","Payment Status","Amount Paid","Amount Owed","Payment Due","Delivery Due","Delivered","Order Reference"],
-      items.map(d=>[d.name, d.category||"", d.quantityOrdered, d.quantityAllocated!=null?d.quantityAllocated:d.quantityOrdered, d.quantityDelivered||0, d.costPerUnit, d.rrp, distributorItemExpectedProfit(d), distributorItemPaymentStatus(d), distributorItemAmountPaid(d), distributorItemAmountOwed(d), d.paymentDueDate||"", d.deliveryDueDate||"", d.delivered?"Yes":"No", d.orderReference||""])
+      ["Product","Category","Qty Ordered","Qty Allocated","Qty Delivered","Cost/Unit","Total Cost","RRP","Expected Profit","Payment Status","Amount Paid","Amount Owed","Payment Due","Delivery Due","Delivered","Order Reference"],
+      items.map(d=>[d.name, d.category||"", d.quantityOrdered, d.quantityAllocated!=null?d.quantityAllocated:d.quantityOrdered, d.quantityDelivered||0, d.costPerUnit, distributorItemTotalCost(d), d.rrp, distributorItemExpectedProfit(d), distributorItemPaymentStatus(d), distributorItemAmountPaid(d), distributorItemAmountOwed(d), d.paymentDueDate||"", d.deliveryDueDate||"", d.delivered?"Yes":"No", d.orderReference||""])
     );
   });
   attachDistributorResultEvents();
@@ -3535,6 +3776,24 @@ function orderDetailModal(orderId){
               <button class="btn-small" id="editOrderStatusBtn" title="Correct this manually if a detection issue set it wrong — for example, a bug (since fixed) that could apply one order's status update to a different order by mistake">Change Status</button>
             `}
           </div>
+          ${(()=>{
+            const live = preorderItemsForOrder(p).length>0;
+            if(p.status==="delivered" || p.status==="cancelled") return "";
+            if(live) return `<div style="margin:-4px 0 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+              <span class="status-chip" style="background:var(--violet-bg);color:var(--violet);">Preorder</span>
+              <span class="hint" style="margin:0;">Sits in Preorders until it's delivered.</span>
+              ${p.preorderManual ? `<button class="btn-small" id="unmarkPreorderBtn">Remove Preorder</button>` : ""}
+            </div>`;
+            if(!p.addedToStockId) return `<div style="margin:-4px 0 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+              <button class="btn-small" id="markPreorderBtn" title="Treat this order as a preorder: it moves out of live Stock into Preorders and arrives when it's delivered">Mark as Preorder</button>
+              <span class="hint" style="margin:0;">Not out yet? Track it as a preorder.</span>
+            </div>`;
+            return "";
+          })()}
+          <div style="margin:-4px 0 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <button class="btn-small" id="orderToExpenseBtn" title="Not a resale purchase? Move it out of Orders and into Expenses">Mark as Expense</button>
+            <span class="hint" style="margin:0;">Business cost, not stock? Move it to Expenses.</span>
+          </div>
           <div class="card kv-card">
             ${kvRow("Order #", p.orderNumber ? escapeHTML(p.orderNumber) : "—")}
             ${kvRow("Order date", p.orderDate ? formatDate(p.orderDate) : "—")}
@@ -3747,6 +4006,12 @@ function orderDetailModal(orderId){
     // for this same order can't second-guess what was just entered.
     p.partialItemList = false;
     p.additionalItemsNotShown = null;
+    if(p.preorderManual){
+      // Rebuild the preorder items from the corrected list (only possible if
+      // nothing from them has been sold, which is always true while they
+      // are still preorders).
+      if(unmarkOrderPreorder(p)) markOrderAsPreorder(p);
+    }
     orderLineItemsEditing = null;
     orderLineItemsDraft = null;
     saveState();
@@ -3780,6 +4045,25 @@ function orderDetailModal(orderId){
     ui.detailItemId = p.addedToStockId;
     render();
   });
+  const orderToExpenseBtn = document.getElementById("orderToExpenseBtn");
+  if(orderToExpenseBtn) orderToExpenseBtn.addEventListener("click", ()=>openOrderExpenseModal(orderId));
+  const markPreorderBtn = document.getElementById("markPreorderBtn");
+  if(markPreorderBtn) markPreorderBtn.addEventListener("click", ()=>{
+    const made = markOrderAsPreorder(p);
+    if(!made){ showToast("This order can't be marked as a preorder", "close"); return; }
+    saveState();
+    showToast(`Marked as a preorder — ${made.length>1 ? made.length+" items" : "1 item"} added to Preorders`);
+    orderDetailModal(orderId);
+    if(ui.tab==="orders") renderView();
+  });
+  const unmarkPreorderBtn = document.getElementById("unmarkPreorderBtn");
+  if(unmarkPreorderBtn) unmarkPreorderBtn.addEventListener("click", ()=>{
+    if(!unmarkOrderPreorder(p)){ showToast("Can't remove — some of these items already have sales", "close"); return; }
+    saveState();
+    showToast("No longer a preorder");
+    orderDetailModal(orderId);
+    if(ui.tab==="orders") renderView();
+  });
   const editBtn = document.getElementById("editOrderStatusBtn");
   if(editBtn) editBtn.addEventListener("click", ()=>{ orderStatusEditing = orderId; orderDetailModal(orderId); });
   const cancelBtn = document.getElementById("cancelOrderStatusBtn");
@@ -3789,6 +4073,7 @@ function orderDetailModal(orderId){
     const newStatus = document.getElementById("orderStatusEditSelect").value;
     const wasAlreadyDelivered = p.status==="delivered";
     p.status = newStatus;
+    if(newStatus==="cancelled") preorderItemsForOrder(p).forEach(i=>{ i.isCancelled = true; });
     // Matches what the Add Order form and automatic email sync both
     // already do when an order reaches delivered — this manual control
     // was the one remaining path that just changed the label without
@@ -3798,9 +4083,7 @@ function orderDetailModal(orderId){
         const item = createStockItemFromOrder(p);
         p.addedToStockId = item.id;
       } else {
-        const relatedItems = p.orderNumber
-          ? state.items.filter(i=>i.orderNumber===p.orderNumber && i.isPreorder)
-          : [state.items.find(i=>i.id===p.addedToStockId)].filter(Boolean);
+        const relatedItems = preorderItemsForOrder(p);
         relatedItems.forEach(linkedItem=>{ linkedItem.isPreorder = false; linkedItem.needsAttention = false; });
       }
     }
@@ -3809,6 +4092,92 @@ function orderDetailModal(orderId){
     showToast(`Status updated to ${statusLabel(newStatus)}`);
     orderDetailModal(orderId);
     if(ui.tab==="orders") renderView();
+  });
+}
+
+// Turns a detected order into an expense: it's added to Expenses and removed
+// from Orders. The order's key is remembered so a later re-scan of the same
+// emails doesn't bring it back.
+let orderExpenseForm = null;
+
+function openOrderExpenseModal(orderId){
+  const p = state.pendingOrders.find(o=>o.id===orderId);
+  if(!p) return;
+  if(p.addedToStockId){
+    const sold = preorderItemsForOrder(p).some(i=>i.sales && i.sales.length);
+    if(!p.preorderManual || sold){
+      showToast("This order already has stock items — remove those first", "close");
+      return;
+    }
+  }
+  orderExpenseForm = {
+    orderId, amount: p.price!=null ? String(p.price) : "",
+    date: p.orderDate || todayISO(), tag: EXPENSE_TAGS[0], customTag: "",
+    description: `${p.retailer}${p.orderNumber ? " order "+p.orderNumber : " order"}`
+  };
+  renderOrderExpenseModal();
+}
+
+function renderOrderExpenseModal(){
+  const f = orderExpenseForm;
+  const root = document.getElementById("modalRoot");
+  root.innerHTML = `
+    <div class="modal-backdrop open" id="orderExpenseBackdrop">
+      <div class="modal" style="width:420px;">
+        <div class="modal-header">
+          <h2>Mark as Expense</h2>
+          <button class="icon-btn" id="closeOrderExpense">${ICONS.close}</button>
+        </div>
+        <div class="modal-body">
+          <div class="hint" style="margin:0 0 12px;">This adds it to Expenses and removes it from Orders.</div>
+          <div class="field"><label>Amount</label><input type="number" id="oe-amount" value="${escapeAttr(f.amount)}" step="0.01" min="0"></div>
+          <div class="form-grid">
+            <div class="field"><label>Tag</label>
+              <select id="oe-tag">${EXPENSE_TAGS.map(t=>`<option value="${t}" ${f.tag===t?"selected":""}>${t}</option>`).join("")}</select>
+            </div>
+            <div class="field"><label>Date</label><input type="date" id="oe-date" value="${f.date}"></div>
+          </div>
+          ${f.tag==="Other" ? `<div class="field"><label>Custom tag</label><input type="text" id="oe-customTag" value="${escapeAttr(f.customTag)}"></div>` : ""}
+          <div class="field"><label>Description</label><input type="text" id="oe-description" value="${escapeAttr(f.description)}"></div>
+          <div style="height:6px;"></div>
+          <button class="btn-primary block" id="saveOrderExpenseBtn">Move to Expenses</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("closeOrderExpense").addEventListener("click", ()=>orderDetailModal(f.orderId));
+  document.getElementById("oe-amount").addEventListener("input", e=>{ f.amount = e.target.value; });
+  document.getElementById("oe-tag").addEventListener("change", e=>{ f.tag = e.target.value; renderOrderExpenseModal(); });
+  document.getElementById("oe-date").addEventListener("change", e=>{ f.date = e.target.value; });
+  document.getElementById("oe-description").addEventListener("input", e=>{ f.description = e.target.value; });
+  const ct = document.getElementById("oe-customTag");
+  if(ct) ct.addEventListener("input", e=>{ f.customTag = e.target.value; });
+  document.getElementById("saveOrderExpenseBtn").addEventListener("click", ()=>{
+    const p = state.pendingOrders.find(o=>o.id===f.orderId);
+    if(!p) return;
+    const amount = parseFloat(f.amount);
+    if(isNaN(amount) || amount<=0){ showToast("Enter a valid amount", "close"); return; }
+    const tag = f.tag==="Other" && f.customTag.trim() ? f.customTag.trim() : f.tag;
+    if(p.preorderManual && !unmarkOrderPreorder(p)){ showToast("Some items already have sales", "close"); return; }
+    const description = f.description.trim() || null;
+    state.expenses.unshift({
+      id: uid(), amount, date: f.date, tag, description,
+      source: "order", fromEmail: p.fromEmail||null, orderNumber: p.orderNumber||null,
+      matchKey: "order:"+(p.matchKey||p.id)
+    });
+    if(p.matchKey && !state.orderExpenseKeys.includes(p.matchKey)) state.orderExpenseKeys.push(p.matchKey);
+    state.pendingOrders = state.pendingOrders.filter(o=>o.id!==p.id);
+    saveState();
+    if(window.taxRecordsAPI){
+      window.taxRecordsAPI.saveManualEntry({
+        category: "Manual Entries", dateISO: f.date, title: `Expense - ${tag}`,
+        lines: [`Order moved to expenses`, `Retailer: ${p.retailer}`, `Order #: ${p.orderNumber||"—"}`,
+                `Tag: ${tag}`, `Date: ${f.date}`, `Amount: ${fmtMoney(amount)}`,
+                `Description: ${description||"—"}`, `Entered in Restock: ${new Date().toISOString()}`]
+      }).catch(()=>{});
+    }
+    root.innerHTML = "";
+    showToast("Moved to Expenses");
+    if(ui.tab==="orders" || ui.tab==="expenses" || ui.tab==="dashboard") renderView();
   });
 }
 
@@ -4001,7 +4370,7 @@ function pkcOrdersContentHTML(){
         return statCard("stock", shortName.length>42 ? shortName.slice(0,40)+"…" : shortName, ""+qty, "var(--violet)", "var(--violet-bg)", name);
       }).join("")}
     </div>
-    <div class="hint" style="margin:8px 0 0;">Total To Pay is what Pokémon Center will actually charge once these ship — nothing here counts as a real expense until then. Quantity boxes add up how many of each product you have on order across every preorder.</div>
+    <div class="hint" style="margin:8px 0 0;">Total To Pay and the quantity boxes cover Pokémon Center preorders only — it's what they will actually charge once these ship — nothing here counts as a real expense until then. Quantity boxes add up how many of each product you have on order across every preorder.</div>
     <div style="height:12px;"></div>
     <div class="toolbar-row">
       <button class="btn-primary" id="addPkcPreorderBtn">${ICONS.plus} Add Preorder</button>
@@ -4021,15 +4390,15 @@ function pkcResultsHTML(){
   // Only Pokémon Center specifically — a preorder manually added via Add
   // Stock's checkbox for a different retailer was incorrectly showing up
   // here before, since the filter only checked isPreorder.
-  const preorders = state.items.filter(i=>i.isPreorder && i.retailer==="Pokemon Center")
+  const preorders = state.items.filter(i=>i.isPreorder)
     .filter(i=> !pkcUI.search || i.name.toLowerCase().includes(pkcUI.search.toLowerCase()));
 
   if(preorders.length===0){
     return `
       <div class="empty-state">
         ${ICONS.clock}
-        <div class="t">No PKC orders yet</div>
-        <div class="d">Pokémon Center preorder confirmations are detected automatically via Email Sync, or use "Add Preorder" above.</div>
+        <div class="t">No preorders yet</div>
+        <div class="d">Pokémon Center preorders are detected automatically via Email Sync. Any other order can be marked as a preorder from its details in All Orders, or use "Add Preorder" above.</div>
       </div>
     `;
   }
@@ -6140,7 +6509,7 @@ function expensesResultsHTML(){
               <td class="mono dim">${formatDate(e.date)}</td>
               <td><span style="font-size:12px;font-weight:600;color:var(--text-dim);">${escapeHTML(e.tag)}</span></td>
               <td>${escapeHTML(e.description||"—")}</td>
-              <td class="dim" style="font-size:12px;">${e.source==="email" ? "Auto (email)" : "Manual"}</td>
+              <td class="dim" style="font-size:12px;">${e.source==="email" ? "Auto (email)" : e.source==="order" ? "From order" : "Manual"}</td>
               <td class="mono" style="text-align:right;font-weight:600;">${fmtMoney(e.amount||0)}</td>
               <td style="text-align:right;"><button class="icon-btn" data-remove-expense="${e.id}">${ICONS.close}</button></td>
             </tr>
@@ -6340,6 +6709,8 @@ function detailHTML(itemId){
       </div>
     </div>
 
+    ${!item.isPreorder ? marketItemCardHTML(item) : ""}
+
     <div class="section-title">Edit Purchase</div>
     <div class="card" style="padding:18px;">
       <div class="field">
@@ -6466,6 +6837,8 @@ function attachDetailEvents(){
     showToast(`${item.name} moved to Stock`);
     render();
   });
+
+  attachMarketItemEvents(item);
 
   const markDispatchedBtn = document.getElementById("markDispatchedBtn");
   if(markDispatchedBtn) markDispatchedBtn.addEventListener("click", ()=>{
@@ -6930,7 +7303,7 @@ function emailConnectedHTML(){
     </div>
 
     <div class="hint" style="margin:6px 0 20px;display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border-soft);border-radius:var(--radius-md);padding:14px 16px;">
-      <span>Detected orders live in the <strong style="color:var(--text);">Confirmed Orders</strong> tab (Pokémon Center preorders under its "PKC Preorders" sub-tab), tracked from placed through delivery.</span>
+      <span>Detected orders live in the <strong style="color:var(--text);">Confirmed Orders</strong> tab (preorders under its "Preorders" sub-tab), tracked from placed through delivery.</span>
       <button class="btn-small" id="goToOrdersFromSettings">Go to Orders ${ICONS.chev}</button>
     </div>
     <div style="height:20px;"></div>
@@ -7624,6 +7997,8 @@ function mergeSyncResults(results){
     // should be rare now that order-number extraction handles every
     // wording tested against real emails so far.
     const key = r.orderNumber ? ("num:"+r.orderNumber) : ("guess:"+r.retailer.toLowerCase()+"|"+(r.price||0)+"|"+(r.date||"").slice(0,10));
+    // Orders the user turned into an expense stay gone on later re-scans.
+    if(state.orderExpenseKeys.includes(key)) return;
     let existing = state.pendingOrders.find(p=>p.matchKey===key);
     // The strict guess-key above requires an exact match on price and
     // date, which almost never holds between an order's own lifecycle
@@ -7689,7 +8064,7 @@ function mergeSyncResults(results){
       if(!existing){
         const item = createPKCPreorderItem(r);
         state.pendingOrders.unshift({
-          id: uid(), matchKey:key, retailer:r.retailer, price:r.price, fromEmail:r.fromEmail||null,
+          id: uid(), matchKey:key, retailer:r.retailer, price:r.price, postage:r.postage||0, fromEmail:r.fromEmail||null,
           orderDate:(r.date||new Date().toISOString()).slice(0,10),
           expectedDelivery:r.expectedDelivery, expectedDeliveryTime:r.expectedDeliveryTime||null,
           carrier:r.carrier||null, trackingNumber:r.trackingNumber||null,
@@ -7704,7 +8079,7 @@ function mergeSyncResults(results){
     if(r.status==="confirmed"){
       if(!existing){
         state.pendingOrders.unshift({
-          id: uid(), matchKey:key, retailer:r.retailer, price:r.price, fromEmail:r.fromEmail||null,
+          id: uid(), matchKey:key, retailer:r.retailer, price:r.price, postage:r.postage||0, fromEmail:r.fromEmail||null,
           orderDate:(r.date||new Date().toISOString()).slice(0,10),
           expectedDelivery:r.expectedDelivery, expectedDeliveryTime:r.expectedDeliveryTime||null,
           carrier:r.carrier||null, trackingNumber:r.trackingNumber||null,
@@ -7733,7 +8108,7 @@ function mergeSyncResults(results){
           // partial read (still far better than nothing), flagged the
           // same way a brand new order would be.
           existing.lineItems = r.lineItems;
-          if(r.price != null) existing.price = r.price + (existing.postage||0); // keep any manually-added postage on top
+          applyParsedPrice(existing, r);
           existing.partialItemList = !!r.partialItemList;
           existing.additionalItemsNotShown = r.partialItemList ? (r.additionalItemsNotShown||0) : null;
         } else if(existingIsPartial && !r.partialItemList){
@@ -7742,7 +8117,7 @@ function mergeSyncResults(results){
           // — always trusted over that partial guess, since this is the
           // only way such a read ever gets corrected.
           existing.lineItems = r.lineItems;
-          if(r.price != null) existing.price = r.price + (existing.postage||0); // keep any manually-added postage on top
+          applyParsedPrice(existing, r);
           existing.partialItemList = false;
           existing.additionalItemsNotShown = null;
         } else if(existingIsPartial && r.partialItemList){
@@ -7795,7 +8170,7 @@ function mergeSyncResults(results){
         if(r.lineItems && r.lineItems.length && (!existing.lineItems || !existing.lineItems.length || existing.lineItems.every(li=>looksLikeGarbageItemName(li.name)))) existing.lineItems = r.lineItems;
       } else if(!existing){
         state.pendingOrders.unshift({
-          id: uid(), matchKey:key, retailer:r.retailer, price:r.price, fromEmail:r.fromEmail||null,
+          id: uid(), matchKey:key, retailer:r.retailer, price:r.price, postage:r.postage||0, fromEmail:r.fromEmail||null,
           orderDate:(r.date||new Date().toISOString()).slice(0,10),
           expectedDelivery:r.expectedDelivery, expectedDeliveryTime:r.expectedDeliveryTime||null,
           carrier:r.carrier||null, trackingNumber:r.trackingNumber||null, pickupCode:r.pickupCode||null,
@@ -7836,9 +8211,7 @@ function mergeSyncResults(results){
           // multi-product order has several stock items sharing this
           // same order number, not just the one addedToStockId points
           // to — all of them need to arrive together, not just the first.
-          const relatedItems = existing.orderNumber
-            ? state.items.filter(i=>i.orderNumber===existing.orderNumber && i.isPreorder)
-            : [state.items.find(i=>i.id===existing.addedToStockId)].filter(Boolean);
+          const relatedItems = preorderItemsForOrder(existing);
           relatedItems.forEach(linkedItem=>{
             linkedItem.isPreorder = false;
             linkedItem.needsAttention = false;
@@ -7860,7 +8233,7 @@ function mergeSyncResults(results){
         const stub = { retailer:r.retailer, price:r.price, orderDate };
         const item = createStockItemFromOrder(stub);
         state.pendingOrders.unshift({
-          id: uid(), matchKey:key, retailer:r.retailer, price:r.price, fromEmail:r.fromEmail||null,
+          id: uid(), matchKey:key, retailer:r.retailer, price:r.price, postage:r.postage||0, fromEmail:r.fromEmail||null,
           orderDate, expectedDelivery:null, expectedDeliveryTime:null, carrier:r.carrier||null, trackingNumber:r.trackingNumber||null,
           orderNumber:r.orderNumber, status:"delivered", addedToStockId:item.id, isPKCPreorder:false
         });
@@ -7891,6 +8264,85 @@ function namesLikelyMatch(a, b){
   const longerSet = new Set(wordsA.length <= wordsB.length ? wordsB : wordsA);
   const overlap = shorter.filter(w=>longerSet.has(w)).length;
   return overlap / shorter.length >= 0.6;
+}
+
+// ---- Marking an already-detected order as a preorder -------------------
+// Any order (not just Pokémon Center's auto-detected ones) can be flagged as
+// a preorder after the fact. It then behaves like every other preorder: its
+// products sit in Preorders (not live Stock), they're treated as arrived when
+// a delivered email / "Mark Arrived" comes in, and a cancellation cancels them.
+function preorderItemsForOrder(order){
+  return state.items.filter(i=>i.isPreorder && (
+    i.preorderOrderId===order.id ||
+    (order.orderNumber && i.orderNumber===order.orderNumber) ||
+    i.id===order.addedToStockId
+  ));
+}
+
+function markOrderAsPreorder(order){
+  if(order.addedToStockId || order.status==="delivered" || order.status==="cancelled") return null;
+  const isPKC = order.retailer==="Pokemon Center";
+  const shared = {
+    category: isPKC ? "Pokemon" : "Other",
+    retailer: order.retailer,
+    purchaseDate: order.orderDate || todayISO(),
+    isPreorder: true,
+    purchaseMethod: "online",
+    expectedArrival: order.expectedDelivery || null,
+    orderNumber: order.orderNumber || null,
+    deliveryAddress: order.deliveryAddress || null,
+    recipientName: order.recipientName || null,
+    sentToEmail: order.toEmail || null,
+    sourceEmailDetected: !!order.fromEmail,
+    preorderOrderId: order.id,
+    needsAttention: false, attentionDeadline: null, attentionDeadlineTime: null,
+    isCancelled: false, image: null, sales: []
+  };
+  // Pokémon Center keeps its own "not charged until it ships" rule, so
+  // paymentMade is left unset for it; everything else defaults to paid
+  // (counted in Total Spent), editable on the item afterwards.
+  if(!isPKC){ shared.paymentMade = true; shared.isDispatched = false; }
+  const lines = (order.lineItems && order.lineItems.length) ? order.lineItems : null;
+  const created = [];
+  const note = "Marked as a preorder from an email-detected order — please verify item name, quantity, and price.";
+  if(lines){
+    lines.forEach(line=>{
+      const qty = line.quantity || 1;
+      const item = {
+        id: uid(), name: line.name, quantityPurchased: qty,
+        purchasePricePerUnit: (line.price||0) + orderLinePostageShare(order, line)/qty,
+        notes: note, lineItems: order.lineItems, ...shared
+      };
+      state.items.unshift(item);
+      line.preorderItemId = item.id;
+      created.push(item);
+    });
+  } else {
+    const item = {
+      id: uid(), name: `${order.retailer} preorder — tap to edit`, quantityPurchased: 1,
+      purchasePricePerUnit: order.price || 0, notes: note, lineItems: [], ...shared
+    };
+    state.items.unshift(item);
+    created.push(item);
+  }
+  order.addedToStockId = created[0].id;
+  order.preorderManual = true;
+  if(isPKC) order.isPKCPreorder = true;
+  return created;
+}
+
+// Reverses markOrderAsPreorder. Refuses if anything from it has already been
+// sold, since removing the items would lose that sale.
+function unmarkOrderPreorder(order){
+  const items = preorderItemsForOrder(order);
+  if(items.some(i=>i.sales && i.sales.length)) return false;
+  const ids = new Set(items.map(i=>i.id));
+  state.items = state.items.filter(i=>!ids.has(i.id));
+  (order.lineItems||[]).forEach(li=>{ delete li.preorderItemId; });
+  order.addedToStockId = null;
+  order.preorderManual = false;
+  if(order.retailer==="Pokemon Center") order.isPKCPreorder = false;
+  return true;
 }
 
 function createPKCPreorderItem(order){
@@ -8027,6 +8479,15 @@ function createStockItemFromOrder(order){
 // line's share of the order's item value (by quantity instead if every
 // line is priced at zero). Shares across all of an order's lines always
 // add back up to the postage, whichever order the lines arrive in.
+// Parsed emails give the order's full total; when the parser also found the
+// postage line it is stored separately. Without it, any postage added by hand
+// stays on top of the parsed price.
+function applyParsedPrice(existing, r){
+  if(r.price == null) return;
+  if(r.postage != null && r.postage > 0){ existing.postage = r.postage; existing.price = r.price; }
+  else existing.price = r.price + (existing.postage||0);
+}
+
 function orderLinePostageShare(order, line){
   const postage = order.postage || 0;
   if(postage <= 0 || !order.lineItems || !order.lineItems.length) return 0;
@@ -8042,6 +8503,21 @@ function orderLinePostageShare(order, line){
 // pick their share up later via addOrderLineToStock instead.
 function applyPostageDeltaToDeliveredStock(order, delta){
   const lines = order.lineItems || [];
+  if(order.preorderManual){
+    // Items exist as preorders, one per line (or a single placeholder).
+    const linked = lines.filter(li=>li.preorderItemId);
+    if(linked.length){
+      const subtotal = lines.reduce((s,x)=>s+(x.quantity||1)*(x.price||0),0);
+      const totalQty = lines.reduce((s,x)=>s+(x.quantity||1),0);
+      linked.forEach(li=>{
+        const item = state.items.find(i=>i.id===li.preorderItemId);
+        if(!item || !(item.quantityPurchased>0)) return;
+        const frac = subtotal>0 ? ((li.quantity||1)*(li.price||0))/subtotal : (li.quantity||1)/totalQty;
+        item.purchasePricePerUnit = (item.quantityPurchased*item.purchasePricePerUnit + delta*frac) / item.quantityPurchased;
+      });
+      return;
+    }
+  }
   const deliveredLines = lines.filter(li=>li.delivered && li.stockItemId);
   if(deliveredLines.length){
     deliveredLines.forEach(li=>{

@@ -840,6 +840,145 @@ function saveEmailToTaxRecords(category, dateISO, retailer, subject, rawSource) 
   }
 }
 
+
+/* =========================================================
+   Market prices (eBay)
+   Uses eBay's official APIs with the user's own developer keys.
+   - Marketplace Insights (actual SOLD prices) is a restricted API: it
+     only works if eBay has approved the user's developer account.
+   - Otherwise falls back to the Browse API, which returns current
+     fixed-price LISTINGS (asking prices, not what they sold for), and
+     the result is labelled that way.
+   The Cert ID (secret) is encrypted with safeStorage and never sent
+   back to the renderer.
+   ========================================================= */
+function marketConfigPath() { return path.join(app.getPath('userData'), 'market-config.json'); }
+
+function loadMarketConfig() {
+  try {
+    const data = JSON.parse(fs.readFileSync(marketConfigPath(), 'utf-8'));
+    if (data.encryptedCert && safeStorage.isEncryptionAvailable()) {
+      data.certId = safeStorage.decryptString(Buffer.from(data.encryptedCert, 'base64'));
+    }
+    return data;
+  } catch (e) { return null; }
+}
+
+function saveMarketConfig({ appId, certId, marketplace }) {
+  const data = { appId, marketplace: marketplace || 'EBAY_GB' };
+  if (safeStorage.isEncryptionAvailable()) data.encryptedCert = safeStorage.encryptString(certId).toString('base64');
+  else data.certId = certId;
+  fs.writeFileSync(marketConfigPath(), JSON.stringify(data), 'utf-8');
+}
+
+// Median after discarding obvious outliers (wrong-product listings, £0.99
+// "auction" starts, bundles) — anything under 40% or over 250% of the raw
+// median is dropped before the final median is taken.
+function summarisePrices(values) {
+  const nums = (values || []).map(Number).filter(n => isFinite(n) && n > 0).sort((a, b) => a - b);
+  if (!nums.length) return null;
+  const med = a => a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2;
+  const raw = med(nums);
+  const kept = nums.filter(n => n >= raw * 0.4 && n <= raw * 2.5);
+  const use = kept.length ? kept : nums;
+  return {
+    median: Math.round(med(use) * 100) / 100,
+    low: use[0], high: use[use.length - 1],
+    count: use.length, dropped: nums.length - use.length
+  };
+}
+
+const marketTokens = {}; // scope -> { token, expires }
+let marketInsightsDenied = false;
+
+async function marketToken(cfg, scope) {
+  const cached = marketTokens[scope];
+  if (cached && cached.expires > Date.now() + 60000) return cached.token;
+  const res = await fetch('https://api.ebay.com/identity/v1/oauth2/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Authorization': 'Basic ' + Buffer.from(`${cfg.appId}:${cfg.certId}`).toString('base64')
+    },
+    body: `grant_type=client_credentials&scope=${encodeURIComponent(scope)}`
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json.access_token) {
+    const err = new Error(json.error_description || json.error || `eBay auth failed (${res.status})`);
+    err.code = json.error || String(res.status);
+    throw err;
+  }
+  marketTokens[scope] = { token: json.access_token, expires: Date.now() + (json.expires_in || 7200) * 1000 };
+  return json.access_token;
+}
+
+async function marketLookup(query) {
+  const cfg = loadMarketConfig();
+  if (!cfg || !cfg.appId || !cfg.certId) return { ok: false, error: 'Add your eBay developer keys first.' };
+  const q = encodeURIComponent(query);
+  const headers = tok => ({ 'Authorization': 'Bearer ' + tok, 'X-EBAY-C-MARKETPLACE-ID': cfg.marketplace || 'EBAY_GB' });
+
+  if (!marketInsightsDenied) {
+    try {
+      const tok = await marketToken(cfg, 'https://api.ebay.com/oauth/api_scope/buy.marketplace.insights');
+      const res = await fetch(`https://api.ebay.com/buy/marketplace_insights/v1_beta/item_sales/search?q=${q}&limit=50`, { headers: headers(tok) });
+      if (res.ok) {
+        const json = await res.json();
+        const sales = (json.itemSales || []).filter(x => x.lastSoldPrice);
+        const cur = sales.length ? sales[0].lastSoldPrice.currency : null;
+        const sum = summarisePrices(sales.filter(x => x.lastSoldPrice.currency === cur).map(x => x.lastSoldPrice.value));
+        if (sum) return { ok: true, source: 'sold', currency: cur, ...sum };
+        // Approved but nothing sold recently — fall through to listings.
+      } else if (res.status === 401 || res.status === 403) {
+        marketInsightsDenied = true;
+      }
+    } catch (e) {
+      // invalid_scope / unauthorized_client = account not approved for Insights.
+      if (e.code === 'invalid_scope' || e.code === 'unauthorized_client' || e.code === 'invalid_client') marketInsightsDenied = e.code !== 'invalid_client';
+      if (e.code === 'invalid_client') return { ok: false, error: 'eBay rejected the App ID / Cert ID — check the keys (use the Production keys).' };
+    }
+  }
+
+  try {
+    const tok = await marketToken(cfg, 'https://api.ebay.com/oauth/api_scope');
+    const res = await fetch(`https://api.ebay.com/buy/browse/v1/item_summary/search?q=${q}&limit=50&filter=${encodeURIComponent('buyingOptions:{FIXED_PRICE}')}`, { headers: headers(tok) });
+    if (!res.ok) return { ok: false, error: `eBay search failed (${res.status})` };
+    const json = await res.json();
+    const list = (json.itemSummaries || []).filter(x => x.price);
+    const cur = list.length ? list[0].price.currency : null;
+    const sum = summarisePrices(list.filter(x => x.price.currency === cur).map(x => x.price.value));
+    if (!sum) return { ok: false, error: 'No matching listings found — try a simpler search term.' };
+    return { ok: true, source: 'listed', currency: cur, ...sum };
+  } catch (e) {
+    return { ok: false, error: e.message || 'Lookup failed' };
+  }
+}
+
+ipcMain.handle('market:getConfig', () => {
+  const c = loadMarketConfig();
+  return { configured: !!(c && c.appId && c.certId), appId: c ? c.appId : '', marketplace: c ? c.marketplace : 'EBAY_GB' };
+});
+ipcMain.handle('market:saveConfig', (evt, { appId, certId, marketplace }) => {
+  try {
+    const existing = loadMarketConfig();
+    const cert = (certId && certId.trim()) || (existing && existing.certId) || '';
+    if (!appId || !appId.trim() || !cert) return { ok: false, error: 'Both the App ID and Cert ID are needed.' };
+    saveMarketConfig({ appId: appId.trim(), certId: cert, marketplace });
+    Object.keys(marketTokens).forEach(k => delete marketTokens[k]);
+    marketInsightsDenied = false;
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e.message }; }
+});
+ipcMain.handle('market:clearConfig', () => {
+  try { fs.unlinkSync(marketConfigPath()); } catch (e) {}
+  Object.keys(marketTokens).forEach(k => delete marketTokens[k]);
+  return { ok: true };
+});
+ipcMain.handle('market:lookup', async (evt, { query }) => {
+  if (!query || !String(query).trim()) return { ok: false, error: 'Nothing to search for.' };
+  return marketLookup(String(query).trim());
+});
+
 ipcMain.handle('taxRecords:saveManualEntry', (evt, { category, dateISO, title, lines }) => {
   try {
     const year = (dateISO || '').slice(0, 4) || String(new Date().getFullYear());
@@ -913,6 +1052,44 @@ function recoverMissingDecimal(rawStr) {
     value = parseFloat(cleaned.slice(0, -2) + '.' + cleaned.slice(-2));
   }
   return value;
+}
+
+// Some retailers (confirmed against a real Fenwick order) lay the totals
+// out as a stack of LABELS first ("Subtotal / Delivery Cost / Total") and
+// then a separate stack of VALUES underneath ("£24.99 / £5.00 / £29.99"),
+// instead of putting each value next to its own label. A normal "Total
+// ...£" pattern then grabs the FIRST value in the stack (the subtotal)
+// rather than the one that actually lines up with "Total", leaving the
+// delivery charge out of the order's cost. Values line up with labels in
+// order, aligned from the end (so an extra heading line above the labels,
+// such as "Payment Total", doesn't throw the alignment off).
+function parseStackedTotals(bodyText) {
+  const lines = (bodyText || '').split(/\r?\n/).map(l => l.trim());
+  const labelRe = /^(?:(?:payment|order|grand)\s+total|sub-?total|total|(?:delivery|shipping|postage)(?:\s*(?:cost|charge|fee))?|discount[^\d£$€]{0,30}|vat|tax|(?:promo|voucher)[^\d£$€]{0,30})$/i;
+  const valueRe = /^(-?)\s*[$£€]\s?([0-9]+(?:[.,][0-9]{1,2})?)$/;
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^total$/i.test(lines[i])) continue;
+    const labels = [];
+    for (let j = i; j >= 0; j--) {
+      if (lines[j] === '') continue;
+      if (labelRe.test(lines[j])) labels.unshift(lines[j]); else break;
+    }
+    const vals = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j] === '') continue;
+      const m = valueRe.exec(lines[j]);
+      if (!m) break;
+      const n = parseFloat(m[2].replace(',', ''));
+      vals.push(m[1] ? -n : n);
+    }
+    if (labels.length < 2 || vals.length < 2 || vals.length > labels.length) continue;
+    const offset = labels.length - vals.length;
+    const total = vals[vals.length - 1];
+    const dIdx = labels.findIndex(l => /^(?:delivery|shipping|postage)/i.test(l));
+    const postage = (dIdx - offset >= 0 && dIdx < labels.length) ? vals[dIdx - offset] : null;
+    return { total, postage };
+  }
+  return null;
 }
 
 function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }) {
@@ -1151,7 +1328,8 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // costs...") and is NOT the actual order total, a real false-match this
   // exposed. "Order total" as its own phrase is a lower-priority fallback,
   // tried only if no standalone Total row was found.
-  const priceMatch =
+  const stackedTotals = parseStackedTotals(bodyText);
+  const priceMatch = (stackedTotals && stackedTotals.total > 0) ? [null, String(stackedTotals.total)] :
     bodyText.match(/total\s+charged\s+to[\s\S]{0,40}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
     bodyText.match(/total\s+paid[\s\S]{0,15}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
     bodyText.match(/(?<!sub)\btotal\*?(?!\s*includes)(?!\s*tax)[\s\S]{0,15}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
@@ -1236,6 +1414,10 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   const trackingNumber = trackingMatch ? trackingMatch[1] : null;
 
   const result = { status, retailer, price, orderNumber, expectedDelivery, expectedDeliveryTime, carrier, trackingNumber, subject, date, fromEmail };
+  // The delivery charge, when it could be read straight out of the totals
+  // stack above — the app records it separately so it can be spread into
+  // each item's stock cost, since 'price' is the full amount charged.
+  if (stackedTotals && stackedTotals.total > 0 && stackedTotals.postage != null && stackedTotals.postage > 0) result.postage = stackedTotals.postage;
 
   if (status === 'ready_for_collection') {
     const codeMatch = bodyText.match(/\bcode\s*:?[\s\S]{0,10}?(\d{3,8})/i);
@@ -1633,6 +1815,35 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       const qty = parseInt(sim[2], 10) || 1;
       const name = sim[1].trim().replace(/\s{2,}/g, ' ').replace(/^.*\bQty\s+Price\s+/i, '');
       lineItems.push({ name, quantity: qty, price: parseFloat(sim[3].replace(',', '')) });
+    }
+  }
+  // Product name on its own line, then (after optional code/size lines)
+  // "Qty: N", then the price on its own line — confirmed against real
+  // Fenwick confirmation and dispatch emails. Only tried when nothing
+  // above found any items. The code/"Size:"/"Product code:" lines are
+  // skipped when working back to the name; a lone one-word line directly
+  // above the name (a brand, e.g. "Pokemon") is kept as a prefix.
+  if (lineItems.length === 0) {
+    const ls = bodyText.split(/\r?\n/).map(l => l.trim());
+    const metaRe = /^(?:product code|size|colou?r|sku|item code|style)\s*:?.*$|^[A-Z]{1,4}-?\d{5,}$/i;
+    for (let i = 0; i < ls.length && lineItems.length < 20; i++) {
+      const qm = /^qty\s*:?\s*(\d{1,3})$/i.exec(ls[i]);
+      if (!qm) continue;
+      let pj = i + 1;
+      while (pj < ls.length && ls[pj] === '') pj++;
+      const pm = pj < ls.length ? /^[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)$/.exec(ls[pj]) : null;
+      if (!pm) continue;
+      let nj = i - 1;
+      while (nj >= 0 && (ls[nj] === '' || metaRe.test(ls[nj]))) nj--;
+      if (nj < 0) continue;
+      let name = ls[nj];
+      if (name.length < 4 || /^(?:item price|order summary|dispatched items|delivery|payment)$/i.test(name) || /[$£€]\s?\d/.test(name)) continue;
+      let bj = nj - 1;
+      while (bj >= 0 && ls[bj] === '') bj--;
+      if (bj >= 0 && /^[A-Za-z][A-Za-z'&.-]{1,19}$/.test(ls[bj]) && !/^(?:item|price|order|delivery|payment|total|subtotal|qty)$/i.test(ls[bj])) name = ls[bj] + ' ' + name;
+      const qty = parseInt(qm[1], 10) || 1;
+      const lineTotal = parseFloat(pm[1].replace(',', ''));
+      lineItems.push({ name: name.replace(/\s{2,}/g, ' '), quantity: qty, price: qty ? lineTotal / qty : lineTotal });
     }
   }
   result.lineItems = lineItems;
