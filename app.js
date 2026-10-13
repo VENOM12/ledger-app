@@ -2179,7 +2179,8 @@ function savePurchase(){
   saveManualPurchaseTaxRecord(name, retailer, f.date, quantity, price);
   showToast(f.isPreorder ? "Added to preorders" : "Added to stock");
   addFormState = freshAddForm();
-  setTab(f.isPreorder ? "preorders" : "stock");
+  if(f.isPreorder){ ordersUI.subTab = retailer==="Pokemon Center" ? "pkc" : "preorders"; setTab("orders"); }
+  else setTab("stock");
 }
 
 // Shared by both paths in savePurchase (consolidating into an existing
@@ -2538,18 +2539,25 @@ function ordersHTML(){
   // below is order-centric (one card per order, however many products it
   // has), so this tab label needs to match that, not the item count.
   const pkcOrderNumbers = new Set(
-    state.items.filter(i=>i.isPreorder && !i.isCancelled)
+    state.items.filter(i=>i.isPreorder && i.retailer==="Pokemon Center" && !i.isCancelled)
       .map(i=>i.orderNumber || i.id)
   );
   const pkcCount = pkcOrderNumbers.size;
+  // Preorders for every other retailer live in their own tab, completely
+  // separate from the Pokémon Center ones above.
+  const otherPreorderCount = new Set(
+    state.items.filter(i=>i.isPreorder && i.retailer!=="Pokemon Center" && !i.isCancelled)
+      .map(i=>i.orderNumber || i.id)
+  ).size;
   const cancelledCount = state.pendingOrders.filter(p=>p.status==="cancelled").length;
   return `
     <div class="segmented" style="margin-bottom:4px;">
       <button class="${ordersUI.subTab==='all'?'active':''}" data-orders-subtab="all">All Orders (${allCount})</button>
-      <button class="${ordersUI.subTab==='pkc'?'active':''}" data-orders-subtab="pkc">Preorders (${pkcCount})</button>
+      <button class="${ordersUI.subTab==='pkc'?'active':''}" data-orders-subtab="pkc">PKC Preorders (${pkcCount})</button>
+      <button class="${ordersUI.subTab==='preorders'?'active':''}" data-orders-subtab="preorders">Preorders (${otherPreorderCount})</button>
       <button class="${ordersUI.subTab==='cancelled'?'active':''}" data-orders-subtab="cancelled">Cancelled (${cancelledCount})</button>
     </div>
-    ${ordersUI.subTab==='all' ? allOrdersContentHTML() : ordersUI.subTab==='pkc' ? pkcOrdersContentHTML() : cancelledOrdersContentHTML()}
+    ${ordersUI.subTab==='all' ? allOrdersContentHTML() : ordersUI.subTab==='pkc' ? pkcOrdersContentHTML() : ordersUI.subTab==='preorders' ? otherPreordersContentHTML() : cancelledOrdersContentHTML()}
   `;
 }
 
@@ -2564,6 +2572,8 @@ function attachOrdersEvents(){
     attachAllOrdersEvents();
   } else if(ordersUI.subTab==='pkc'){
     attachPreordersEvents();
+  } else if(ordersUI.subTab==='preorders'){
+    attachOtherPreordersEvents();
   } else {
     attachCancelledOrdersEvents();
   }
@@ -4358,7 +4368,30 @@ function bindCancelledResultEvents(){
   });
 }
 
+function otherPreordersContentHTML(){
+  preorderView = "other";
+  return `
+    <div class="toolbar-row" style="margin-top:14px;">
+      <div class="search-bar">
+        ${ICONS.search}
+        <input type="text" id="pkcSearchInput" placeholder="Search preorders" value="${escapeAttr(pkcUI.search)}">
+      </div>
+    </div>
+    <div id="pkcResultsContainer">${pkcResultsHTML()}</div>
+    <div class="hint" style="margin-top:14px;">Preorders from retailers other than Pokémon Center. Mark an order as a preorder from its details in All Orders, or tick "This is a preorder" when adding stock. They move into Stock when the order is delivered.</div>
+    <div style="height:20px;"></div>
+  `;
+}
+
+function attachOtherPreordersEvents(){
+  preorderView = "other";
+  const search = document.getElementById("pkcSearchInput");
+  if(search) search.addEventListener("input", e=>{ pkcUI.search = e.target.value; renderPkcResults(); });
+  bindPkcResultEvents();
+}
+
 function pkcOrdersContentHTML(){
+  preorderView = "pkc";
   const totalToPay = pkcTotalToPay();
   const quantitySummary = pkcQuantitySummary();
 
@@ -4370,7 +4403,7 @@ function pkcOrdersContentHTML(){
         return statCard("stock", shortName.length>42 ? shortName.slice(0,40)+"…" : shortName, ""+qty, "var(--violet)", "var(--violet-bg)", name);
       }).join("")}
     </div>
-    <div class="hint" style="margin:8px 0 0;">Total To Pay and the quantity boxes cover Pokémon Center preorders only — it's what they will actually charge once these ship — nothing here counts as a real expense until then. Quantity boxes add up how many of each product you have on order across every preorder.</div>
+    <div class="hint" style="margin:8px 0 0;">Total To Pay is what Pokémon Center will actually charge once these ship — nothing here counts as a real expense until then. Quantity boxes add up how many of each product you have on order across every preorder.</div>
     <div style="height:12px;"></div>
     <div class="toolbar-row">
       <button class="btn-primary" id="addPkcPreorderBtn">${ICONS.plus} Add Preorder</button>
@@ -4385,20 +4418,23 @@ function pkcOrdersContentHTML(){
 }
 
 let pkcExpandedIds = new Set();
+// Which set of preorders pkcResultsHTML is drawing: "pkc" (Pokémon Center
+// only, with its own totals) or "other" (every other retailer).
+let preorderView = "pkc";
 
 function pkcResultsHTML(){
   // Only Pokémon Center specifically — a preorder manually added via Add
   // Stock's checkbox for a different retailer was incorrectly showing up
   // here before, since the filter only checked isPreorder.
-  const preorders = state.items.filter(i=>i.isPreorder)
+  const preorders = state.items.filter(i=>i.isPreorder && (preorderView==="pkc" ? i.retailer==="Pokemon Center" : i.retailer!=="Pokemon Center"))
     .filter(i=> !pkcUI.search || i.name.toLowerCase().includes(pkcUI.search.toLowerCase()));
 
   if(preorders.length===0){
     return `
       <div class="empty-state">
         ${ICONS.clock}
-        <div class="t">No preorders yet</div>
-        <div class="d">Pokémon Center preorders are detected automatically via Email Sync. Any other order can be marked as a preorder from its details in All Orders, or use "Add Preorder" above.</div>
+        <div class="t">${preorderView==="pkc" ? "No PKC orders yet" : "No preorders yet"}</div>
+        <div class="d">${preorderView==="pkc" ? `Pokémon Center preorder confirmations are detected automatically via Email Sync, or use "Add Preorder" above.` : `Mark an order as a preorder from its details in All Orders, or tick "This is a preorder" when adding stock.`}</div>
       </div>
     `;
   }
@@ -7303,7 +7339,7 @@ function emailConnectedHTML(){
     </div>
 
     <div class="hint" style="margin:6px 0 20px;display:flex;align-items:center;justify-content:space-between;background:var(--card);border:1px solid var(--border-soft);border-radius:var(--radius-md);padding:14px 16px;">
-      <span>Detected orders live in the <strong style="color:var(--text);">Confirmed Orders</strong> tab (preorders under its "Preorders" sub-tab), tracked from placed through delivery.</span>
+      <span>Detected orders live in the <strong style="color:var(--text);">Confirmed Orders</strong> tab (Pokémon Center preorders under its "PKC Preorders" sub-tab, other preorders under "Preorders"), tracked from placed through delivery.</span>
       <button class="btn-small" id="goToOrdersFromSettings">Go to Orders ${ICONS.chev}</button>
     </div>
     <div style="height:20px;"></div>
