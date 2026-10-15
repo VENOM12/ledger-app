@@ -250,6 +250,25 @@ if(!state.emailFilters) state.emailFilters = { blockPromotions: true, excludedSe
 if(!Array.isArray(state.vccs)) state.vccs = [];
 if(!Array.isArray(state.orderExpenseKeys)) state.orderExpenseKeys = [];
 if(!Array.isArray(state.addresses)) state.addresses = [];
+// Addresses used to store a single firstName/lastName pair. Migrate those
+// into a names[] array so each address can hold multiple people for Profile
+// Builder, without losing anything already saved.
+state.addresses.forEach(a=>{
+  if(!Array.isArray(a.names)){
+    const fn = (a.firstName||"").trim();
+    const ln = (a.lastName||"").trim();
+    a.names = (fn || ln) ? [{ firstName: fn, lastName: ln }] : [];
+  } else {
+    a.names = a.names.filter(n=>n && ((n.firstName||"").trim() || (n.lastName||"").trim()))
+      .map(n=>({ firstName: (n.firstName||"").trim(), lastName: (n.lastName||"").trim() }));
+  }
+  // Keep legacy fields in sync with the primary (first) name for any older
+  // code paths / CSV exports that still read them.
+  if(a.names.length){
+    a.firstName = a.names[0].firstName;
+    a.lastName = a.names[0].lastName;
+  }
+});
 if(!Array.isArray(state.generatedProfiles)) state.generatedProfiles = [];
 if(!state.profileBuilderSettings) state.profileBuilderSettings = { catchallDomains: [], emailList: [] };
 if(!Array.isArray(state.profileBuilderSettings.catchallDomains)) state.profileBuilderSettings.catchallDomains = [];
@@ -5383,7 +5402,11 @@ function addressResultsHTML(addresses){
   if(!addresses.length) return `<div class="empty-state">${ICONS.pin}<div class="t">No addresses yet</div><div class="d">Save addresses using separate fields so every part exports correctly.</div></div>`;
   return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;">${addresses.map(a=>{
     const missingZip = !trackedAddressParts(a).zip;
-    return `<div class="card" style="padding:16px 18px;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px;"><div style="min-width:0;"><div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(a.nickname)}</div><div class="hint" style="margin:2px 0 0;">${escapeHTML(a.type||"Other")}</div></div><div style="display:flex;gap:6px;flex-shrink:0;">${missingZip?`<span title="No postcode saved — exports will be missing it for this address" style="color:var(--red);display:inline-flex;align-items:center;width:15px;height:15px;">${ICONS.warning}</span>`:""}<button class="icon-btn" data-edit-address="${a.id}" title="Edit">${ICONS.pencil}</button><button class="icon-btn" data-delete-address="${a.id}" title="Delete">${ICONS.trash}</button></div></div><div class="hint" style="white-space:pre-line;line-height:1.5;">${escapeHTML(trackedAddressText(a))}</div>${a.notes?`<div class="hint" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft);">${escapeHTML(a.notes)}</div>`:""}</div>`;
+    const linked = addressLinkedNames(a);
+    const namesLabel = linked.length
+      ? linked.map(n=>[n.firstName,n.lastName].filter(Boolean).join(" ")).join(" · ")
+      : "No names linked";
+    return `<div class="card" style="padding:16px 18px;"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px;"><div style="min-width:0;"><div style="font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(a.nickname)}</div><div class="hint" style="margin:2px 0 0;">${escapeHTML(a.type||"Other")}${linked.length?` · ${linked.length} name${linked.length===1?"":"s"}`:""}</div></div><div style="display:flex;gap:6px;flex-shrink:0;">${missingZip?`<span title="No postcode saved — exports will be missing it for this address" style="color:var(--red);display:inline-flex;align-items:center;width:15px;height:15px;">${ICONS.warning}</span>`:""}<button class="icon-btn" data-edit-address="${a.id}" title="Edit">${ICONS.pencil}</button><button class="icon-btn" data-delete-address="${a.id}" title="Delete">${ICONS.trash}</button></div></div><div class="hint" style="margin-bottom:6px;color:var(--text-dim);">${escapeHTML(namesLabel)}</div><div class="hint" style="white-space:pre-line;line-height:1.5;">${escapeHTML(trackedAddressText(a))}</div>${a.notes?`<div class="hint" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border-soft);">${escapeHTML(a.notes)}</div>`:""}</div>`;
   }).join("")}</div>`;
 }
 function renderAddressResults(){ const c=document.getElementById("addressResultsContainer"); if(!c)return; const a=state.addresses.filter(x=>addressUI.typeFilter==="All"||x.type===addressUI.typeFilter).filter(x=>!addressUI.search||`${x.nickname} ${trackedAddressText(x)}`.toLowerCase().includes(addressUI.search.toLowerCase())); c.innerHTML=addressResultsHTML(a); bindAddressResultEvents(); }
@@ -5391,7 +5414,7 @@ function attachAddressTrackerEvents(){
   document.getElementById("addAddressBtn").addEventListener("click",()=>openAddressModal(null));
   document.getElementById("addressTypeFilterSelect").addEventListener("change",e=>{addressUI.typeFilter=e.target.value;renderAddressResults();});
   document.getElementById("addressSearchInput").addEventListener("input",e=>{addressUI.search=e.target.value;renderAddressResults();});
-  document.getElementById("exportAddressCsvBtn").addEventListener("click",()=>downloadCSV(`addresses-${todayISO()}.csv`,["Nickname","Type","First Name","Last Name","Address 1","Address 2","City","Postcode / ZIP","State","Country","Notes"],state.addresses.map(a=>{const x=trackedAddressParts(a);return[a.nickname,a.type||"",x.firstName,x.lastName,x.address1,x.address2,x.city,x.zip,x.state,x.country,a.notes||""];})));
+  document.getElementById("exportAddressCsvBtn").addEventListener("click",()=>downloadCSV(`addresses-${todayISO()}.csv`,["Nickname","Type","Names","Address 1","Address 2","City","Postcode / ZIP","State","Country","Notes"],state.addresses.map(a=>{const x=trackedAddressParts(a);return[a.nickname,a.type||"",formatLinkedNames(addressLinkedNames(a)),x.address1,x.address2,x.city,x.zip,x.state,x.country,a.notes||""];})));
   document.getElementById("addressCsvInput").addEventListener("change",e=>{
     const file=e.target.files[0];
     if(!file)return;
@@ -5404,14 +5427,33 @@ function attachAddressTrackerEvents(){
       // imports cleanly without the header line becoming a bogus address.
       let dataRows=rows;
       const first=rows[0].map(c=>c.trim().toLowerCase());
-      if(first[0]==="nickname" && first.length>1) dataRows=rows.slice(1);
+      if(first[0]==="nickname" && first.length>1) dataRows=rows.slice(1); // covers both Names and First Name headers
       let imported=0, skipped=0;
       dataRows.forEach(cols=>{
-        const [nickname,type,firstName,lastName,address1,address2,city,zip,stateRegion,country,notes]=cols.map(c=>(c||"").trim());
+        // Supports both the new "Names" column (John Smith; Jane Doe) and the
+        // older First Name / Last Name layout so previous exports still import.
+        const cells = cols.map(c=>(c||"").trim());
+        const nickname = cells[0]||"";
+        const type = cells[1]||"";
+        let names = [], address1, address2, city, zip, stateRegion, country, notes;
+        const headerHint = rows[0] && rows[0][2] ? String(rows[0][2]).trim().toLowerCase() : "";
+        if(headerHint === "names" || (cells.length >= 10 && !ADDRESS_TYPES.includes(cells[2]) && cells[2].includes(" "))){
+          // Nickname, Type, Names, Address1, Address2, City, Zip, State, Country, Notes
+          names = parseNamesField(cells[2]||"");
+          address1 = cells[3]||""; address2 = cells[4]||""; city = cells[5]||"";
+          zip = cells[6]||""; stateRegion = cells[7]||""; country = cells[8]||""; notes = cells[9]||"";
+        } else {
+          // Legacy: Nickname, Type, First, Last, Address1, Address2, City, Zip, State, Country, Notes
+          const firstName = cells[2]||"", lastName = cells[3]||"";
+          if(firstName || lastName) names = [{ firstName, lastName }];
+          address1 = cells[4]||""; address2 = cells[5]||""; city = cells[6]||"";
+          zip = cells[7]||""; stateRegion = cells[8]||""; country = cells[9]||""; notes = cells[10]||"";
+        }
         if(!nickname || !address1 || !city || !zip){ skipped++; return; }
+        const primary = names[0] || { firstName: "", lastName: "" };
         const payload={
           nickname, type: ADDRESS_TYPES.includes(type)?type:"Other",
-          firstName: firstName||"", lastName: lastName||"",
+          firstName: primary.firstName, lastName: primary.lastName, names,
           address1, address2: address2||"", city, zip: zip.toUpperCase(),
           state: stateRegion||"", country: ADDRESS_COUNTRIES.some(([c])=>c===country)?country:"GB",
           notes: notes||""
@@ -5434,18 +5476,94 @@ function bindAddressResultEvents(){
   document.querySelectorAll("[data-delete-address]").forEach(b=>b.addEventListener("click",()=>{const a=state.addresses.find(x=>x.id===b.dataset.deleteAddress);if(!a||!confirm(`Delete "${a.nickname}"? This can't be undone.`))return;state.addresses=state.addresses.filter(x=>x.id!==a.id);saveState();renderAddressResults();showToast("Address deleted");}));
 }
 let addressFormState=null;
-function openAddressModal(addressId){ const e=addressId?state.addresses.find(a=>a.id===addressId):null; const x=trackedAddressParts(e); addressFormState={id:e?e.id:null,nickname:e?e.nickname:"",type:e?e.type||"Home":"Home",firstName:x.firstName,lastName:x.lastName,address1:x.address1,address2:x.address2,city:x.city,zip:x.zip,state:x.state,country:x.country||"GB",notes:e?e.notes||"":""}; renderAddressModal(); }
+function openAddressModal(addressId){
+  const e = addressId ? state.addresses.find(a=>a.id===addressId) : null;
+  const x = trackedAddressParts(e);
+  const names = e ? addressLinkedNames(e) : [];
+  addressFormState = {
+    id: e ? e.id : null,
+    nickname: e ? e.nickname : "",
+    type: e ? (e.type || "Home") : "Home",
+    names: names.length ? names.map(n=>({ firstName: n.firstName, lastName: n.lastName })) : [{ firstName: "", lastName: "" }],
+    address1: x.address1, address2: x.address2, city: x.city, zip: x.zip,
+    state: x.state, country: x.country || "GB", notes: e ? (e.notes || "") : ""
+  };
+  renderAddressModal();
+}
 function renderAddressModal(){
-  const f=addressFormState,isEdit=!!f.id,root=document.getElementById("modalRoot");
-  root.innerHTML=`<div class="modal-backdrop open"><div class="modal" style="width:620px;max-width:calc(100vw - 28px);"><div class="modal-header"><h2>${isEdit?"Edit Address":"Add Address"}</h2><button class="icon-btn" id="closeAddressModal">${ICONS.close}</button></div><div class="modal-body">
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="field"><label>Nickname</label><input type="text" id="addr-nickname" value="${escapeAttr(f.nickname)}" placeholder="e.g. Home"></div><div class="field"><label>Type</label><select id="addr-type">${ADDRESS_TYPES.map(t=>`<option value="${t}" ${f.type===t?"selected":""}>${t}</option>`).join("")}</select></div><div class="field"><label>First name</label><input type="text" id="addr-first-name" value="${escapeAttr(f.firstName)}"></div><div class="field"><label>Last name</label><input type="text" id="addr-last-name" value="${escapeAttr(f.lastName)}"></div></div>
+  const f = addressFormState, isEdit = !!f.id, root = document.getElementById("modalRoot");
+  const nameRows = f.names.map((n, idx)=>`
+    <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end;margin-bottom:8px;" data-name-row="${idx}">
+      <div class="field" style="margin:0;"><label>${idx===0?"First name":""}</label><input type="text" data-name-first="${idx}" value="${escapeAttr(n.firstName||"")}" placeholder="First name"></div>
+      <div class="field" style="margin:0;"><label>${idx===0?"Last name":""}</label><input type="text" data-name-last="${idx}" value="${escapeAttr(n.lastName||"")}" placeholder="Last name"></div>
+      <button type="button" class="icon-btn" data-remove-name="${idx}" title="Remove name" ${f.names.length<=1?'disabled style="opacity:0.35;cursor:not-allowed;"':""}>${ICONS.close}</button>
+    </div>`).join("");
+  root.innerHTML = `<div class="modal-backdrop open"><div class="modal" style="width:620px;max-width:calc(100vw - 28px);"><div class="modal-header"><h2>${isEdit?"Edit Address":"Add Address"}</h2><button class="icon-btn" id="closeAddressModal">${ICONS.close}</button></div><div class="modal-body">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;"><div class="field"><label>Nickname</label><input type="text" id="addr-nickname" value="${escapeAttr(f.nickname)}" placeholder="e.g. Home"></div><div class="field"><label>Type</label><select id="addr-type">${ADDRESS_TYPES.map(t=>`<option value="${t}" ${f.type===t?"selected":""}>${t}</option>`).join("")}</select></div></div>
+  <div class="field" style="margin-bottom:6px;"><label>Linked names</label><div class="hint" style="margin:0 0 8px;">Profile Builder uses these names for profiles generated from this address. Add as many as you need.</div>
+    <div id="addr-names-list">${nameRows}</div>
+    <button type="button" class="btn-small" id="addr-add-name" style="margin-top:4px;">${ICONS.plus} Add another name</button>
+  </div>
   <div class="field"><label>Address line 1</label><input type="text" id="addr-line1" value="${escapeAttr(f.address1)}" placeholder="House number and street"></div><div class="field"><label>Address line 2 / House name (optional)</label><input type="text" id="addr-line2" value="${escapeAttr(f.address2)}"></div>
   <div style="display:grid;grid-template-columns:1.15fr .85fr;gap:12px;"><div class="field"><label>Country</label><select id="addr-country">${ADDRESS_COUNTRIES.map(([c,l])=>`<option value="${c}" ${f.country===c?"selected":""}>${l}</option>`).join("")}</select></div><div class="field"><label>State / County (optional)</label><input type="text" id="addr-state" value="${escapeAttr(f.state)}"></div><div class="field"><label>City</label><input type="text" id="addr-city" value="${escapeAttr(f.city)}"></div><div class="field"><label>Postcode / ZIP</label><input type="text" id="addr-zip" value="${escapeAttr(f.zip)}"></div></div>
   <div class="field"><label>Notes (optional)</label><input type="text" id="addr-notes" value="${escapeAttr(f.notes)}"></div><div style="display:flex;gap:10px;margin-top:8px;"><button class="btn-primary" id="saveAddressBtn" style="flex:1;">${isEdit?"Save Changes":"Add Address"}</button>${isEdit?`<button class="btn-secondary" id="deleteAddressBtn" style="flex:1;border-color:var(--red);color:var(--red);">${ICONS.trash} Delete Address</button>`:""}</div></div></div></div>`;
-  const bind=(id,key,event="input")=>document.getElementById(id).addEventListener(event,e=>{f[key]=e.target.value;});
-  document.getElementById("closeAddressModal").addEventListener("click",()=>{root.innerHTML="";}); bind("addr-nickname","nickname");bind("addr-type","type","change");bind("addr-first-name","firstName");bind("addr-last-name","lastName");bind("addr-line1","address1");bind("addr-line2","address2");bind("addr-country","country","change");bind("addr-state","state");bind("addr-city","city");bind("addr-zip","zip");bind("addr-notes","notes");
-  document.getElementById("saveAddressBtn").addEventListener("click",()=>{const nickname=f.nickname.trim(),address1=f.address1.trim(),city=f.city.trim(),zip=f.zip.trim();if(!nickname){showToast("Enter a nickname for this address","close");return;}if(!address1){showToast("Enter address line 1","close");return;}if(!city){showToast("Enter the city","close");return;}if(!zip){showToast("Enter the postcode or ZIP","close");return;}const payload={nickname,type:f.type,firstName:f.firstName.trim(),lastName:f.lastName.trim(),address1,address2:f.address2.trim(),city,zip:zip.toUpperCase(),state:f.state.trim(),country:f.country,notes:f.notes.trim()};payload.address=trackedAddressText(payload);if(f.id)Object.assign(state.addresses.find(a=>a.id===f.id),payload);else state.addresses.unshift({id:uid(),...payload});saveState();root.innerHTML="";showToast(f.id?"Address updated":"Address added");if(ui.tab==="address-tracker")renderView();});
-  const d=document.getElementById("deleteAddressBtn");if(d)d.addEventListener("click",()=>{if(!confirm(`Delete "${f.nickname}"? This can't be undone.`))return;state.addresses=state.addresses.filter(a=>a.id!==f.id);saveState();root.innerHTML="";showToast("Address deleted");if(ui.tab==="address-tracker")renderView();});
+
+  const bind=(id,key,event="input")=>{ const el=document.getElementById(id); if(el) el.addEventListener(event,e=>{f[key]=e.target.value;}); };
+  document.getElementById("closeAddressModal").addEventListener("click",()=>{ root.innerHTML=""; });
+  bind("addr-nickname","nickname"); bind("addr-type","type","change");
+  bind("addr-line1","address1"); bind("addr-line2","address2"); bind("addr-country","country","change");
+  bind("addr-state","state"); bind("addr-city","city"); bind("addr-zip","zip"); bind("addr-notes","notes");
+
+  document.querySelectorAll("[data-name-first]").forEach(inp=>{
+    inp.addEventListener("input", e=>{ const i=parseInt(e.target.dataset.nameFirst,10); f.names[i].firstName = e.target.value; });
+  });
+  document.querySelectorAll("[data-name-last]").forEach(inp=>{
+    inp.addEventListener("input", e=>{ const i=parseInt(e.target.dataset.nameLast,10); f.names[i].lastName = e.target.value; });
+  });
+  document.querySelectorAll("[data-remove-name]").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      if(f.names.length <= 1) return;
+      const i = parseInt(btn.dataset.removeName,10);
+      f.names.splice(i, 1);
+      renderAddressModal();
+    });
+  });
+  document.getElementById("addr-add-name").addEventListener("click", ()=>{
+    f.names.push({ firstName: "", lastName: "" });
+    renderAddressModal();
+  });
+
+  document.getElementById("saveAddressBtn").addEventListener("click",()=>{
+    const nickname = f.nickname.trim(), address1 = f.address1.trim(), city = f.city.trim(), zip = f.zip.trim();
+    if(!nickname){ showToast("Enter a nickname for this address","close"); return; }
+    if(!address1){ showToast("Enter address line 1","close"); return; }
+    if(!city){ showToast("Enter the city","close"); return; }
+    if(!zip){ showToast("Enter the postcode or ZIP","close"); return; }
+    const names = f.names
+      .map(n=>({ firstName: (n.firstName||"").trim(), lastName: (n.lastName||"").trim() }))
+      .filter(n=>n.firstName || n.lastName);
+    const primary = names[0] || { firstName: "", lastName: "" };
+    const payload = {
+      nickname, type: f.type,
+      firstName: primary.firstName, lastName: primary.lastName, names,
+      address1, address2: f.address2.trim(), city, zip: zip.toUpperCase(),
+      state: f.state.trim(), country: f.country, notes: f.notes.trim()
+    };
+    payload.address = trackedAddressText(payload);
+    if(f.id) Object.assign(state.addresses.find(a=>a.id===f.id), payload);
+    else state.addresses.unshift({ id: uid(), ...payload });
+    saveState();
+    root.innerHTML = "";
+    showToast(f.id ? "Address updated" : "Address added");
+    if(ui.tab==="address-tracker") renderView();
+  });
+  const d = document.getElementById("deleteAddressBtn");
+  if(d) d.addEventListener("click",()=>{
+    if(!confirm(`Delete "${f.nickname}"? This can't be undone.`)) return;
+    state.addresses = state.addresses.filter(a=>a.id!==f.id);
+    saveState(); root.innerHTML=""; showToast("Address deleted");
+    if(ui.tab==="address-tracker") renderView();
+  });
 }
 
 /* ---------------- Profile Builder ---------------- */
@@ -5574,6 +5692,41 @@ function trackedAddressText(address){
   return [a.address1, a.address2, [a.city, a.state, a.zip].filter(Boolean).join(" "), a.country].filter(Boolean).join("\n");
 }
 
+// Linked people on an address (Profile Builder picks from these). Always
+// returns an array — empty if none have been set yet. Migrates the old
+// single firstName/lastName fields when names[] isn't present.
+function addressLinkedNames(address){
+  if(!address) return [];
+  if(Array.isArray(address.names) && address.names.length){
+    return address.names
+      .filter(n=>n && ((n.firstName||"").trim() || (n.lastName||"").trim()))
+      .map(n=>({ firstName: (n.firstName||"").trim(), lastName: (n.lastName||"").trim() }));
+  }
+  const fn = (address.firstName||"").trim();
+  const ln = (address.lastName||"").trim();
+  return (fn || ln) ? [{ firstName: fn, lastName: ln }] : [];
+}
+
+function formatLinkedNames(names){
+  return (names||[]).map(n=>[n.firstName, n.lastName].filter(Boolean).join(" ")).filter(Boolean).join("; ");
+}
+
+// Parse "John Smith; Jane Doe" or "John|Smith; Jane|Doe" into name objects.
+function parseNamesField(raw){
+  if(!raw || !String(raw).trim()) return [];
+  return String(raw).split(";").map(part=>{
+    part = part.trim();
+    if(!part) return null;
+    if(part.includes("|")){
+      const [fn, ...rest] = part.split("|");
+      return { firstName: (fn||"").trim(), lastName: rest.join("|").trim() };
+    }
+    const bits = part.split(/\s+/).filter(Boolean);
+    if(bits.length===1) return { firstName: bits[0], lastName: "" };
+    return { firstName: bits[0], lastName: bits.slice(1).join(" ") };
+  }).filter(Boolean);
+}
+
 // Keyboard-neighbour map for realistic typo substitutions.
 const KEYBOARD_NEAR = {
   a:"sqwz", b:"vghn", c:"xdfv", d:"erfcxs", e:"rdsw", f:"rtgvcd",
@@ -5683,6 +5836,32 @@ function scrambleAddressParts(parts, usedKeys){
   return fallback;
 }
 
+// Scramble a first/last name pair with the same typo style as street lines.
+// Guarantees uniqueness against usedNameKeys ("firstname|lastname").
+function scramblePersonName(firstName, lastName, usedNameKeys){
+  const baseFn = (firstName||"").trim();
+  const baseLn = (lastName||"").trim();
+  for(let attempt=0; attempt<40; attempt++){
+    const fn = baseFn ? scrambleWord(baseFn) : baseFn;
+    const ln = baseLn ? scrambleWord(baseLn) : baseLn;
+    // Ensure at least one part actually changed when there's something to change
+    if(fn === baseFn && ln === baseLn && (baseFn.length > 2 || baseLn.length > 2) && attempt < 25){
+      continue;
+    }
+    const key = (fn + "|" + ln).toLowerCase();
+    if(!usedNameKeys.has(key)){
+      usedNameKeys.add(key);
+      return { firstName: fn, lastName: ln };
+    }
+  }
+  const fallback = {
+    firstName: baseFn ? scrambleWord(baseFn) : baseFn,
+    lastName: (baseLn ? scrambleWord(baseLn) : baseLn) + String.fromCharCode(97 + Math.floor(Math.random()*26))
+  };
+  usedNameKeys.add((fallback.firstName + "|" + fallback.lastName).toLowerCase());
+  return fallback;
+}
+
 function profileAddressParts(p){
   // Prefer the scrambled (or snapshot) fields stored on the profile itself
   // so exports/copies reflect what was generated, not a later edit of the
@@ -5717,8 +5896,11 @@ function profileCsvRow(p){
   const cardType = card ? card.network||"" : p.cardNetwork||"";
   const cardCvv = card ? card.cvv||"" : p.cardCvv||"";
   const fullName = `${p.firstName} ${p.lastName}`;
+  // Shipping name always comes from the profile itself (the linked / scrambled
+  // name chosen at generation time), not the address's primary name — an
+  // address can have several people, and this profile belongs to one of them.
   return [
-    p.profileName || fullName, p.email||"", p.phone||"", parsed.firstName || p.firstName, parsed.lastName || p.lastName,
+    p.profileName || fullName, p.email||"", p.phone||"", p.firstName||"", p.lastName||"",
     parsed.address1, parsed.address2, parsed.city, parsed.zip, parsed.state, parsed.country,
     "","","","","","","","","true",
     fullName, cardType, cardNumber, expiry[0]||"", expiry[1]||"", cardCvv, "false"
@@ -5770,6 +5952,7 @@ function profileBuilderHTML(){
               <input type="checkbox" data-pb-address="${a.id}" ${profileGenUI.selectedAddressIds.includes(a.id)?"checked":""}>
               <span style="min-width:0;">
                 <strong style="display:block;font-size:13px;">${escapeHTML(a.nickname)}</strong>
+                <span class="hint" style="display:block;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(formatLinkedNames(addressLinkedNames(a)) || "No names linked")}</span>
                 <span class="hint" style="display:block;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHTML(trackedAddressText(a).replace(/\n/g,", "))}</span>
               </span>
             </label>
@@ -5779,7 +5962,7 @@ function profileBuilderHTML(){
       <div class="filter-toggle" style="margin-top:14px;padding-bottom:0;">
         <div>
           <div class="desc">Scramble addresses</div>
-          <div class="sub">Typo-style unique variants of each street/city — postcode is never changed.</div>
+          <div class="sub">Typo-style unique variants of the linked names and street/city — postcode is never changed.</div>
         </div>
         <label class="switch">
           <input type="checkbox" id="pb-scrambleAddresses" ${profileGenUI.scrambleAddresses?"checked":""}>
@@ -5985,29 +6168,69 @@ function attachProfileBuilderEvents(){
       return { firstName, lastName, email };
     };
 
-    // Track used scrambled address keys across this batch AND every
+    // Every selected address must have at least one linked name — Profile
+    // Builder no longer invents random first/last names.
+    const missingNames = selectedAddresses.filter(a=>addressLinkedNames(a).length===0);
+    if(missingNames.length){
+      showToast(`Add at least one name on: ${missingNames.map(a=>a.nickname).join(", ")}`, "close");
+      return;
+    }
+
+    // Track used scrambled address + name keys across this batch AND every
     // previously generated profile that already has a scrambled address,
     // so uniqueness holds even when generating multiple batches.
     const usedScrambleKeys = new Set();
+    const usedNameKeys = new Set();
     state.generatedProfiles.forEach(p=>{
       if(p.scrambledAddress){
         const s = p.scrambledAddress;
         usedScrambleKeys.add([s.address1||"", s.address2||"", s.city||"", s.zip||""].join("|").toLowerCase());
       }
+      if(p.firstName || p.lastName){
+        usedNameKeys.add(((p.firstName||"")+"|"+(p.lastName||"")).toLowerCase());
+      }
     });
+
+    // Round-robin name index per address so multiple names on one address
+    // are spread across the batch instead of always picking the first.
+    const nameCursor = {};
 
     const newProfiles = [];
     for(let i=0; i<count; i++){
-      let firstName, lastName, email;
+      const address = selectedAddresses[i % selectedAddresses.length];
+      const linkedNames = addressLinkedNames(address);
+      const cursor = nameCursor[address.id] || 0;
+      const baseName = linkedNames[cursor % linkedNames.length];
+      nameCursor[address.id] = cursor + 1;
+
+      let firstName = baseName.firstName;
+      let lastName = baseName.lastName;
+      if(profileGenUI.scrambleAddresses){
+        const scrambledName = scramblePersonName(firstName, lastName, usedNameKeys);
+        firstName = scrambledName.firstName;
+        lastName = scrambledName.lastName;
+      } else {
+        usedNameKeys.add((firstName+"|"+lastName).toLowerCase());
+      }
+
+      let email;
       if(profileGenUI.mode==="list"){
-        firstName = randomFrom(PROFILE_FIRST_NAMES);
-        lastName = randomFrom(PROFILE_LAST_NAMES);
         email = listEmails[i];
       } else {
-        const identity = nextUniqueCatchallIdentity(profileGenUI.selectedCatchall);
-        firstName = identity.firstName; lastName = identity.lastName; email = identity.email;
+        // Catch-all local-part comes from the (possibly scrambled) name so
+        // the profile's email matches the person on the label.
+        const domain = profileGenUI.selectedCatchall;
+        let local = `${(firstName||"user").toLowerCase().replace(/[^a-z0-9]/g,"")}.${(lastName||"profile").toLowerCase().replace(/[^a-z0-9]/g,"")}`;
+        if(!local.replace(/\./g,"")) local = "user.profile";
+        email = `${local}@${domain.replace(/^@/,"")}`;
+        let n = 2;
+        while(usedEmails.has(email) && n < 10000){
+          email = `${local}${n}@${domain.replace(/^@/,"")}`;
+          n++;
+        }
+        usedEmails.add(email);
       }
-      const address = selectedAddresses[i % selectedAddresses.length];
+
       // Obviously fake placeholder — all-zero number, no real network,
       // clearly not something that could be entered anywhere and mistaken
       // for a working card, and not linked to any card in Card Tracker.
@@ -6019,10 +6242,12 @@ function attachProfileBuilderEvents(){
       let addressSnapshot = trackedAddressText(address);
       if(profileGenUI.scrambleAddresses){
         scrambledAddress = scrambleAddressParts(baseParts, usedScrambleKeys);
+        scrambledAddress.firstName = firstName;
+        scrambledAddress.lastName = lastName;
         addressSnapshot = [scrambledAddress.address1, scrambledAddress.address2, [scrambledAddress.city, scrambledAddress.state, scrambledAddress.zip].filter(Boolean).join(" "), scrambledAddress.country].filter(Boolean).join("\n");
       }
       newProfiles.push({
-        id: uid(), profileName: `${firstName} ${lastName}`, firstName, lastName,
+        id: uid(), profileName: `${firstName} ${lastName}`.trim(), firstName, lastName,
         phone: nextUniquePhone(),
         email,
         addressId: address.id, addressSnapshot,
