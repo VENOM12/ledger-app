@@ -1063,6 +1063,78 @@ function recoverMissingDecimal(rawStr) {
 // delivery charge out of the order's cost. Values line up with labels in
 // order, aligned from the end (so an extra heading line above the labels,
 // such as "Payment Total", doesn't throw the alignment off).
+// "Qty | Item | Delivery Address | Delivery Date/Time | Price" recap tables
+// (Very): after the stacked header labels, each row is "<qty> <item name>
+// <product code> <first address line>", then address lines, "By", a date,
+// and finally the row's price on its own line. Returns the rows plus the
+// delivery address read off the first row.
+function parseQtyItemPriceTable(bodyText) {
+  const lines = (bodyText || '').split(/\r?\n/).map(l => l.trim());
+  let start = -1;
+  for (let i = 0; i < lines.length && start < 0; i++) {
+    if (!/^\*?qty\*?$/i.test(lines[i])) continue;
+    let sawItem = false, j = i + 1, seen = 0;
+    while (j < lines.length && seen < 8) {
+      if (lines[j] !== '') {
+        seen++;
+        if (/^\*?item\*?$/i.test(lines[j])) sawItem = true;
+        if (/^\*?price\*?$/i.test(lines[j])) { if (sawItem) start = j + 1; break; }
+      }
+      j++;
+    }
+  }
+  if (start < 0) {
+    // HTML-only emails flatten the whole table onto one line:
+    // "Qty Item Delivery Address Delivery Date/Time Price 1 <name> <code>
+    // <address> By 20/10/2026 £ 21.99 1 <name> ... Sub Total ..."
+    const flat = (bodyText || '').replace(/\s+/g, ' ');
+    const hm = /\bQty\s+Item\s+Delivery Address\s+Delivery Date\/Time\s+Price\b/i.exec(flat);
+    if (!hm) return null;
+    const endIdx = flat.search(/\bSub\s*-?Total\b/i);
+    const seg = flat.slice(hm.index + hm[0].length, endIdx > hm.index ? endIdx : undefined);
+    const rowRe = /(\d{1,3})\s+(\S.*?)\s+By\s+\d{1,2}\/\d{1,2}\/\d{4}\s*[$£€]\s?(\d+(?:[.,]\d{1,2})?)/g;
+    const rows = []; let rmm, addr0 = null;
+    while ((rmm = rowRe.exec(seg)) !== null) {
+      let name = rmm[2], rest = '';
+      const code = /\s+([A-Z]{1,3}\d[A-Z0-9]{3,})\b\s*(.*)$/.exec(name);
+      if (code) { rest = code[2]; name = name.slice(0, code.index); }
+      if (addr0 === null && rest) addr0 = rest;
+      rows.push({ name: name.trim().replace(/\s{2,}/g, ' '), quantity: parseInt(rmm[1], 10) || 1, linePrice: parseFloat(rmm[3].replace(',', '')) });
+    }
+    return rows.length ? { items: rows, address: addr0 } : null;
+  }
+  const priceRe = /^[$£€]\s?(\d+(?:[.,]\d{1,2})?)$/;
+  const items = [];
+  let cur = null, address = null;
+  for (let i = start; i < lines.length; i++) {
+    const l = lines[i];
+    if (!l) continue;
+    if (!cur && /^(?:sub\s*-?total|total\b|delivery\b|\*?what happens next)/i.test(l)) break;
+    const pm = priceRe.exec(l);
+    if (pm) {
+      if (cur) { cur.price = parseFloat(pm[1].replace(',', '')); items.push(cur); cur = null; }
+      continue;
+    }
+    const rm = !cur && /^(\d{1,3})\s+(\S.*)$/.exec(l);
+    if (rm) {
+      let raw = rm[2];
+      let name = raw, rest = '';
+      const code = /\s+([A-Z]{1,3}\d[A-Z0-9]{3,})\b\s*(.*)$/.exec(raw);
+      if (code) { name = raw.slice(0, code.index); rest = code[2]; }
+      else {
+        const hn = /\s+(\d{1,4}\s+[A-Z][a-z].*)$/.exec(raw);
+        if (hn) { name = raw.slice(0, hn.index); rest = hn[1]; }
+      }
+      cur = { quantity: parseInt(rm[1], 10) || 1, name: name.trim().replace(/\s{2,}/g, ' '), addr: rest ? [rest] : [] };
+      continue;
+    }
+    if (cur && !/^<?https?:\/\//i.test(l) && !/^by$/i.test(l) && !/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(l)) cur.addr.push(l.replace(/,\s*$/, ''));
+  }
+  if (!items.length) return null;
+  if (!address && items[0].addr.length) address = items[0].addr.join(', ');
+  return { items: items.map(it => ({ name: it.name, quantity: it.quantity, linePrice: it.price })), address };
+}
+
 function parseStackedTotals(bodyText) {
   const lines = (bodyText || '').split(/\r?\n/).map(l => l.trim());
   const labelRe = /^(?:(?:payment|order|grand)\s+total|sub-?total|total|(?:delivery|shipping|postage)(?:\s*(?:cost|charge|fee))?|discount[^\d£$€]{0,30}|vat|tax|(?:promo|voucher)[^\d£$€]{0,30})$/i;
@@ -1329,7 +1401,11 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // exposed. "Order total" as its own phrase is a lower-priority fallback,
   // tried only if no standalone Total row was found.
   const stackedTotals = parseStackedTotals(bodyText);
+  // "Total Including Delivery £ 53.98" (Very) — the real total, ahead of the
+  // generic "Total" pattern which would otherwise land on "Sub Total".
+  const inclDeliveryMatch = bodyText.match(/total\s+incl(?:uding|\.)?\s+(?:delivery|postage|shipping|vat)[^\d£$€\n]{0,15}[$£€]\s?([0-9]+(?:[.,][0-9]{1,2})?)/i);
   const priceMatch = (stackedTotals && stackedTotals.total > 0) ? [null, String(stackedTotals.total)] :
+    inclDeliveryMatch ||
     bodyText.match(/total\s+charged\s+to[\s\S]{0,40}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
     bodyText.match(/total\s+paid[\s\S]{0,15}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
     bodyText.match(/(?<!sub)\btotal\*?(?!\s*includes)(?!\s*tax)[\s\S]{0,15}?[$£€]\s?([0-9]+(?:[.,][0-9]{2})?)/i) ||
@@ -1404,6 +1480,14 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       if (!isNaN(d)) expectedDelivery = localISO(d);
     }
   }
+  if (!expectedDelivery) {
+    // UK-style "By 20/10/2026" (day first) as used in Very's recap table.
+    const byDate = bodyText.match(/\bby\s+(\d{1,2})\/(\d{1,2})\/(\d{4})\b/i);
+    if (byDate) {
+      const dd = parseInt(byDate[1], 10), mm = parseInt(byDate[2], 10), yy = parseInt(byDate[3], 10);
+      if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) expectedDelivery = `${yy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+    }
+  }
   const timeMatch = bodyText.match(/\b(?:by|before|between)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))(?:\s*(?:and|-|to)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)))?/i);
   const expectedDeliveryTime = timeMatch ? (timeMatch[2] ? `${timeMatch[1]}\u2013${timeMatch[2]}` : timeMatch[1]) : null;
 
@@ -1418,6 +1502,10 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
   // stack above — the app records it separately so it can be spread into
   // each item's stock cost, since 'price' is the full amount charged.
   if (stackedTotals && stackedTotals.total > 0 && stackedTotals.postage != null && stackedTotals.postage > 0) result.postage = stackedTotals.postage;
+  if (!(stackedTotals && stackedTotals.total > 0) && inclDeliveryMatch) {
+    const dl = bodyText.match(/(?:^|\s)\*?(?:delivery|shipping|postage)(?:\s*(?:cost|charge|fee))?\*?\s*[$£€]\s?([0-9]+(?:[.,][0-9]{1,2})?)/i);
+    if (dl) { const pv = parseFloat(dl[1].replace(',', '')); if (pv > 0) result.postage = pv; }
+  }
 
   if (status === 'ready_for_collection') {
     const codeMatch = bodyText.match(/\bcode\s*:?[\s\S]{0,10}?(\d{3,8})/i);
@@ -1477,6 +1565,9 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       if (addrLines.length >= 6) break;
     }
     result.deliveryAddress = addrLines.length ? addrLines.join(', ') : null;
+    // A column header ("Delivery Address | Delivery Date/Time | Price") is
+    // not an address — the real one is read from the table rows instead.
+    if (result.deliveryAddress && /delivery date\/time|\*?price\*?,/i.test(result.deliveryAddress)) result.deliveryAddress = null;
     // Truncated right after a recognizable postcode, plus a small
     // allowance for a trailing country name/code — confirmed directly
     // against a real email where the address correctly started right,
@@ -1845,6 +1936,28 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
       const lineTotal = parseFloat(pm[1].replace(',', ''));
       lineItems.push({ name: name.replace(/\s{2,}/g, ' '), quantity: qty, price: qty ? lineTotal / qty : lineTotal });
     }
+  }
+  // "Qty | Item | Delivery Address | Delivery Date/Time | Price" table
+  // (Very) — only tried when nothing above found items. The Price column
+  // is a line total or a unit price depending on the retailer, so it is
+  // checked against the Sub Total: whichever reading adds up is used
+  // (line total if neither or both do).
+  const qtyTable = parseQtyItemPriceTable(bodyText);
+  if (lineItems.length === 0 && qtyTable) {
+    const subM = bodyText.match(/sub\s*-?total[^\d£$€\n]{0,10}[$£€]\s?([0-9]+(?:[.,][0-9]{1,2})?)/i);
+    const sub = subM ? parseFloat(subM[1].replace(',', '')) : null;
+    const asLine = qtyTable.items.reduce((a, it) => a + (it.linePrice || 0), 0);
+    const asUnit = qtyTable.items.reduce((a, it) => a + it.quantity * (it.linePrice || 0), 0);
+    const unitMode = sub != null && Math.abs(asUnit - sub) < 0.011 && Math.abs(asLine - sub) >= 0.011;
+    qtyTable.items.forEach(it => {
+      lineItems.push({ name: it.name, quantity: it.quantity, price: unitMode ? it.linePrice : (it.quantity ? it.linePrice / it.quantity : it.linePrice) });
+    });
+  }
+  if (qtyTable && qtyTable.address && !result.deliveryAddress) {
+    let addr = qtyTable.address;
+    const pc = addr.match(/\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b/i);
+    if (pc) addr = addr.slice(0, pc.index + pc[0].length);
+    result.deliveryAddress = addr;
   }
   result.lineItems = lineItems;
   // No currency-symbol-based total pattern matched anything — confirmed
