@@ -5611,11 +5611,36 @@ function generateEmail(firstName, lastName, mode, catchallDomain){
   return null;
 }
 
-function usableProfileCards(provider="All", cardType="All"){
+function profileCardProviders(){
+  return Array.from(new Set(state.vccs.map(c=>c.provider).filter(Boolean))).sort();
+}
+
+// providers: empty = any provider. excludedProviders: always filtered out.
+// Accepts the legacy single-string "All"/provider form for safety.
+function usableProfileCards(providers, cardType="All", excludedProviders){
+  let include = providers;
+  let exclude = excludedProviders;
+  if(include == null && profileGenUI){
+    include = profileGenUI.providers;
+    exclude = profileGenUI.excludedProviders;
+    // legacy single-provider field
+    if((!Array.isArray(include) || !include.length) && profileGenUI.provider && profileGenUI.provider!=="All"){
+      include = [profileGenUI.provider];
+    }
+  }
+  if(!Array.isArray(include)) include = [];
+  if(!Array.isArray(exclude)) exclude = [];
+  const includeSet = new Set(include);
+  const excludeSet = new Set(exclude);
   return state.vccs.filter(c=>{
     const number = (c.number||"").replace(/\D/g,"");
     const complete = number && /^\d{2}\/\d{2}$/.test(c.expiry||"") && (c.cvv||"").trim();
-    return complete && (provider==="All" || c.provider===provider) && (cardType==="All" || c.cardType===cardType);
+    if(!complete) return false;
+    if(cardType!=="All" && c.cardType!==cardType) return false;
+    const prov = c.provider || "";
+    if(excludeSet.has(prov)) return false;
+    if(includeSet.size && !includeSet.has(prov)) return false;
+    return true;
   });
 }
 
@@ -5907,7 +5932,7 @@ function profileCsvRow(p){
   ];
 }
 
-let profileGenUI = { mode: "catchall", selectedCatchall: "", count: 1, selectedAddressIds: [], provider: "All", cardType: "All", usePlaceholderCard: false, scrambleAddresses: false };
+let profileGenUI = { mode: "catchall", selectedCatchall: "", count: 1, selectedAddressIds: [], providers: [], excludedProviders: [], cardType: "All", usePlaceholderCard: false, scrambleAddresses: false };
 
 function allImapCatchallDomains(){
   const all = (emailUI.accounts || []).flatMap(acc => acc.catchAllDomains || []);
@@ -5981,18 +6006,46 @@ function profileBuilderHTML(){
         </div>
       </div>
       ${profileGenUI.usePlaceholderCard ? "" : `
-      <div style="display:grid;grid-template-columns:repeat(2,minmax(180px,280px));gap:12px;">
-        <div class="field" style="margin:0;"><label>Card provider</label><select id="pb-card-provider">
-          <option value="All" ${profileGenUI.provider==="All"?"selected":""}>All providers</option>
-          ${Array.from(new Set(state.vccs.map(c=>c.provider).filter(Boolean))).sort().map(provider=>`<option value="${escapeAttr(provider)}" ${profileGenUI.provider===provider?"selected":""}>${escapeHTML(provider)}</option>`).join("")}
-        </select></div>
-        <div class="field" style="margin:0;"><label>Card type</label><select id="pb-card-type">
+      <div class="field" style="margin:0 0 12px;"><label>Card type</label>
+        <select id="pb-card-type" style="max-width:280px;">
           <option value="All" ${profileGenUI.cardType==="All"?"selected":""}>Virtual &amp; physical</option>
           <option value="virtual" ${profileGenUI.cardType==="virtual"?"selected":""}>Virtual only</option>
           <option value="physical" ${profileGenUI.cardType==="physical"?"selected":""}>Physical only</option>
-        </select></div>
+        </select>
       </div>
-      <div class="hint" style="margin-top:10px;">${usableProfileCards(profileGenUI.provider, profileGenUI.cardType).length} matching complete card${usableProfileCards(profileGenUI.provider, profileGenUI.cardType).length===1?"":"s"} available.</div>
+      ${(() => {
+        const providers = profileCardProviders();
+        if(!providers.length) return `<div class="hint">No card providers found yet — add cards in Card Tracker first.</div>`;
+        const includeEmpty = !profileGenUI.providers.length;
+        return `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        <div>
+          <div class="field" style="margin:0 0 6px;"><label>Include providers</label></div>
+          <div class="hint" style="margin:0 0 8px;">Leave all unchecked to allow any provider.</div>
+          <div style="display:flex;flex-direction:column;gap:6px;max-height:160px;overflow-y:auto;padding:4px 0;">
+            ${providers.map(p=>`
+              <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+                <input type="checkbox" data-pb-include-provider="${escapeAttr(p)}" ${profileGenUI.providers.includes(p)?"checked":""}>
+                <span>${escapeHTML(p)}</span>
+              </label>`).join("")}
+          </div>
+          ${includeEmpty ? `<div class="hint" style="margin-top:6px;">Using all providers (except any excluded).</div>` : `<div class="hint" style="margin-top:6px;">${profileGenUI.providers.length} selected</div>`}
+        </div>
+        <div>
+          <div class="field" style="margin:0 0 6px;"><label>Exclude providers</label></div>
+          <div class="hint" style="margin:0 0 8px;">Checked providers are never used, even if included above.</div>
+          <div style="display:flex;flex-direction:column;gap:6px;max-height:160px;overflow-y:auto;padding:4px 0;">
+            ${providers.map(p=>`
+              <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+                <input type="checkbox" data-pb-exclude-provider="${escapeAttr(p)}" ${profileGenUI.excludedProviders.includes(p)?"checked":""}>
+                <span>${escapeHTML(p)}</span>
+              </label>`).join("")}
+          </div>
+          ${profileGenUI.excludedProviders.length ? `<div class="hint" style="margin-top:6px;">${profileGenUI.excludedProviders.length} excluded</div>` : ""}
+        </div>
+      </div>`;
+      })()}
+      <div class="hint" style="margin-top:10px;">${usableProfileCards(profileGenUI.providers, profileGenUI.cardType, profileGenUI.excludedProviders).length} matching complete card${usableProfileCards(profileGenUI.providers, profileGenUI.cardType, profileGenUI.excludedProviders).length===1?"":"s"} available.</div>
       `}
     </div>
 
@@ -6071,10 +6124,34 @@ function attachProfileBuilderEvents(){
   });
   const catchallSelect = document.getElementById("pb-select-catchall");
   if(catchallSelect) catchallSelect.addEventListener("change", e=>{ profileGenUI.selectedCatchall = e.target.value; });
-  const providerSelect = document.getElementById("pb-card-provider");
-  if(providerSelect) providerSelect.addEventListener("change", e=>{ profileGenUI.provider = e.target.value; renderView(); });
   const cardTypeSelect = document.getElementById("pb-card-type");
   if(cardTypeSelect) cardTypeSelect.addEventListener("change", e=>{ profileGenUI.cardType = e.target.value; renderView(); });
+  document.querySelectorAll("[data-pb-include-provider]").forEach(cb=>{
+    cb.addEventListener("change", ()=>{
+      const p = cb.dataset.pbIncludeProvider;
+      if(cb.checked){
+        if(!profileGenUI.providers.includes(p)) profileGenUI.providers.push(p);
+        // Including a provider clears it from the exclude list so the two
+        // don't fight each other silently.
+        profileGenUI.excludedProviders = profileGenUI.excludedProviders.filter(x=>x!==p);
+      } else {
+        profileGenUI.providers = profileGenUI.providers.filter(x=>x!==p);
+      }
+      renderView();
+    });
+  });
+  document.querySelectorAll("[data-pb-exclude-provider]").forEach(cb=>{
+    cb.addEventListener("change", ()=>{
+      const p = cb.dataset.pbExcludeProvider;
+      if(cb.checked){
+        if(!profileGenUI.excludedProviders.includes(p)) profileGenUI.excludedProviders.push(p);
+        profileGenUI.providers = profileGenUI.providers.filter(x=>x!==p);
+      } else {
+        profileGenUI.excludedProviders = profileGenUI.excludedProviders.filter(x=>x!==p);
+      }
+      renderView();
+    });
+  });
   document.querySelectorAll("[data-card-mode]").forEach(btn=>{
     btn.addEventListener("click", ()=>{ profileGenUI.usePlaceholderCard = btn.dataset.cardMode==="placeholder"; renderView(); });
   });
@@ -6103,7 +6180,7 @@ function attachProfileBuilderEvents(){
     const count = Math.max(1, parseInt(countInput.value,10)||1);
     let cards = [];
     if(!profileGenUI.usePlaceholderCard){
-      cards = shuffledCopy(usableProfileCards(profileGenUI.provider, profileGenUI.cardType));
+      cards = shuffledCopy(usableProfileCards(profileGenUI.providers, profileGenUI.cardType, profileGenUI.excludedProviders));
       if(cards.length<count){
         showToast(`${count} complete cards are required; only ${cards.length} are available`, "close");
         return;
