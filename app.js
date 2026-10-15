@@ -5574,10 +5574,144 @@ function trackedAddressText(address){
   return [a.address1, a.address2, [a.city, a.state, a.zip].filter(Boolean).join(" "), a.country].filter(Boolean).join("\n");
 }
 
-function profileCsvRow(p){
+// Keyboard-neighbour map for realistic typo substitutions.
+const KEYBOARD_NEAR = {
+  a:"sqwz", b:"vghn", c:"xdfv", d:"erfcxs", e:"rdsw", f:"rtgvcd",
+  g:"tyhbvf", h:"yujnbg", i:"uojk", j:"uiknmh", k:"iolmj", l:"opk",
+  m:"njk", n:"bhjm", o:"iplk", p:"ol", q:"wa", r:"edft", s:"awedxz",
+  t:"ryfg", u:"yihj", v:"cfgb", w:"qase", x:"zsdc", y:"tugh", z:"asx"
+};
+
+// Protect house numbers / unit markers ("10", "47c", "1/10", "Flat 2") so
+// only the street-name words get scrambled. Postcodes are never passed in.
+function isProtectedAddressToken(token){
+  if(!token) return true;
+  // Pure digits, digit+letter unit, slash units, common prefixes
+  if(/^[\d]+[a-zA-Z]?$/i.test(token)) return true;
+  if(/^\d+\/\d+[a-zA-Z]?$/i.test(token)) return true;
+  if(/^(flat|apt|apartment|unit|suite|floor|fl|no|number|#)$/i.test(token)) return true;
+  return false;
+}
+
+function scrambleWord(word){
+  if(!word || word.length <= 2 || isProtectedAddressToken(word)) return word;
+  const keepCase = word[0] === word[0].toUpperCase();
+  let chars = word.toLowerCase().split("");
+  // 1–3 mutations depending on length
+  const mutations = word.length <= 5 ? 1 : (word.length <= 9 ? 1 + (Math.random() < 0.55 ? 1 : 0) : 2 + (Math.random() < 0.4 ? 1 : 0));
+  for(let m=0; m<mutations; m++){
+    if(chars.length < 2) break;
+    const kind = Math.floor(Math.random()*5);
+    // Prefer mutating letters after the first so the word stays recognisable
+    const idx = 1 + Math.floor(Math.random()*Math.max(1, chars.length-1));
+    if(kind===0 && idx < chars.length-1){
+      // swap adjacent
+      [chars[idx], chars[idx+1]] = [chars[idx+1], chars[idx]];
+    } else if(kind===1){
+      // double a letter
+      chars.splice(idx, 0, chars[idx]);
+    } else if(kind===2 && chars.length > 3){
+      // drop a letter (never the first)
+      chars.splice(idx, 1);
+    } else if(kind===3){
+      // replace with keyboard neighbour
+      const c = chars[idx];
+      const near = KEYBOARD_NEAR[c];
+      if(near) chars[idx] = near[Math.floor(Math.random()*near.length)];
+    } else {
+      // insert a keyboard neighbour of a nearby letter
+      const base = chars[Math.min(idx, chars.length-1)];
+      const near = KEYBOARD_NEAR[base] || "aeiou";
+      chars.splice(idx, 0, near[Math.floor(Math.random()*near.length)]);
+    }
+  }
+  let out = chars.join("");
+  if(keepCase && out.length) out = out[0].toUpperCase() + out.slice(1);
+  return out;
+}
+
+function scrambleAddressLine(line){
+  if(!line || !line.trim()) return line || "";
+  // Split on spaces but keep the tokens; scramble non-protected words only.
+  return line.split(/(\s+)/).map(tok=>{
+    if(/^\s+$/.test(tok)) return tok;
+    return scrambleWord(tok);
+  }).join("");
+}
+
+// Returns a unique scrambled copy of the structured address parts.
+// Postcode/ZIP, state, and country are NEVER changed. address1/address2/city
+// get typo-style scrambling. `usedKeys` is a Set of previously-used
+// "address1|city|zip" keys so every profile in a batch (and against prior
+// generated profiles) stays unique.
+function scrambleAddressParts(parts, usedKeys){
+  const base = {
+    firstName: parts.firstName || "",
+    lastName: parts.lastName || "",
+    address1: parts.address1 || "",
+    address2: parts.address2 || "",
+    city: parts.city || "",
+    zip: parts.zip || "",
+    state: parts.state || "",
+    country: parts.country || ""
+  };
+  for(let attempt=0; attempt<40; attempt++){
+    const scrambled = {
+      ...base,
+      address1: scrambleAddressLine(base.address1),
+      address2: scrambleAddressLine(base.address2),
+      city: scrambleAddressLine(base.city)
+      // zip / state / country intentionally untouched
+    };
+    // Guarantee something actually changed on the street line when possible
+    if(scrambled.address1 === base.address1 && base.address1.length > 3 && attempt < 20){
+      scrambled.address1 = scrambleAddressLine(base.address1);
+    }
+    const key = [scrambled.address1, scrambled.address2, scrambled.city, scrambled.zip].join("|").toLowerCase();
+    if(!usedKeys.has(key)){
+      usedKeys.add(key);
+      return scrambled;
+    }
+  }
+  // Last-resort uniqueness: append a tiny letter suffix to address1 without
+  // touching the postcode. Extremely unlikely to hit given the mutation space.
+  const fallback = {
+    ...base,
+    address1: scrambleAddressLine(base.address1) + " " + String.fromCharCode(97 + Math.floor(Math.random()*26))
+  };
+  usedKeys.add([fallback.address1, fallback.address2, fallback.city, fallback.zip].join("|").toLowerCase());
+  return fallback;
+}
+
+function profileAddressParts(p){
+  // Prefer the scrambled (or snapshot) fields stored on the profile itself
+  // so exports/copies reflect what was generated, not a later edit of the
+  // underlying saved address.
+  if(p.scrambledAddress){
+    return {
+      firstName: p.scrambledAddress.firstName || p.firstName || "",
+      lastName: p.scrambledAddress.lastName || p.lastName || "",
+      address1: p.scrambledAddress.address1 || "",
+      address2: p.scrambledAddress.address2 || "",
+      city: p.scrambledAddress.city || "",
+      zip: p.scrambledAddress.zip || "",
+      state: p.scrambledAddress.state || "",
+      country: p.scrambledAddress.country || ""
+    };
+  }
   const address = state.addresses.find(a=>a.id===p.addressId);
+  if(address) return trackedAddressParts(address);
+  return parseTrackedAddress(p.addressSnapshot||"");
+}
+
+function profileAddressText(p){
+  const a = profileAddressParts(p);
+  return [a.address1, a.address2, [a.city, a.state, a.zip].filter(Boolean).join(" "), a.country].filter(Boolean).join("\n");
+}
+
+function profileCsvRow(p){
   const card = state.vccs.find(c=>c.id===p.cardId);
-  const parsed = address ? trackedAddressParts(address) : parseTrackedAddress(p.addressSnapshot||"");
+  const parsed = profileAddressParts(p);
   const expiry = String(card ? card.expiry||"" : p.cardExpiry||"").split("/");
   const cardNumber = (card ? card.number||"" : p.cardNumber||"").replace(/\D/g,"");
   const cardType = card ? card.network||"" : p.cardNetwork||"";
@@ -5591,7 +5725,7 @@ function profileCsvRow(p){
   ];
 }
 
-let profileGenUI = { mode: "catchall", selectedCatchall: "", count: 1, selectedAddressIds: [], provider: "All", cardType: "All", usePlaceholderCard: false };
+let profileGenUI = { mode: "catchall", selectedCatchall: "", count: 1, selectedAddressIds: [], provider: "All", cardType: "All", usePlaceholderCard: false, scrambleAddresses: false };
 
 function allImapCatchallDomains(){
   const all = (emailUI.accounts || []).flatMap(acc => acc.catchAllDomains || []);
@@ -5642,6 +5776,16 @@ function profileBuilderHTML(){
           `).join("")}
         </div>
       ` : `<div class="hint">No saved addresses — add at least one in Address Tracker first.</div>`}
+      <div class="filter-toggle" style="margin-top:14px;padding-bottom:0;">
+        <div>
+          <div class="desc">Scramble addresses</div>
+          <div class="sub">Typo-style unique variants of each street/city — postcode is never changed.</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="pb-scrambleAddresses" ${profileGenUI.scrambleAddresses?"checked":""}>
+          <span class="track"></span>
+        </label>
+      </div>
     </div>
 
     <div class="card panel" style="margin-bottom:20px;">
@@ -5707,6 +5851,9 @@ function profilesResultsHTML(){
       ${state.generatedProfiles.map(p=>{
         const address = state.addresses.find(a=>a.id===p.addressId);
         const card = state.vccs.find(c=>c.id===p.cardId);
+        const scrambledHint = p.scrambledAddress
+          ? `<div class="hint" style="margin:3px 0 0;color:var(--gold);">${escapeHTML([p.scrambledAddress.address1, p.scrambledAddress.city, p.scrambledAddress.zip].filter(Boolean).join(", "))} · scrambled</div>`
+          : "";
         return `
         <div class="card" style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
           <div style="display:flex;align-items:center;gap:12px;min-width:0;">
@@ -5714,7 +5861,8 @@ function profilesResultsHTML(){
             <div style="min-width:0;">
               <div style="font-weight:700;font-size:14px;">${escapeHTML(p.firstName)} ${escapeHTML(p.lastName)}</div>
               <div class="hint mono" style="margin:3px 0 0;">${escapeHTML(p.phone)}${p.email ? " · "+escapeHTML(p.email) : ""}</div>
-              <div class="hint" style="margin:3px 0 0;">${escapeHTML(address ? address.nickname : "Address unavailable")} · ${escapeHTML(card ? card.nickname : "Card unavailable")}${card&&card.number ? " •••• "+escapeHTML(card.number.replace(/\D/g,"").slice(-4)) : ""}</div>
+              <div class="hint" style="margin:3px 0 0;">${escapeHTML(address ? address.nickname : "Address unavailable")} · ${escapeHTML(card ? card.nickname : (p.cardId ? "Card unavailable" : "Placeholder"))}${card&&card.number ? " •••• "+escapeHTML(card.number.replace(/\D/g,"").slice(-4)) : ""}</div>
+              ${scrambledHint}
             </div>
           </div>
           <div style="display:flex;gap:6px;flex-shrink:0;">
@@ -5753,6 +5901,10 @@ function attachProfileBuilderEvents(){
       if(cb.checked && !profileGenUI.selectedAddressIds.includes(id)) profileGenUI.selectedAddressIds.push(id);
       if(!cb.checked) profileGenUI.selectedAddressIds = profileGenUI.selectedAddressIds.filter(x=>x!==id);
     });
+  });
+  const scrambleToggle = document.getElementById("pb-scrambleAddresses");
+  if(scrambleToggle) scrambleToggle.addEventListener("change", e=>{
+    profileGenUI.scrambleAddresses = !!e.target.checked;
   });
   document.getElementById("pb-genCount").addEventListener("input", e=>{
     profileGenUI.count = Math.max(1, parseInt(e.target.value,10)||1);
@@ -5833,6 +5985,17 @@ function attachProfileBuilderEvents(){
       return { firstName, lastName, email };
     };
 
+    // Track used scrambled address keys across this batch AND every
+    // previously generated profile that already has a scrambled address,
+    // so uniqueness holds even when generating multiple batches.
+    const usedScrambleKeys = new Set();
+    state.generatedProfiles.forEach(p=>{
+      if(p.scrambledAddress){
+        const s = p.scrambledAddress;
+        usedScrambleKeys.add([s.address1||"", s.address2||"", s.city||"", s.zip||""].join("|").toLowerCase());
+      }
+    });
+
     const newProfiles = [];
     for(let i=0; i<count; i++){
       let firstName, lastName, email;
@@ -5851,11 +6014,19 @@ function attachProfileBuilderEvents(){
       const card = profileGenUI.usePlaceholderCard
         ? { id: null, number: "0000 0000 0000 0000", expiry: "01/28", network: "Visa", cvv: "111" }
         : cards[i];
+      const baseParts = trackedAddressParts(address);
+      let scrambledAddress = null;
+      let addressSnapshot = trackedAddressText(address);
+      if(profileGenUI.scrambleAddresses){
+        scrambledAddress = scrambleAddressParts(baseParts, usedScrambleKeys);
+        addressSnapshot = [scrambledAddress.address1, scrambledAddress.address2, [scrambledAddress.city, scrambledAddress.state, scrambledAddress.zip].filter(Boolean).join(" "), scrambledAddress.country].filter(Boolean).join("\n");
+      }
       newProfiles.push({
         id: uid(), profileName: `${firstName} ${lastName}`, firstName, lastName,
         phone: nextUniquePhone(),
         email,
-        addressId: address.id, addressSnapshot: trackedAddressText(address),
+        addressId: address.id, addressSnapshot,
+        scrambledAddress,
         cardId: card.id, cardNumber: card.number||"", cardExpiry: card.expiry||"",
         cardNetwork: card.network||"", cardCvv: card.cvv||""
       });
@@ -5884,7 +6055,7 @@ function bindProfilesResultEvents(){
       if(!p) return;
       const address = state.addresses.find(a=>a.id===p.addressId);
       const card = state.vccs.find(c=>c.id===p.cardId);
-      const text = `${p.firstName} ${p.lastName}\n${p.phone}${p.email ? "\n"+p.email : ""}${address ? "\n"+trackedAddressText(address) : ""}${card ? "\n"+card.network+" •••• "+(card.number||"").replace(/\D/g,"").slice(-4) : ""}`;
+      const text = `${p.firstName} ${p.lastName}\n${p.phone}${p.email ? "\n"+p.email : ""}\n${profileAddressText(p)}${card ? "\n"+card.network+" •••• "+(card.number||"").replace(/\D/g,"").slice(-4) : ""}`;
       navigator.clipboard.writeText(text).then(()=>showToast("Copied to clipboard"));
     });
   });
