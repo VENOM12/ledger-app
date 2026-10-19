@@ -5077,6 +5077,18 @@ let vccUI = { statusFilter: "All", providerFilter: "All", networkFilter: "All", 
 // after its printed date, nothing to track separately).
 const CARD_PROVIDERS = ["Revolut","RBS","Starling","Lloyds","Crypto.com","Curve","Monese","Chase","Tide","Capital on Tap","Wise","PayPal","Monzo","Capital One","Vanquis","Zilch","Other"];
 
+// Built-in list plus any custom provider names already saved on cards
+// (from previous "Other" entries). "Other" always stays last so it remains
+// the way to add a brand-new name.
+function allCardProviders(){
+  const builtins = CARD_PROVIDERS.filter(p=>p!=="Other");
+  const builtinSet = new Set(builtins);
+  const custom = Array.from(new Set(
+    state.vccs.map(c=>(c.provider||"").trim()).filter(p=>p && p!=="Other" && !builtinSet.has(p))
+  )).sort((a,b)=>a.localeCompare(b));
+  return [...builtins, ...custom, "Other"];
+}
+
 function vccStatus(card){
   if(!card.expiry) return "active";
   const [mm, yy] = card.expiry.split("/").map(s=>s.trim());
@@ -5266,6 +5278,22 @@ function openVccModal(vccId){
   else if(/^master/i.test(normalizedNetwork)) normalizedNetwork = "Mastercard";
   else if(normalizedNetwork !== "Visa" && normalizedNetwork !== "Mastercard") normalizedNetwork = "";
 
+  const existingProvider = existing ? (existing.provider || "").trim() : "";
+  const builtinProviders = CARD_PROVIDERS.filter(p=>p!=="Other");
+  const knownProviders = allCardProviders(); // builtins + previously saved customs + Other
+  // Prefer selecting a known custom name directly in the dropdown. Only fall
+  // back to the "Other" + free-text path for a value that somehow isn't in
+  // the list yet (so editing never loses the name).
+  let providerSelect = existingProvider;
+  let customProvider = "";
+  if(existingProvider && existingProvider!=="Other" && !builtinProviders.includes(existingProvider)){
+    if(knownProviders.includes(existingProvider)){
+      providerSelect = existingProvider;
+    } else {
+      providerSelect = "Other";
+      customProvider = existingProvider;
+    }
+  }
   vccFormState = {
     id: existing ? existing.id : null,
     nickname: existing ? existing.nickname : "",
@@ -5273,7 +5301,8 @@ function openVccModal(vccId){
     expiry: existing ? existing.expiry || "" : "",
     network: normalizedNetwork,
     cvv: existing ? existing.cvv || "" : "",
-    provider: existing ? existing.provider || "" : "",
+    provider: providerSelect,
+    customProvider,
     cardType: existing ? existing.cardType || "virtual" : "virtual"
   };
   renderVccModal();
@@ -5320,10 +5349,16 @@ function renderVccModal(){
               <label>Provider</label>
               <select id="vcc-provider">
                 <option value="" ${!f.provider?"selected":""}>—</option>
-                ${CARD_PROVIDERS.map(p=>`<option value="${escapeAttr(p)}" ${f.provider===p?"selected":""}>${escapeHTML(p)}</option>`).join("")}
+                ${allCardProviders().map(p=>`<option value="${escapeAttr(p)}" ${f.provider===p?"selected":""}>${escapeHTML(p)}</option>`).join("")}
               </select>
             </div>
           </div>
+          ${f.provider==="Other" ? `
+          <div class="field">
+            <label>Provider name</label>
+            <input type="text" id="vcc-provider-custom" value="${escapeAttr(f.customProvider||"")}" placeholder="e.g. Amex, Barclays, Your Bank">
+            <div class="hint" style="margin-top:6px;">This name is saved on the card and becomes a selectable provider option next time.</div>
+          </div>` : ""}
           <div class="field">
             <label>Card type</label>
             <div class="segmented" style="max-width:280px;">
@@ -5352,7 +5387,17 @@ function renderVccModal(){
     e.target.value = v;
   });
   document.getElementById("vcc-network").addEventListener("change", e=>{ f.network = e.target.value; });
-  document.getElementById("vcc-provider").addEventListener("change", e=>{ f.provider = e.target.value; });
+  document.getElementById("vcc-provider").addEventListener("change", e=>{
+    const prev = f.provider;
+    f.provider = e.target.value;
+    // Clear the free-text field when leaving Other so a stale name isn't
+    // accidentally saved if the user picks Other again later.
+    if(f.provider!=="Other") f.customProvider = "";
+    // Re-render so the custom name field appears/disappears with Other.
+    if(prev==="Other" || f.provider==="Other") renderVccModal();
+  });
+  const customProviderInput = document.getElementById("vcc-provider-custom");
+  if(customProviderInput) customProviderInput.addEventListener("input", e=>{ f.customProvider = e.target.value; });
   document.getElementById("vcc-cvv").addEventListener("input", e=>{ f.cvv = e.target.value; });
   document.querySelectorAll("[data-card-type]").forEach(btn=>{
     btn.addEventListener("click", ()=>{ f.cardType = btn.dataset.cardType; renderVccModal(); });
@@ -5362,7 +5407,12 @@ function renderVccModal(){
     const nickname = f.nickname.trim();
     if(!nickname){ showToast("Enter a nickname for this card", "close"); return; }
     if(f.expiry && !/^\d{2}\/\d{2}$/.test(f.expiry)){ showToast("Expiry should be in MM/YY format", "close"); return; }
-    const payload = { nickname, number: f.number.trim(), expiry: f.expiry.trim(), network: f.network.trim(), cvv: f.cvv.trim(), provider: f.provider.trim(), cardType: f.cardType };
+    let provider = (f.provider||"").trim();
+    if(provider==="Other"){
+      provider = (f.customProvider||"").trim();
+      if(!provider){ showToast("Enter a provider name", "close"); return; }
+    }
+    const payload = { nickname, number: f.number.trim(), expiry: f.expiry.trim(), network: f.network.trim(), cvv: f.cvv.trim(), provider, cardType: f.cardType };
     if(f.id){
       const card = state.vccs.find(c=>c.id===f.id);
       Object.assign(card, payload);
