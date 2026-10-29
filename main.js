@@ -1441,6 +1441,15 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
     // "now being processed: [NUM]" — confirmed against a real Tritex
     // pre-order email with no explicit order-number label at all.
     bodyText.match(/now being processed\s*:\s*\n?\s*([A-Z0-9-]{4,20})\b/) ||
+    // Argos: "*Order Number*" in markdown-style bold with a blank line
+    // before the value, which the label patterns above can't cross
+    // (the asterisks block them). Without this every Argos order came
+    // back with no number and same-price/same-day orders collapsed into
+    // one. Falls back to the subject ("...your order 6775891650") and
+    // the tracking link (/order/tracking/6775891650/...).
+    bodyText.match(/\*?\s*Order\s+Number\s*\*?\s*:?\s*\n+\s*\*?\s*([A-Z0-9-]{5,20})\b/i) ||
+    subject.match(/\byour order\s+#?\s*(\d{6,15})\b/i) ||
+    bodyText.match(/argos\.co\.uk\/order\/tracking\/(\d{6,15})/i) ||
     subject.match(/#\s?([A-Z0-9-]{5,20})/);
   const orderNumber = orderNumMatch ? orderNumMatch[1] : null;
 
@@ -1486,6 +1495,18 @@ function classifyEmail({ subject, bodyText, fromName, fromEmail, toEmail, date }
     if (byDate) {
       const dd = parseInt(byDate[1], 10), mm = parseInt(byDate[2], 10), yy = parseInt(byDate[3], 10);
       if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) expectedDelivery = `${yy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+    }
+  }
+  if (!expectedDelivery) {
+    // Argos click & collect: "Due for collection from 10:00am Mon 2 November"
+    const due = bodyText.match(/due for collection from\s+(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)\s+)?(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+)?(\d{1,2})\s+([A-Za-z]{3,9})(?:\s+(\d{4}))?/i);
+    if (due) {
+      const ey = new Date(date).getFullYear() || new Date().getFullYear();
+      let d = new Date(`${due[2]} ${due[1]}, ${due[3] || ey}`);
+      if (!isNaN(d)) {
+        if (!due[3] && d.getMonth() < new Date(date).getMonth() - 6) d.setFullYear(d.getFullYear() + 1);
+        expectedDelivery = localISO(d);
+      }
     }
   }
   const timeMatch = bodyText.match(/\b(?:by|before|between)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))(?:\s*(?:and|-|to)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)))?/i);
